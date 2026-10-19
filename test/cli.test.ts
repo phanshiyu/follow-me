@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -250,4 +251,51 @@ test("apply never writes the branch being split, even with --force", async (t) =
     err: "follow-me: feature is the branch being split; the split always lands on a separate branch, so pick another --name (--force does not change this)\n",
   });
   assert.equal(git(repo.dir, "rev-parse", "feature"), repo.branch);
+});
+
+async function runAsync(dir: string, ...args: string[]) {
+  const child = spawn(BIN, args, { cwd: dir, env: OFFLINE });
+  let out = "";
+  let err = "";
+  child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+    out += chunk;
+  });
+  child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+    err += chunk;
+  });
+  const [code] = await once(child, "exit");
+  return { code, out, err };
+}
+
+test("two worktrees of one repo apply their own splits at the same time", async (t) => {
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  const outside = mkdtempSync(join(tmpdir(), "follow-me-worktree-"));
+  t.after(() => rmSync(outside, { recursive: true, force: true }));
+  const worktree = join(outside, "other");
+  git(repo.dir, "worktree", "add", "-q", "-b", "other", worktree, "main");
+  writeFileSync(join(worktree, "notes.txt"), "other work\n");
+  git(worktree, "commit", "-qam", "other work");
+
+  const sessions: [string, string][] = [
+    [repo.dir, "feature"],
+    [worktree, "other"],
+  ];
+  for (const [dir, branch] of sessions) {
+    assert.equal(run(dir, "extract").code, 0);
+    const diff = await loadDiff(dir, "main", branch);
+    const commits = [{ message: `feat: ${branch}`, units: [...diff.units.keys()] }];
+    writeFileSync(
+      join(dir, ".follow-me", branch, "draft.json"),
+      JSON.stringify({ schema: "follow-me/plan@1", base: diff.base, tip: diff.tip, commits }),
+    );
+  }
+  const [main, other] = await Promise.all([
+    runAsync(repo.dir, "apply"),
+    runAsync(worktree, "apply"),
+  ]);
+  assert.deepEqual([main.code, main.err, other.code, other.err], [0, "", 0, ""]);
+  assert.equal(git(repo.dir, "log", "-1", "--format=%s", "feature-split"), "feat: feature");
+  assert.equal(git(repo.dir, "log", "-1", "--format=%s", "other-split"), "feat: other");
+  assert.equal(git(repo.dir, "fsck", "--connectivity-only", "--no-dangling"), "");
 });

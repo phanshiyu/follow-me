@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { PLAN_SCHEMA, validatePlan } from "../src/plan.ts";
@@ -151,4 +159,66 @@ test("a moved branch must be re-extracted before the session opens again", async
   const fresh = await extractSession(repo.dir);
   assert.equal(fresh.anchor.tip, moved);
   assert.equal((await openSession(repo.dir)).anchor.tip, moved);
+});
+
+test("sessions in two repos keep separate state", async (t) => {
+  const one = makeFixtureRepo();
+  t.after(one.cleanup);
+  const two = makeFixtureRepo();
+  t.after(two.cleanup);
+  const [a, b] = await Promise.all([openSession(one.dir), openSession(two.dir)]);
+  assert.equal(a.dir, join(realpathSync(one.dir), ".follow-me", "feature"));
+  assert.equal(b.dir, join(realpathSync(two.dir), ".follow-me", "feature"));
+  const verdict = validatePlan(a.diff, plan(a.diff, "feat: one"));
+  assert.ok(verdict.ok);
+  assert.equal(a.freeze(verdict.plan), 1);
+  assert.deepEqual(
+    [
+      a.plans().length,
+      b.plans().length,
+      readFileSync(join(two.dir, ".follow-me", ".gitignore"), "utf8"),
+    ],
+    [1, 0, "*\n"],
+  );
+});
+
+test("a linked worktree keeps its own .follow-me inside the worktree", async (t) => {
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  const outside = mkdtempSync(join(tmpdir(), "follow-me-worktree-"));
+  t.after(() => rmSync(outside, { recursive: true, force: true }));
+  const worktree = join(realpathSync(outside), "other");
+  git(repo.dir, "worktree", "add", "-q", "-b", "other", worktree, "main");
+  writeFileSync(join(worktree, "notes.txt"), "other work\n");
+  git(worktree, "commit", "-qam", "other work");
+
+  const [main, linked] = await Promise.all([
+    openSession(repo.dir),
+    openSession(join(worktree, "src")),
+  ]);
+  assert.equal(main.dir, join(realpathSync(repo.dir), ".follow-me", "feature"));
+  assert.equal(linked.dir, join(worktree, ".follow-me", "other"));
+  assert.equal(linked.anchor.branch, "other");
+  assert.equal(readFileSync(join(worktree, ".follow-me", ".gitignore"), "utf8"), "*\n");
+  assert.deepEqual(readdirSync(join(repo.dir, ".follow-me")).sort(), [".gitignore", "feature"]);
+  assert.deepEqual(readdirSync(join(worktree, ".follow-me")).sort(), [".gitignore", "other"]);
+  assert.equal(git(worktree, "status", "--porcelain"), "");
+});
+
+test("two branches whose names share a slug cannot share a session", async (t) => {
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  git(repo.dir, "branch", "topic/x", "feature");
+  git(repo.dir, "branch", "topic-x", "feature");
+  const first = await openSession(repo.dir, { branch: "topic/x" });
+  const message = `${first.dir} holds the session of branch topic/x, and topic-x maps to the same directory; rename one of the two branches`;
+  await assert.rejects(openSession(repo.dir, { branch: "topic-x" }), {
+    name: SessionFileError.name,
+    message,
+  });
+  await assert.rejects(extractSession(repo.dir, { branch: "topic-x" }), {
+    name: SessionFileError.name,
+    message,
+  });
+  assert.equal((await openSession(repo.dir, { branch: "topic/x" })).anchor.branch, "topic/x");
 });

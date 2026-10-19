@@ -284,12 +284,17 @@ async function locate(repo: string, branch: string | undefined): Promise<Where> 
   return { root, branch: name, dir: join(top, slugOf(name)) };
 }
 
-function readAnchor(dir: string): SessionAnchor | null {
-  const path = join(dir, "session.json");
+function readAnchor(where: Where): SessionAnchor | null {
+  const path = join(where.dir, "session.json");
   const raw = readJson(path);
   if (raw === undefined) return null;
   const anchor = parseAnchor(raw);
   if (anchor === null) throw new SessionFileError(`${path} is not a session anchor`);
+  if (anchor.branch !== where.branch) {
+    throw new SessionFileError(
+      `${where.dir} holds the session of branch ${anchor.branch}, and ${where.branch} maps to the same directory; rename one of the two branches`,
+    );
+  }
   return anchor;
 }
 
@@ -299,7 +304,7 @@ export async function extractSession(
   opts: { readonly branch?: string; readonly base?: string } = {},
 ): Promise<Session> {
   const where = await locate(repo, opts.branch);
-  const baseRef = opts.base ?? readAnchor(where.dir)?.baseRef ?? (await defaultBaseRef(where.root));
+  const baseRef = opts.base ?? readAnchor(where)?.baseRef ?? (await defaultBaseRef(where.root));
   const diff = await loadDiff(where.root, baseRef, where.branch);
   const anchor: SessionAnchor = {
     schema: "follow-me/session@1",
@@ -319,7 +324,7 @@ export async function openSession(
   opts: { readonly branch?: string; readonly base?: string } = {},
 ): Promise<Session> {
   const where = await locate(repo, opts.branch);
-  const anchor = readAnchor(where.dir);
+  const anchor = readAnchor(where);
   if (anchor === null) return extractSession(where.root, { ...opts, branch: where.branch });
   const tip = await resolveCommit(where.root, where.branch);
   if (tip !== anchor.tip) {

@@ -262,3 +262,21 @@ test("the UI files are served at /, /app.js, /playback.js and /style.css", async
   await post(run.url, "/api/end", {});
   await run.done;
 });
+
+test("two review servers run at once on their own ports and save their own reviews", async (t) => {
+  const [one, two] = await Promise.all([start(t, twoCommitState()), start(t, twoCommitState())]);
+  assert.notEqual(new URL(one.url).port, new URL(two.url).port);
+  await post(one.url, "/api/comments", newComment("from one"));
+  await post(two.url, "/api/comments", newComment("from two"));
+  await Promise.all([post(one.url, "/api/end", {}), post(two.url, "/api/end", {})]);
+  const [first, second] = await Promise.all([one.done, two.done]);
+  assert.deepEqual(
+    [first.comments.map((c) => c.body), second.comments.map((c) => c.body)],
+    [["from one"], ["from two"]],
+  );
+  const onDisk = JSON.parse(await readFile(join(two.dir, "v3.json"), "utf8"));
+  assert.deepEqual(
+    onDisk.comments.map((c: { body: string }) => c.body),
+    ["from two"],
+  );
+});
