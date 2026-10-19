@@ -1,8 +1,10 @@
 import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, relative } from "node:path";
 import { PlanRequestError, requestPlan } from "./anthropic.ts";
 import { DiffParseError, formatUnitRef } from "./diff.ts";
 import { BranchRefusedError, GitError, treeOf, writeBranch } from "./git.ts";
+import { runInstall } from "./install.ts";
 import { serializePlanFile, type ValidPlan, validatePlan } from "./plan.ts";
 import { type PromptInput, renderFeedback, renderPrompt } from "./prompt.ts";
 import { loadDraftComments, serveReview } from "./server.ts";
@@ -43,6 +45,9 @@ const USAGE = `usage: follow-me <command>
                                             watch a branch being written, narrated, and
                                             review its code; nothing is applied
   feedback [--branch <name>]                print the latest review as markdown
+  install [--harness <ids>|--all] [--user] [--dry-run]
+                                            copy the skill into coding agents' skill dirs
+  install --list                            show each harness, its skill dirs and docs
 
 --walk writes the prompt for a reviewer: a story with narration instead of a split.`;
 
@@ -512,6 +517,20 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
       }
       case "feedback":
         return await feedback(cwd, parseArgs(rest, { values: ["branch"] }));
+      case "install": {
+        const args = parseArgs(rest, {
+          values: ["harness"],
+          flags: ["all", "user", "dry-run", "list"],
+        });
+        const options = {
+          harness: args.values.get("harness"),
+          all: args.flags.has("all"),
+          user: args.flags.has("user"),
+          dryRun: args.flags.has("dry-run"),
+          list: args.flags.has("list"),
+        };
+        return runInstall(options, homedir(), cwd, say);
+      }
       case undefined:
       case "help":
       case "--help":
