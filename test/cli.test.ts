@@ -107,9 +107,13 @@ test("extract, check, apply and status drive the whole flow from the command lin
     ].join("\n"),
     err: "",
   });
-  assert.deepEqual(run(repo.dir, "review"), {
+  assert.deepEqual(run(repo.dir, "feedback"), {
     code: 1,
     out: "",
-    err: "follow-me review: not wired yet\n",
+    err: "follow-me: no review yet, run `follow-me review` first\n",
   });
+  const prompt = run(repo.dir, "prompt");
+  assert.equal(prompt.code, 0, prompt.err);
+  assert.match(prompt.out, /^# follow-me: plan the commits\n/);
+  assert.match(prompt.out, /## Previous plan/);
 });
