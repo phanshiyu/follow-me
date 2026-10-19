@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>follow-me review</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <strong>follow-me</strong>
+      <span id="summary" class="muted"></span>
+      <span id="status" class="status" role="status"></span>
+      <button id="end" type="button" class="primary">End review</button>
+    </header>
+    <div id="app" class="layout">
+      <nav class="sidebar" aria-label="Commits">
+        <ol id="commits" class="commit-list"></ol>
+        <section id="plan-note" class="plan-note"></section>
+      </nav>
+      <main id="main" class="main"></main>
+    </div>
+    <div id="done" class="done" hidden></div>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
