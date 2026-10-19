@@ -104,6 +104,9 @@ const STATIC_FILES = new Map([
   ["/playback.js", { file: "playback.js", type: "text/javascript; charset=utf-8" }],
   ["/style.css", { file: "style.css", type: "text/css; charset=utf-8" }],
 ]);
+/** Mermaid's ESM entry imports its chunks by relative path, so they are served beside it. */
+const MERMAID_ENTRY = new URL(import.meta.resolve("mermaid/dist/mermaid.esm.min.mjs"));
+const MERMAID_CHUNK = /^\/vendor\/chunks\/mermaid\.esm\.min\/([\w-]+\.mjs)$/;
 const MAX_BODY_BYTES = 1_000_000;
 const BASE32 = "abcdefghijklmnopqrstuvwxyz234567";
 
@@ -300,6 +303,29 @@ ${body}
   </body>
 </html>
 `;
+}
+
+/** The file behind a /vendor/ path, or null. Chunk names are checked, so no path escapes. */
+function vendorFile(path: string): URL | null {
+  if (path === "/vendor/mermaid.mjs") return MERMAID_ENTRY;
+  const chunk = MERMAID_CHUNK.exec(path)?.[1];
+  return chunk === undefined ? null : new URL(`chunks/mermaid.esm.min/${chunk}`, MERMAID_ENTRY);
+}
+
+async function sendVendor(res: ServerResponse, file: URL): Promise<void> {
+  let bytes: Buffer;
+  try {
+    bytes = await readFile(fileURLToPath(file));
+  } catch (error) {
+    if (isRecord(error) && error["code"] === "ENOENT") throw new HttpError(404, "not found");
+    throw error;
+  }
+  // The bundle only changes with the installed package, and it is several megabytes.
+  res.writeHead(200, {
+    "content-type": "text/javascript; charset=utf-8",
+    "cache-control": "max-age=86400",
+  });
+  res.end(bytes);
 }
 
 /** One hosted review: its comments, its autosave chain, and how it ends. */
@@ -510,6 +536,9 @@ export function startServer(opts: HostOptions): Promise<Host> {
       res.end(bytes);
       return;
     }
+
+    const vendor = method === "GET" ? vendorFile(path) : null;
+    if (vendor) return sendVendor(res, vendor);
 
     if (method === "GET" && path === "/") return sendHtml(res, 200, indexPage(sessions()));
     if (method === "GET" && path === "/api/health") {

@@ -133,8 +133,65 @@ button.link {
 .layout {
   flex: 1;
   display: grid;
-  grid-template-columns: 300px 1fr;
+  grid-template-columns: 300px minmax(0, 1fr) auto;
   min-height: 0;
+}
+
+.diagram-panel {
+  width: 380px;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  background: var(--panel);
+  min-height: 0;
+}
+
+.diagram-panel[hidden] {
+  display: none;
+}
+
+.diagram-panel.collapsed {
+  width: auto;
+}
+
+.diagram-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+#diagram-toggle::before {
+  content: "▾ ";
+}
+
+.diagram-panel.collapsed #diagram-toggle::before {
+  content: "◂ ";
+}
+
+.diagram-body {
+  flex: 1;
+  overflow: auto;
+  padding: 8px 12px 16px;
+}
+
+.diagram-panel.collapsed .diagram-body,
+.diagram-panel.collapsed #diagram-from {
+  display: none;
+}
+
+.diagram-body svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.diagram-error {
+  color: var(--del-text);
+  white-space: pre-wrap;
+  font-size: 12px;
 }
 
 .sidebar {

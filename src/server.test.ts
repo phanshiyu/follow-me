@@ -309,6 +309,33 @@ test("the UI is served under /s/<id>/ and its assets at the root", async (t) => 
   await run.done;
 });
 
+test("the Mermaid bundle and the chunks it imports are served as JavaScript", async (t) => {
+  const run = await start(t, twoCommitState());
+  const entry = await fetch(new URL("/vendor/mermaid.mjs", run.url));
+  assert.deepEqual(
+    [entry.status, entry.headers.get("content-type")],
+    [200, "text/javascript; charset=utf-8"],
+  );
+  const body = await entry.text();
+  const chunk = /from"\.\/(chunks\/mermaid\.esm\.min\/[\w-]+\.mjs)"/.exec(body)?.[1];
+  assert.ok(chunk, "the entry imports a chunk by relative path");
+  const imported = await fetch(new URL(`/vendor/${chunk}`, run.url));
+  assert.deepEqual(
+    [imported.status, imported.headers.get("content-type")],
+    [200, "text/javascript; charset=utf-8"],
+  );
+  assert.equal(
+    (await fetch(new URL("/vendor/chunks/mermaid.esm.min/nope.mjs", run.url))).status,
+    404,
+  );
+  assert.equal(
+    (await fetch(new URL("/vendor/chunks/mermaid.esm.min/%2e%2e%2fpackage.json", run.url))).status,
+    404,
+  );
+  await post(run.url, "api/end", {});
+  await run.done;
+});
+
 test("one server hosts two sessions, lists them, and saves each review in its own place", async (t) => {
   const [one, two] = [await tempDir(t), await tempDir(t)];
   const released: string[] = [];

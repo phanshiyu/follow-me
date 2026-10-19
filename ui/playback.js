@@ -416,6 +416,30 @@ export function rowsOf(body, owners, commit) {
 }
 
 /**
+ * The diagram beside the code: while a chunk of a unit with a diagram plays, that unit's; else
+ * the commit's; while browsing a commit without one, its first unit's. null when none applies.
+ * @param {Commit | undefined} commit
+ * @param {Beat | undefined} beat the beat on screen, undefined while browsing
+ * @returns {{ source: string, unit: string | null } | null}
+ */
+export function diagramAt(commit, beat) {
+  if (commit === undefined) return null;
+  const refs = commit.refs.filter((r) => present(r.diagram) !== null);
+  const playing = beat?.kind === "chunk" ? refs.find((r) => r.unit === beat.unit) : undefined;
+  const own = present(commit.diagram);
+  const ref = playing ?? (own === null && beat === undefined ? refs[0] : undefined);
+  if (ref?.diagram !== undefined) return { source: ref.diagram, unit: ref.unit };
+  return own === null ? null : { source: own, unit: null };
+}
+
+/** @param {readonly Commit[]} commits */
+export function hasDiagrams(commits) {
+  return commits.some(
+    (c) => present(c.diagram) !== null || c.refs.some((r) => present(r.diagram) !== null),
+  );
+}
+
+/**
  * One progress segment per commit, weighted by its chunk count, filled by the share of its
  * beats already behind the current one.
  * @param {readonly Beat[]} beats

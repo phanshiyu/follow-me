@@ -41,15 +41,21 @@ When the user says they finished reviewing:
 ## As a reviewer
 
 `follow-me walk` is for someone reading a branch they did not write. It plays the branch back
-commit by commit in the browser, typing each line out while it reads your narration aloud, and the
-reviewer comments on the code. Nothing is applied and no branch is written.
+commit by commit in the browser, one chunk of change at a time: it reads your narration aloud,
+then shows the lines it explains. The reviewer comments on the code. Nothing is applied and no branch is written.
 
 1. `follow-me walk [--branch <name>]` opens the session. If there is no plan yet and no API key, it
    prints two commands and stops. Run the first, `follow-me prompt --walk`, and read all of it.
 2. Write the draft it names. The order rules are the same, and every commit also gets a
    `narration`: what the author is thinking while writing it, first person, present tense, two or
    three sentences, no markdown. Give a unit narration as `{ "unit": "h_x:0-3", "narration": "..." }`
-   when the why of that hunk is not obvious from the commit's narration.
+   when the why of that hunk is not obvious from the commit's narration. Narration is spoken, so
+   it names no symbols the listener has to see spelled out and never describes a picture.
+   Optionally add a `diagram`, Mermaid source drawn beside the code, to a commit or a unit
+   (`{ "unit": "h_x", "diagram": "flowchart LR\n  a --> b" }`). Use one only for what prose
+   carries badly: data flow between modules, a state machine, a call graph, or the before and
+   after shape of a structure. Most commits need none. Its first line must name the diagram type,
+   such as `flowchart`, `sequenceDiagram` or `stateDiagram-v2`; `follow-me check` rejects others.
 3. `follow-me check` until green, then tell the user to run `follow-me walk` again. Do not apply.
 
 When you are the author's agent and `follow-me feedback --walk` prints a `# Code review`, the review

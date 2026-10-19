@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { Commit, HunkLine, Unit } from "../ui/playback.js";
+import type { Beat, Commit, HunkLine, Unit } from "../ui/playback.js";
 import {
   beatAt,
   beatStart,
   buildScript,
   chunkOf,
   commitOf,
+  diagramAt,
   duration,
+  hasDiagrams,
   hasNarration,
   introOf,
   lineStates,
@@ -256,6 +258,43 @@ test("a hunk reads with earlier lines as context and later additions folded per 
     { kind: "fold", lines: [5, 6], commit: 2 },
     { kind: "fold", lines: [7], commit: 3 },
   ]);
+});
+
+test("the diagram follows the unit playing, falls back to the commit's, and is loaded only when used", () => {
+  const commit: Commit = {
+    index: 0,
+    message: "m",
+    diagram: "flowchart LR\n  a --> b",
+    refs: [
+      { unit: "h_a", select: { kind: "rest" }, diagram: "sequenceDiagram\n  a->>b: x" },
+      { unit: "h_b", select: { kind: "rest" } },
+    ],
+  };
+  const chunk = (unit: string): Beat => ({
+    kind: "chunk",
+    commit: 0,
+    unit,
+    lines: [],
+    removals: [],
+    narration: null,
+    label: "",
+    added: 0,
+  });
+  const intro: Beat = { kind: "intro", commit: 0, message: "m", narration: null };
+  assert.deepEqual(
+    [diagramAt(commit, chunk("h_a")), diagramAt(commit, chunk("h_b")), diagramAt(commit, intro)],
+    [
+      { source: "sequenceDiagram\n  a->>b: x", unit: "h_a" },
+      { source: "flowchart LR\n  a --> b", unit: null },
+      { source: "flowchart LR\n  a --> b", unit: null },
+    ],
+  );
+  const unitOnly: Commit = { ...commit, diagram: " " };
+  assert.deepEqual(
+    [diagramAt(unitOnly, undefined), diagramAt(unitOnly, intro)],
+    [{ source: "sequenceDiagram\n  a->>b: x", unit: "h_a" }, null],
+  );
+  assert.deepEqual([hasDiagrams([commit]), hasDiagrams(commits)], [true, false]);
 });
 
 test("progress weighs commits by chunks and fills by the beats behind, and names the chunk", () => {

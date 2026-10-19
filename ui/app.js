@@ -4,6 +4,8 @@ import {
   buildScript,
   chunkOf,
   commitOf,
+  diagramAt,
+  hasDiagrams,
   hasNarration,
   introOf,
   lineKey,
@@ -675,8 +677,55 @@ function renderStage() {
   );
 }
 
+/** Mermaid, imported on first use, so a plan without diagrams never downloads it. */
+let mermaid = null;
+let drawn = null;
+let drawing = 0;
+
+async function loadMermaid() {
+  if (mermaid === null) {
+    const { default: loaded } = await import("/vendor/mermaid.mjs");
+    loaded.initialize({
+      startOnLoad: false,
+      securityLevel: "strict",
+      suppressErrorRendering: true,
+      theme: window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "default",
+    });
+    mermaid = loaded;
+  }
+  return mermaid;
+}
+
+/** Draws the diagram for what is on screen into the side panel, or hides the panel. */
+async function renderDiagram() {
+  const panel = $("diagram");
+  const beat = player.view === "play" ? beats[beatAt(steps, player.position)] : undefined;
+  const shown = diagramAt(state.commits[selected], beat);
+  panel.hidden = shown === null;
+  if (shown === null || shown.source === drawn) return;
+  drawn = shown.source;
+  const unit = shown.unit === null ? null : unitsById.get(shown.unit);
+  $("diagram-from").textContent = unit ? unit.path : "this commit";
+  const body = $("diagram-body");
+  drawing += 1;
+  const id = `diagram-${drawing}`;
+  try {
+    const { svg } = await (await loadMermaid()).render(id, shown.source);
+    if (drawn !== shown.source) return;
+    // Mermaid sanitizes its own output under securityLevel "strict".
+    body.innerHTML = svg;
+  } catch (error) {
+    if (drawn !== shown.source) return;
+    body.replaceChildren(
+      el("p", { class: "diagram-error", text: "Mermaid could not draw this diagram:" }),
+      el("pre", { class: "diagram-error", text: error?.message ?? String(error) }),
+    );
+  }
+}
+
 function applyPlayback() {
   const main = $("main");
+  if (hasDiagrams(state.commits)) renderDiagram();
   for (const node of main.querySelectorAll(".ph, .countdown")) node.remove();
   card.remove();
   renderStage();
@@ -881,6 +930,11 @@ function updatePlayer() {
   mute.setAttribute("aria-pressed", String(player.muted));
 }
 
+function setDiagramOpen(open) {
+  $("diagram-toggle").setAttribute("aria-expanded", String(open));
+  $("diagram").classList.toggle("collapsed", !open);
+}
+
 function toggleMute() {
   if (!narrated || synth === null) return;
   player.muted = !player.muted;
@@ -928,6 +982,12 @@ function setUpPlayer() {
   $("next-beat").addEventListener("click", () => stepBeat(1));
   $("keys-button").addEventListener("click", toggleKeys);
   $("mute").addEventListener("click", toggleMute);
+  $("diagram-toggle").addEventListener("click", () => {
+    const open = $("diagram-toggle").getAttribute("aria-expanded") !== "true";
+    setDiagramOpen(open);
+    store("diagram", String(open));
+  });
+  setDiagramOpen(stored("diagram") !== "false");
   $("view-toggle").addEventListener("click", () => {
     if (player.view === "play") enterBrowse();
     else play();

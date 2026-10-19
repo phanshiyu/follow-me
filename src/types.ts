@@ -99,17 +99,25 @@ export type Diff = {
 export type Selection =
   | { readonly kind: "rest" }
   | { readonly kind: "lines"; readonly changes: readonly number[] };
-/** narration is what the author is thinking as this unit is written, spoken during playback. */
+/**
+ * narration is what the author is thinking as this unit is written, spoken during playback.
+ * diagram is Mermaid source the page draws beside the code while playback is on this unit.
+ */
 export type UnitRef = {
   readonly unit: UnitId;
   readonly select: Selection;
   readonly narration?: string;
+  readonly diagram?: string;
 };
 
-/** narration is the author thinking aloud while writing this commit: first person, present tense. */
+/**
+ * narration is the author thinking aloud while writing this commit: first person, present tense.
+ * diagram is Mermaid source for the shape the commit builds, drawn beside its code.
+ */
 export type PlannedCommit = {
   readonly message: string;
   readonly narration?: string;
+  readonly diagram?: string;
   readonly units: readonly UnitRef[];
 };
 export type ResponseStatus = "addressed" | "declined" | "deferred";
@@ -121,7 +129,7 @@ export type CommentResponse = {
 
 /**
  * Wire format of plans/vN.json and draft.json. Unit refs serialize as "h_x" or "h_x:0-3,7", or as
- * { "unit": "h_x:0-3", "narration": "..." } when they carry narration.
+ * { "unit": "h_x:0-3", "narration": "...", "diagram": "..." } when they carry either.
  */
 export type PlanFile = {
   readonly schema: "follow-me/plan@1";
@@ -145,6 +153,7 @@ export type ProjectedCommit = {
   readonly index: number;
   readonly message: string;
   readonly narration?: string;
+  readonly diagram?: string;
   /** Hunk selections resolved to explicit lines; whole-file and mode units stay "rest". */
   readonly refs: readonly UnitRef[];
   readonly changes: readonly TreeChange[];

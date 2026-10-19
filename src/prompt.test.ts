@@ -262,6 +262,19 @@ test("the walk prompt writes for a first-time reviewer and asks for narration", 
   assert.ok(!split.includes("reviewer meeting this branch"));
 });
 
+test("both prompts explain the optional Mermaid diagram and keep narration plain", () => {
+  const prompts = {
+    split: renderPrompt(first),
+    walk: renderPrompt({ mode: "walk", diff: fixtureDiff(), draftPath: "/d", checkCommand: "c" }),
+  };
+  for (const [mode, text] of Object.entries(prompts)) {
+    assert.ok(text.includes('`{ "unit": "<ref>", "diagram": "..." }`'), mode);
+    assert.ok(text.includes('"diagram": "flowchart LR\\n  parse --> validate --> apply"'), mode);
+    assert.ok(text.includes("a state machine, a call graph, or the before and after shape"), mode);
+    assert.ok(text.includes("Narration stays plain text even when a diagram is present"), mode);
+  }
+});
+
 test("a walk review renders as a code review grouped by file with quoted diff excerpts", () => {
   const plan: PlanFile = JSON.parse(
     JSON.stringify({

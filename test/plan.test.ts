@@ -118,7 +118,7 @@ test("malformed: every bad field is reported with its JSON path", () => {
     {
       kind: "malformed",
       at: "$.commits[0].units[1]",
-      reason: 'expected a unit ref string or { "unit", "narration" }',
+      reason: 'expected a unit ref string or { "unit", "narration", "diagram" }',
     },
     { kind: "malformed", at: "$.commits[1]", reason: "expected an object" },
     { kind: "malformed", at: "$.responses", reason: "expected an array" },
@@ -366,6 +366,64 @@ test("narration round-trips, using the object form only where a unit carries it"
   );
 });
 
+test("diagrams round-trip like narration and must start with a Mermaid diagram type", () => {
+  const lib = unitAt(diff, "src/lib.js", 1);
+  const readme = unitAt(diff, "README.md");
+  const flow = "flowchart LR\n  add --> assertNumber";
+  const wire = {
+    schema: PLAN_SCHEMA,
+    base: diff.base,
+    tip: diff.tip,
+    commits: [
+      {
+        message: "feat: guard",
+        diagram: flow,
+        units: [
+          { unit: `${lib}:2`, diagram: "\n%%{init: {}}%%\nsequenceDiagram\n  a->>b: x" },
+          readme,
+        ],
+      },
+      {
+        message: "feat: the rest",
+        narration: null,
+        diagram: null,
+        units: [{ unit: `${lib}:0-1`, narration: null, diagram: "  " }],
+      },
+    ],
+    responses: [],
+  };
+  const parsed = parsePlanFile(wire);
+  assert.ok(!Array.isArray(parsed), JSON.stringify(parsed));
+  assert.deepEqual(serializePlanFile(parsed), {
+    ...wire,
+    commits: [wire.commits[0], { message: "feat: the rest", units: [`${lib}:0-1`] }],
+  });
+  assert.deepEqual(
+    parsePlanFile({
+      ...wire,
+      commits: [
+        { message: "x", diagram: "graphs TD", units: [] },
+        { message: "y", diagram: 2, units: [{ unit: readme, diagram: "A --> B" }] },
+      ],
+    }),
+    [
+      {
+        kind: "malformed",
+        at: "$.commits[0].diagram",
+        reason:
+          'expected Mermaid source whose first line starts with a diagram type such as flowchart, sequenceDiagram or stateDiagram-v2, got "graphs TD"',
+      },
+      { kind: "malformed", at: "$.commits[1].diagram", reason: "expected a string" },
+      {
+        kind: "malformed",
+        at: "$.commits[1].units[0]",
+        reason:
+          'diagram: expected Mermaid source whose first line starts with a diagram type such as flowchart, sequenceDiagram or stateDiagram-v2, got "A --> B"',
+      },
+    ],
+  );
+});
+
 test("validation carries commit and unit narration into the projected commits", () => {
   const lib = unitAt(diff, "src/lib.js", 1);
   const verdict = validatePlan(diff, {
@@ -376,6 +434,7 @@ test("validation carries commit and unit narration into the projected commits", 
       {
         message: "feat: guard div",
         narration: "I guard division first.",
+        diagram: "stateDiagram-v2\n  [*] --> checked",
         units: [{ unit: `${lib}:2`, narration: "Just the check." }],
       },
       {
@@ -388,6 +447,7 @@ test("validation carries commit and unit narration into the projected commits", 
   assert.ok(verdict.ok);
   const [first, second] = verdict.plan.commits;
   assert.equal(first?.narration, "I guard division first.");
+  assert.equal(first?.diagram, "stateDiagram-v2\n  [*] --> checked");
   assert.deepEqual(first?.refs, [
     { unit: lib, select: { kind: "lines", changes: [2] }, narration: "Just the check." },
   ]);

@@ -185,6 +185,17 @@ const FORMAT = (
 
 \`narration\` is optional on a commit and on a unit. A unit with narration is written as
 \`{ "unit": "<ref>", "narration": "..." }\` instead of the plain ref string.
+
+\`diagram\` is optional on a commit and on a unit, written the same way:
+\`{ "unit": "<ref>", "diagram": "..." }\`. It is Mermaid source that the review page draws beside
+the code: a commit's diagram while its commit is on screen, a unit's while playback is on that
+unit. Add one only where a picture says what the code and prose cannot: data flowing between
+modules, a state machine, a call graph, or the before and after shape of a structure. Most commits
+need none. The first line names the diagram type, for example:
+
+  "diagram": "flowchart LR\\n  parse --> validate --> apply"
+
+Narration stays plain text even when a diagram is present, because it is read aloud.
 \`responses\` is [] when there are no review comments. \`status\` is one of "addressed",
 "declined" or "deferred", and \`note\` says what you did or why not.`;
 

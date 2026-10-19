@@ -62,30 +62,78 @@ export function isArray(v: unknown): v is readonly unknown[] {
   return Array.isArray(v);
 }
 
-const INVALID: unique symbol = Symbol("invalid narration");
+const INVALID: unique symbol = Symbol("invalid text");
 
-/** Absent, null and blank all mean no narration, so a planner may always write the field. */
-function parseNarration(v: unknown): string | null | typeof INVALID {
+/** Absent, null and blank all mean none, so a planner may always write the field. */
+function parseText(v: unknown): string | null | typeof INVALID {
   if (v === undefined || v === null) return null;
   if (typeof v !== "string") return INVALID;
   return v.trim() === "" ? null : v;
 }
 
-function withNarration(narration: string | null): { readonly narration?: string } {
-  return narration === null ? {} : { narration };
+const MERMAID_KEYWORDS = [
+  "graph",
+  "flowchart",
+  "sequenceDiagram",
+  "classDiagram",
+  "stateDiagram",
+  "stateDiagram-v2",
+  "erDiagram",
+  "journey",
+  "gantt",
+  "pie",
+  "gitGraph",
+  "mindmap",
+  "timeline",
+  "quadrantChart",
+  "block-beta",
+  "%%{init",
+];
+
+/** A diagram is Mermaid source, so its first line must name a diagram type. Else the reason. */
+function diagramProblem(diagram: string): string | null {
+  const first = (diagram.split("\n").find((line) => line.trim() !== "") ?? "").trim();
+  const named = MERMAID_KEYWORDS.some(
+    (k) => first.startsWith(k) && !/[\w-]/.test(first.charAt(k.length)),
+  );
+  if (named) return null;
+  return `expected Mermaid source whose first line starts with a diagram type such as flowchart, sequenceDiagram or stateDiagram-v2, got "${first.slice(0, 40)}"`;
 }
 
-/** A unit entry is "h_x:0-3" or { "unit": "h_x:0-3", "narration": "..." }. */
+type Extras = { readonly narration?: string; readonly diagram?: string };
+
+/** The optional narration and diagram of a commit or unit entry, or what is wrong with them. */
+function parseExtras(v: {
+  readonly narration?: unknown;
+  readonly diagram?: unknown;
+}): Extras | { readonly field: "narration" | "diagram"; readonly error: string } {
+  const narration = parseText(v.narration);
+  if (narration === INVALID) return { field: "narration", error: "expected a string" };
+  const diagram = parseText(v.diagram);
+  if (diagram === INVALID) return { field: "diagram", error: "expected a string" };
+  const problem = diagram === null ? null : diagramProblem(diagram);
+  if (problem !== null) return { field: "diagram", error: problem };
+  return withExtras(narration, diagram);
+}
+
+function withExtras(narration: string | null, diagram: string | null): Extras {
+  return {
+    ...(narration === null ? {} : { narration }),
+    ...(diagram === null ? {} : { diagram }),
+  };
+}
+
+/** A unit entry is "h_x:0-3" or { "unit": "h_x:0-3", "narration": "...", "diagram": "..." }. */
 function parseUnitEntry(u: unknown): UnitRef | { readonly error: string } {
   if (typeof u === "string") return parseUnitRef(u);
-  if (!isFields<"unit" | "narration">(u) || typeof u.unit !== "string") {
-    return { error: 'expected a unit ref string or { "unit", "narration" }' };
+  if (!isFields<"unit" | "narration" | "diagram">(u) || typeof u.unit !== "string") {
+    return { error: 'expected a unit ref string or { "unit", "narration", "diagram" }' };
   }
   const ref = parseUnitRef(u.unit);
   if ("error" in ref) return ref;
-  const narration = parseNarration(u.narration);
-  if (narration === INVALID) return { error: "narration must be a string" };
-  return { ...ref, ...withNarration(narration) };
+  const extras = parseExtras(u);
+  if ("error" in extras) return { error: `${extras.field}: ${extras.error}` };
+  return { ...ref, ...extras };
 }
 
 /** Boundary parse of draft.json or plans/vN.json. Reports every malformed field. */
@@ -112,13 +160,13 @@ export function parsePlanFile(draft: unknown): PlanFile | PlanIssue[] {
   else {
     for (const [i, c] of draft.commits.entries()) {
       const at = `$.commits[${i}]`;
-      if (!isFields<"message" | "narration" | "units">(c)) {
+      if (!isFields<"message" | "narration" | "diagram" | "units">(c)) {
         bad(at, "expected an object");
         continue;
       }
       if (typeof c.message !== "string") bad(`${at}.message`, "expected a string");
-      const narration = parseNarration(c.narration);
-      if (narration === INVALID) bad(`${at}.narration`, "expected a string");
+      const extras = parseExtras(c);
+      if ("error" in extras) bad(`${at}.${extras.field}`, extras.error);
       const units: UnitRef[] = [];
       if (!isArray(c.units)) bad(`${at}.units`, "expected an array of unit refs");
       else {
@@ -128,8 +176,8 @@ export function parsePlanFile(draft: unknown): PlanFile | PlanIssue[] {
           else units.push(ref);
         }
       }
-      if (typeof c.message === "string" && narration !== INVALID) {
-        commits.push({ message: c.message, ...withNarration(narration), units });
+      if (typeof c.message === "string" && !("error" in extras)) {
+        commits.push({ message: c.message, ...extras, units });
       }
     }
   }
@@ -162,11 +210,11 @@ export function serializePlanFile(file: PlanFile): unknown {
     tip: file.tip,
     commits: file.commits.map((c) => ({
       message: c.message,
-      ...withNarration(c.narration ?? null),
+      ...withExtras(c.narration ?? null, c.diagram ?? null),
       units: c.units.map((ref) =>
-        ref.narration === undefined
+        ref.narration === undefined && ref.diagram === undefined
           ? formatUnitRef(ref)
-          : { unit: formatUnitRef(ref), narration: ref.narration },
+          : { unit: formatUnitRef(ref), ...withExtras(ref.narration ?? null, ref.diagram ?? null) },
       ),
     })),
     responses: file.responses.map((r) => ({ comment: r.comment, status: r.status, note: r.note })),
@@ -388,7 +436,7 @@ function project(
     return {
       index: k,
       message: commit.message,
-      ...withNarration(commit.narration ?? null),
+      ...withExtras(commit.narration ?? null, commit.diagram ?? null),
       refs,
       changes,
     };
