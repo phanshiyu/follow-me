@@ -92,6 +92,7 @@ test("reviews round-trip through the boundary parser and are written once", asyn
   assert.ok(unit);
   const review = {
     schema: "follow-me/review@1",
+    mode: "split",
     planVersion: 1,
     planHash: "a".repeat(64),
     endedAt: "2026-10-19T00:00:00.000Z",
@@ -111,13 +112,28 @@ test("reviews round-trip through the boundary parser and are written once", asyn
   assert.deepEqual(session.lastReview(), review);
   assert.throws(() => session.writeReview(parsed), SessionFileError);
 
+  const { mode: _, ...older } = review;
+  assert.deepEqual(parseReview(older), review);
+  assert.equal(parseReview({ ...review, mode: "solo" }), 'mode is not "split" or "walk"');
+  const walk = parseReview({ ...review, mode: "walk", planVersion: 2 });
+  assert.ok(typeof walk !== "string", String(walk));
+  session.writeReview(walk);
+  assert.deepEqual(
+    session.reviews().map((r) => [r.version, r.review.mode]),
+    [
+      [1, "split"],
+      [2, "walk"],
+    ],
+  );
+  assert.deepEqual(session.lastReview(), review);
+
   writeFileSync(
-    join(session.dir, "reviews", "v2.json"),
+    join(session.dir, "reviews", "v3.json"),
     JSON.stringify({ ...review, comments: [{}] }),
   );
   assert.throws(() => session.reviews(), {
     name: "SessionFileError",
-    message: `${join(session.dir, "reviews", "v2.json")}: comments[0]: id is not a comment id`,
+    message: `${join(session.dir, "reviews", "v3.json")}: comments[0]: id is not a comment id`,
   });
 });
 

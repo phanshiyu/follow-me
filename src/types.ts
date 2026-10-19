@@ -214,9 +214,16 @@ export type Comment = {
   readonly createdAt: string;
 };
 
+/**
+ * "split" reviews the plan for the author's next draft. "walk" is a reviewer's code review of the
+ * branch itself; the plan only orders the playback.
+ */
+export type ReviewMode = "split" | "walk";
+
 /** Wire format of reviews/vN.json, written once when the review session ends. */
 export type Review = {
   readonly schema: "follow-me/review@1";
+  readonly mode: ReviewMode;
   readonly planVersion: PlanVersion;
   readonly planHash: string;
   readonly endedAt: string;

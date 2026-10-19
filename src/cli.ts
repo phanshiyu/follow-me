@@ -281,6 +281,7 @@ async function review(cwd: string, args: Args): Promise<number> {
   const port = args.values.get("port");
   const review = await serveReview(
     {
+      mode: "split",
       anchor: session.anchor,
       version,
       planHash: plan.hash,

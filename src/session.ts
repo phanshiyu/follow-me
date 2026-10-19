@@ -58,7 +58,7 @@ export type Session = {
   readonly draftPath: string;
   plans(): StoredPlan[];
   reviews(): StoredReview[];
-  /** The review with the highest version, or null. */
+  /** The split-mode review with the highest version, or null. Walk reviews never feed the planner. */
   lastReview(): Review | null;
   readDraft(): unknown;
   writeDraft(draft: unknown): void;
@@ -173,12 +173,14 @@ function parseComment(v: unknown): Comment | string {
   };
 }
 
-/** Boundary parse of reviews/vN.json. */
+/** Boundary parse of reviews/vN.json. Files written before walk mode existed have no mode. */
 export function parseReview(v: unknown): Review | string {
-  if (!isFields<"schema" | "planVersion" | "planHash" | "endedAt" | "comments">(v)) {
+  if (!isFields<"schema" | "mode" | "planVersion" | "planHash" | "endedAt" | "comments">(v)) {
     return "not an object";
   }
   if (v.schema !== "follow-me/review@1") return 'schema is not "follow-me/review@1"';
+  const mode = v.mode ?? "split";
+  if (mode !== "split" && mode !== "walk") return 'mode is not "split" or "walk"';
   if (!isPlanVersion(v.planVersion)) return "planVersion is not a positive integer";
   if (typeof v.planHash !== "string" || typeof v.endedAt !== "string") {
     return "planHash and endedAt must be strings";
@@ -192,6 +194,7 @@ export function parseReview(v: unknown): Review | string {
   }
   return {
     schema: v.schema,
+    mode,
     planVersion: v.planVersion,
     planHash: v.planHash,
     endedAt: v.endedAt,
@@ -231,7 +234,7 @@ function makeSession(root: string, dir: string, anchor: SessionAnchor, diff: Dif
     draftPath,
     plans,
     reviews,
-    lastReview: () => reviews().at(-1)?.review ?? null,
+    lastReview: () => reviews().findLast((r) => r.review.mode === "split")?.review ?? null,
     readDraft: () => {
       const draft = readJson(draftPath);
       if (draft === undefined) throw new SessionFileError(`${draftPath} does not exist yet`);

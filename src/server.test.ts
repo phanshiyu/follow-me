@@ -15,6 +15,7 @@ const FILE_C = "f_cccccccccccc";
 function twoCommitState(comments: readonly unknown[] = []): ReviewState {
   return JSON.parse(
     JSON.stringify({
+      mode: "split",
       anchor: {
         schema: "follow-me/session@1",
         branch: "feature",
@@ -170,6 +171,7 @@ test("a review session autosaves a draft and ends by writing the Review", async 
   assert.match(onDisk.endedAt, /^\d{4}-\d\d-\d\dT/);
   assert.deepEqual(onDisk, {
     schema: "follow-me/review@1",
+    mode: "split",
     planVersion: 3,
     planHash: "hash-of-v3",
     endedAt: review.endedAt,

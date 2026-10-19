@@ -13,12 +13,14 @@ import type {
   ProjectedCommit,
   RepoPath,
   Review,
+  ReviewMode,
   SessionAnchor,
   Unit,
   UnitId,
 } from "./types.ts";
 
 export type ReviewState = {
+  readonly mode: ReviewMode;
   readonly anchor: SessionAnchor;
   readonly version: PlanVersion;
   readonly planHash: string;
@@ -282,6 +284,7 @@ export function serveReview(state: ReviewState, opts: ServeOptions): Promise<Rev
         await writes;
         const review: Review = {
           schema: "follow-me/review@1",
+          mode: state.mode,
           planVersion: state.version,
           planHash: state.planHash,
           endedAt: new Date().toISOString(),
@@ -307,7 +310,8 @@ export function serveReview(state: ReviewState, opts: ServeOptions): Promise<Rev
       if (!address || typeof address === "string") return reject(new Error("server has no port"));
       boundPort = address.port;
       const url = `http://127.0.0.1:${boundPort}/`;
-      process.stdout.write(`follow-me review: ${url}\n`);
+      const label = state.mode === "walk" ? "code review" : "review";
+      process.stdout.write(`follow-me ${label}: ${url}\n`);
       opts.onListen?.(url);
       if (opts.open) openBrowser(url);
     });

@@ -276,6 +276,7 @@ function review(...ids: string[]): Review {
   assert.ok(isPlanVersion(version));
   return {
     schema: "follow-me/review@1",
+    mode: "split",
     planVersion: version,
     planHash: "0".repeat(64),
     endedAt: "2026-10-19T00:00:00.000Z",
