@@ -9,7 +9,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { isRepoPath, isSha, isUnitId } from "./diff.ts";
 import {
   branchExists,
@@ -36,6 +36,7 @@ import type {
   Applied,
   Comment,
   Diff,
+  LockToken,
   PlanFile,
   PlanVersion,
   Review,
@@ -84,22 +85,51 @@ export function readLock(path: string): LockState {
   return { kind: isAlive(pid) ? "held" : "stale", pid, command };
 }
 
+/** A lock this process holds. release() removes it only while it still carries this token. */
+export type HeldLock = { readonly token: LockToken; release(): void };
+
+const LOCK_TOKEN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+export function isLockToken(value: unknown): value is LockToken {
+  return typeof value === "string" && LOCK_TOKEN.test(value);
+}
+
+function newToken(): LockToken {
+  const token = randomUUID();
+  if (!isLockToken(token)) throw new Error(`randomUUID returned ${token}`);
+  return token;
+}
+
+function lockContent(command: string, token: LockToken): string {
+  return `${JSON.stringify({ pid: process.pid, command, token })}\n`;
+}
+
+function holding(path: string, token: LockToken): HeldLock {
+  return {
+    token,
+    release: () => {
+      const raw = readJson(path);
+      if (isFields<"token">(raw) && raw.token === token) rmSync(path, { force: true });
+    },
+  };
+}
+
 function isCode(error: unknown, code: string): boolean {
   return error instanceof Error && "code" in error && error.code === code;
 }
 
 /**
- * Takes <dir>/lock for this process and returns its release. The lock is written whole to a
- * temp file and linked into place, which fails like open(wx) when the lock exists, so a reader
- * never sees a half-written lock. A lock whose pid is dead is taken over.
+ * Takes <dir>/lock for this process. The lock is written whole to a temp file and linked into
+ * place, which fails like open(wx) when the lock exists, so a reader never sees a half-written
+ * lock. A lock whose pid is dead is taken over.
  */
-function acquireLock(dir: string, branch: string, command: string): () => void {
+function acquireLock(dir: string, branch: string, command: string): HeldLock {
   const path = join(dir, "lock");
-  const token = randomUUID();
+  const token = newToken();
   mkdirSync(dir, { recursive: true });
   for (let attempt = 0; ; attempt++) {
     const temp = `${path}.${process.pid}.${token}.tmp`;
-    writeFileSync(temp, `${JSON.stringify({ pid: process.pid, command, token })}\n`);
+    writeFileSync(temp, lockContent(command, token));
     try {
       linkSync(temp, path);
       break;
@@ -118,10 +148,25 @@ function acquireLock(dir: string, branch: string, command: string): () => void {
     }
     rmSync(path, { force: true });
   }
-  return () => {
-    const raw = readJson(path);
-    if (isFields<"token">(raw) && raw.token === token) rmSync(path, { force: true });
-  };
+  return holding(path, token);
+}
+
+/**
+ * Takes over a lock another live process holds and is handing over, identified by its token.
+ * The holder waits for the handoff to finish, so nobody else can take the lock between the read
+ * and the rename; the old holder's release then finds a foreign token and leaves the lock alone.
+ */
+function adoptLock(dir: string, from: LockToken, command: string): HeldLock {
+  const path = join(dir, "lock");
+  const raw = readJson(path);
+  if (!isFields<"token">(raw) || raw.token !== from) {
+    throw new SessionLockedError(`${path} is not held by the process handing it over`);
+  }
+  const token = newToken();
+  const temp = `${path}.${process.pid}.${token}.tmp`;
+  writeFileSync(temp, lockContent(command, token));
+  renameSync(temp, path);
+  return holding(path, token);
 }
 
 export type StoredPlan = {
@@ -151,7 +196,9 @@ export type Session = {
   freeze(plan: ValidPlan): PlanVersion;
   applied(): Applied | null;
   /** Serializes apply and review on this session; throws SessionLockedError when busy. */
-  lock(command: string): () => void;
+  lock(command: string): HeldLock;
+  /** Takes over the lock a live process holds with this token, so exactly one process owns it. */
+  adoptLock(from: LockToken, command: string): HeldLock;
   lockState(): LockState;
   recordApplied(
     version: PlanVersion,
@@ -341,6 +388,7 @@ function makeSession(root: string, dir: string, anchor: SessionAnchor, diff: Dif
       return version;
     },
     lock: (command) => acquireLock(dir, anchor.branch, command),
+    adoptLock: (from, command) => adoptLock(dir, from, command),
     lockState: () => readLock(join(dir, "lock")),
     applied: () => {
       const raw = readJson(appliedPath);
@@ -428,6 +476,22 @@ export async function openSession(
   }
   const diff = await loadDiff(where.root, anchor.base, anchor.tip);
   return makeSession(where.root, where.dir, anchor, diff);
+}
+
+/**
+ * Opens the session stored in a `<root>/.follow-me/<slug>` directory, as the review server does
+ * when a CLI registers it. Throws like openSession when the branch moved.
+ */
+export async function openSessionAt(dir: string): Promise<Session> {
+  const top = dirname(dir);
+  if (basename(top) !== ".follow-me")
+    throw new SessionFileError(`${dir} is not a session directory`);
+  const anchor = readAnchorIn(dir);
+  if (anchor === null) throw new SessionFileError(`${dir} has no session.json`);
+  if (slugOf(anchor.branch) !== basename(dir)) {
+    throw new SessionFileError(`${dir} holds the session of branch ${anchor.branch}`);
+  }
+  return openSession(dirname(top), { branch: anchor.branch });
 }
 
 /** "<name>.<pid>.<random>.tmp" as written by writeJson, the lock and the review server. */

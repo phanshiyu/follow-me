@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   mkdtempSync,
   readdirSync,
@@ -15,9 +16,12 @@ import { PLAN_SCHEMA, validatePlan } from "../src/plan.ts";
 import {
   BranchMovedError,
   extractSession,
+  isLockToken,
   openSession,
+  openSessionAt,
   parseReview,
   SessionFileError,
+  SessionLockedError,
 } from "../src/session.ts";
 import type { Diff } from "../src/types.ts";
 import { makeFixtureRepo } from "./fixture-repo.ts";
@@ -221,4 +225,23 @@ test("two branches whose names share a slug cannot share a session", async (t) =
     message,
   });
   assert.equal((await openSession(repo.dir, { branch: "topic/x" })).anchor.branch, "topic/x");
+});
+
+test("a held lock is handed over by its token and only the new holder releases it", async (t) => {
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  const session = await openSession(repo.dir);
+  const lockPath = join(session.dir, "lock");
+  const cli = session.lock("review");
+  const stranger = randomUUID();
+  assert.ok(isLockToken(stranger));
+  assert.throws(() => session.adoptLock(stranger, "review"), SessionLockedError);
+
+  const server = (await openSessionAt(session.dir)).adoptLock(cli.token, "review");
+  assert.notEqual(server.token, cli.token);
+  cli.release();
+  assert.equal(JSON.parse(readFileSync(lockPath, "utf8")).token, server.token);
+  assert.throws(() => session.lock("apply"), SessionLockedError);
+  server.release();
+  assert.deepEqual(session.lockState(), { kind: "free" });
 });

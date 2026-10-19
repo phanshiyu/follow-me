@@ -252,3 +252,6 @@ export type Applied = {
 export type CommentStatus =
   | { readonly kind: "open" }
   | { readonly kind: "answered"; readonly in: PlanVersion; readonly response: CommentResponse };
+
+/** Proves which process holds a session's lock; a handoff names the token it takes over. */
+export type LockToken = Brand<string, "LockToken">;

@@ -257,11 +257,11 @@ async function locked(
   command: string,
   run: () => Promise<number>,
 ): Promise<number> {
-  const release = session.lock(command);
+  const held = session.lock(command);
   try {
     return await run();
   } finally {
-    release();
+    held.release();
   }
 }
 
