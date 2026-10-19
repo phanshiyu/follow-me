@@ -10,6 +10,7 @@ import {
   BranchMovedError,
   cleanSessions,
   extractSession,
+  type LockState,
   openSession,
   type Session,
   SessionFileError,
@@ -35,8 +36,10 @@ const USAGE = `usage: follow-me <command>
 
   extract [--base <ref>] [--branch <name>]  anchor a session and list the units
   check [path] [--branch <name>]            validate draft.json or the given plan file
-  apply [--name <branch>] [--force]         write the draft as a branch of commits
-  status                                    show the session's plans, reviews and branch
+  apply [--name <branch>] [--force]         write the draft as commits on <branch>-split or
+                                            --name; never on <branch> or a checked-out branch
+  status                                    show the session's plans, reviews, lock and the
+                                            branch apply writes
   prompt [--walk] [--branch <name>]         print the planner prompt for a coding agent
   plan [--walk] [--model <id>] [--branch <name>]
                                             ask the Anthropic API to write draft.json
@@ -49,7 +52,8 @@ const USAGE = `usage: follow-me <command>
                                             review drafts and leftovers of dead processes;
                                             --all removes .follow-me/ entirely
 
---walk writes the prompt for a reviewer: a story with narration instead of a split.`;
+--walk writes the prompt for a reviewer: a story with narration instead of a split.
+--force lets apply move a branch follow-me did not create; it never allows <branch> itself.`;
 
 type Args = {
   readonly positionals: readonly string[];
@@ -254,6 +258,10 @@ async function locked(
   }
 }
 
+function splitBranch(session: Session): string {
+  return `${session.anchor.branch}-split`;
+}
+
 async function apply(cwd: string, args: Args): Promise<number> {
   const session = await openSession(cwd);
   return locked(session, "apply", () => applyLocked(session, args));
@@ -263,7 +271,7 @@ async function applyLocked(session: Session, args: Args): Promise<number> {
   const verdict = validate(session, session.readDraft());
   if (!verdict.ok) return 1;
   const version = session.freeze(verdict.plan);
-  const name = args.values.get("name") ?? `${session.anchor.branch}-split`;
+  const name = args.values.get("name") ?? splitBranch(session);
   const last = session.applied();
   const result = await writeBranch(session.root, session.diff, verdict.plan, {
     name,
@@ -474,12 +482,22 @@ async function feedback(cwd: string, args: Args): Promise<number> {
   return 0;
 }
 
+function describeLock(lock: LockState): string {
+  if (lock.kind === "free") return "free";
+  const who = `pid ${lock.pid} (follow-me ${lock.command})`;
+  return lock.kind === "held"
+    ? `held by ${who}`
+    : `stale, ${who} is gone; follow-me clean removes it`;
+}
+
 async function status(cwd: string): Promise<number> {
   const session = await openSession(cwd);
   const { anchor, diff } = session;
   const plans = session.plans();
   const reviews = session.reviews();
   say(`${anchor.branch} ${short(anchor.tip)} onto ${anchor.baseRef} ${short(anchor.base)}`);
+  say(`writes to: ${splitBranch(session)}`);
+  say(`lock: ${describeLock(session.lockState())}`);
   say(`units: ${plural(diff.units.size, "unit")}`);
   let hasDraft = true;
   try {

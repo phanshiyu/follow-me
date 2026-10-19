@@ -133,6 +133,8 @@ test("extract, check, apply and status drive the whole flow from the command lin
     code: 0,
     out: [
       `feature ${tip} onto main ${base}`,
+      "writes to: feature-split",
+      "lock: free",
       "units: 9 units",
       "draft: .follow-me/feature/draft.json",
       "plans: v1",
@@ -330,6 +332,10 @@ test("a second apply or review waits its turn while a review holds the session",
   const busy = `follow-me: the session for feature is busy: pid ${child.pid} is running follow-me review; wait for it to finish or stop it\n`;
   assert.deepEqual(run(repo.dir, "apply"), { code: 1, out: "", err: busy });
   assert.deepEqual(run(repo.dir, "review", "--no-open"), { code: 1, out: "", err: busy });
+  assert.equal(
+    run(repo.dir, "status").out.split("\n")[2],
+    `lock: held by pid ${child.pid} (follow-me review)`,
+  );
 
   await fetch(new URL("/api/end", url), { method: "POST" });
   assert.deepEqual(await exited, [0, null]);
@@ -346,6 +352,10 @@ test("a lock left by a dead process is taken over", async (t) => {
   const dead = spawnSync("true").pid;
   const lock = join(repo.dir, ".follow-me", "feature", "lock");
   writeFileSync(lock, JSON.stringify({ pid: dead, command: "apply", token: "x" }));
+  assert.equal(
+    run(repo.dir, "status").out.split("\n")[2],
+    `lock: stale, pid ${dead} (follow-me apply) is gone; follow-me clean removes it`,
+  );
 
   const applied = run(repo.dir, "apply");
   assert.equal(applied.code, 0, applied.err);
