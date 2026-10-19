@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   findHarness,
@@ -11,14 +11,16 @@ import {
   SKILL_NAME,
 } from "./harness.ts";
 
-export type InstallOptions = {
+/** Flags shared by `install` and `uninstall`; both resolve them to the same files. */
+export type SkillTargets = {
   /** Comma-separated harness ids from `--harness`. */
   readonly harness: string | undefined;
   readonly all: boolean;
   readonly user: boolean;
   readonly dryRun: boolean;
-  readonly list: boolean;
 };
+
+export type InstallOptions = SkillTargets & { readonly list: boolean };
 
 class InstallError extends Error {
   override readonly name = "InstallError";
@@ -44,7 +46,7 @@ export function detectHarnesses(home: string): readonly Harness[] {
   return HARNESSES.filter((h) => h.probes.some((probe) => existsSync(join(home, probe))));
 }
 
-function chooseHarnesses(options: InstallOptions, home: string): readonly Harness[] {
+function chooseHarnesses(options: SkillTargets, home: string): readonly Harness[] {
   if (options.all && options.harness !== undefined) {
     throw new InstallError("use --all or --harness, not both");
   }
@@ -68,15 +70,18 @@ function chooseHarnesses(options: InstallOptions, home: string): readonly Harnes
   return found;
 }
 
-/** Harnesses that share a skills directory (Codex and the generic one) plan the same file. */
-function uniqueFiles(
-  harnesses: readonly Harness[],
-  scope: Scope,
+/**
+ * The files install writes and uninstall removes. Harnesses that share a skills directory (Codex
+ * and the generic one) plan the same file once.
+ */
+export function planSkillFiles(
+  options: SkillTargets,
   home: string,
   repoRoot: string,
 ): readonly PlannedFile[] {
+  const scope: Scope = options.user ? "user" : "project";
   const byPath = new Map<string, PlannedFile>();
-  for (const harness of harnesses) {
+  for (const harness of chooseHarnesses(options, home)) {
     for (const file of plannedInstall(harness, scope, home, repoRoot)) {
       byPath.set(file.path, file);
     }
@@ -94,6 +99,22 @@ function writeSkill(skillDir: string, file: PlannedFile, dryRun: boolean): strin
   return `wrote ${file.path}`;
 }
 
+/** Removes the file and then its follow-me folder if that is left empty, never a parent. */
+function removeSkill(file: PlannedFile, dryRun: boolean): string {
+  if (!existsSync(file.path)) return `absent ${file.path}`;
+  if (dryRun) return `would remove ${file.path}`;
+  rmSync(file.path);
+  const folder = dirname(file.path);
+  if (basename(folder) === SKILL_NAME) {
+    try {
+      rmdirSync(folder);
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOTEMPTY")) throw error;
+    }
+  }
+  return `removed ${file.path}`;
+}
+
 function listTable(): string[] {
   return HARNESSES.flatMap((h) => [
     `${h.id}  ${h.name}`,
@@ -103,6 +124,17 @@ function listTable(): string[] {
   ]);
 }
 
+function reportingErrors(run: () => void): number {
+  try {
+    run();
+    return 0;
+  } catch (error) {
+    if (!(error instanceof InstallError)) throw error;
+    process.stderr.write(`follow-me: ${error.message}\n`);
+    return 1;
+  }
+}
+
 export function runInstall(
   options: InstallOptions,
   home: string,
@@ -110,20 +142,26 @@ export function runInstall(
   say: (line: string) => void,
   skillDir: string = findSkillDir(),
 ): number {
-  try {
+  return reportingErrors(() => {
     if (options.list) {
       for (const line of listTable()) say(line);
-      return 0;
+      return;
     }
-    const scope: Scope = options.user ? "user" : "project";
-    const harnesses = chooseHarnesses(options, home);
-    for (const file of uniqueFiles(harnesses, scope, home, repoRoot)) {
+    for (const file of planSkillFiles(options, home, repoRoot)) {
       say(writeSkill(skillDir, file, options.dryRun));
     }
-    return 0;
-  } catch (error) {
-    if (!(error instanceof InstallError)) throw error;
-    process.stderr.write(`follow-me: ${error.message}\n`);
-    return 1;
-  }
+  });
+}
+
+export function runUninstall(
+  options: SkillTargets,
+  home: string,
+  repoRoot: string,
+  say: (line: string) => void,
+): number {
+  return reportingErrors(() => {
+    for (const file of planSkillFiles(options, home, repoRoot)) {
+      say(removeSkill(file, options.dryRun));
+    }
+  });
 }

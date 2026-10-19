@@ -4,7 +4,7 @@ import { join, relative } from "node:path";
 import { PlanRequestError, requestPlan } from "./anthropic.ts";
 import { DiffParseError, formatUnitRef } from "./diff.ts";
 import { BranchRefusedError, GitError, treeOf, writeBranch } from "./git.ts";
-import { runInstall } from "./install.ts";
+import { runInstall, runUninstall, type SkillTargets } from "./install.ts";
 import { serializePlanFile, type ValidPlan, validatePlan } from "./plan.ts";
 import { type PromptInput, renderFeedback, renderPrompt } from "./prompt.ts";
 import { loadDraftComments, serveReview } from "./server.ts";
@@ -56,6 +56,8 @@ const USAGE = `usage: follow-me <command>
   install [--harness <ids>|--all] [--user] [--dry-run]
                                             copy the skill into coding agents' skill dirs
   install --list                            show each harness, its skill dirs and docs
+  uninstall [--harness <ids>|--all] [--user] [--dry-run]
+                                            remove the skill files install writes
 
 --walk writes the prompt for a reviewer: a story with narration instead of a split.
 --force lets apply move a branch follow-me did not create; it never allows <branch> itself.`;
@@ -535,6 +537,15 @@ async function status(cwd: string): Promise<number> {
   return 0;
 }
 
+function skillTargets(args: Args): SkillTargets {
+  return {
+    harness: args.values.get("harness"),
+    all: args.flags.has("all"),
+    user: args.flags.has("user"),
+    dryRun: args.flags.has("dry-run"),
+  };
+}
+
 export async function main(argv: readonly string[], cwd: string): Promise<number> {
   const [command, ...rest] = argv;
   try {
@@ -578,14 +589,16 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
           values: ["harness"],
           flags: ["all", "user", "dry-run", "list"],
         });
-        const options = {
-          harness: args.values.get("harness"),
-          all: args.flags.has("all"),
-          user: args.flags.has("user"),
-          dryRun: args.flags.has("dry-run"),
-          list: args.flags.has("list"),
-        };
-        return runInstall(options, homedir(), cwd, say);
+        return runInstall(
+          { ...skillTargets(args), list: args.flags.has("list") },
+          homedir(),
+          cwd,
+          say,
+        );
+      }
+      case "uninstall": {
+        const args = parseArgs(rest, { values: ["harness"], flags: ["all", "user", "dry-run"] });
+        return runUninstall(skillTargets(args), homedir(), cwd, say);
       }
       case undefined:
       case "help":

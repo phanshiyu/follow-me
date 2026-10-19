@@ -1,30 +1,43 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { type TestContext, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const BIN = fileURLToPath(new URL("../bin/follow-me.ts", import.meta.url));
 const SKILL = fileURLToPath(new URL("../skills/follow-me/SKILL.md", import.meta.url));
 
-function sandbox() {
-  const home = realpathSync(mkdtempSync(join(tmpdir(), "fm-home-")));
-  const repo = realpathSync(mkdtempSync(join(tmpdir(), "fm-repo-")));
-  const run = (...args: string[]) => {
-    const r = spawnSync(BIN, ["install", ...args], {
+function sandbox(t: TestContext) {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "follow-me-home-")));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "follow-me-repo-")));
+  t.after(() => rmSync(repo, { recursive: true, force: true }));
+  const cli = (verb: string, args: string[]) => {
+    const r = spawnSync(BIN, [verb, ...args], {
       cwd: repo,
       encoding: "utf8",
       env: { ...process.env, HOME: home },
     });
     return { code: r.status, out: r.stdout, err: r.stderr };
   };
-  return { home, repo, run };
+  const run = (...args: string[]) => cli("install", args);
+  const uninstall = (...args: string[]) => cli("uninstall", args);
+  return { home, repo, run, uninstall };
 }
 
-test("install writes detected harnesses at project scope, then reports unchanged", () => {
-  const { home, repo, run } = sandbox();
+test("install writes detected harnesses at project scope, then reports unchanged", (t) => {
+  const { home, repo, run } = sandbox(t);
   mkdirSync(join(home, ".claude"));
   mkdirSync(join(home, ".codex"));
   const claude = join(repo, ".claude/skills/follow-me/SKILL.md");
@@ -41,8 +54,8 @@ test("install writes detected harnesses at project scope, then reports unchanged
   assert.deepEqual(second.out.trim().split("\n"), [`unchanged ${claude}`, `unchanged ${agents}`]);
 });
 
-test("--user writes under HOME and --dry-run writes nothing", () => {
-  const { home, repo, run } = sandbox();
+test("--user writes under HOME and --dry-run writes nothing", (t) => {
+  const { home, repo, run } = sandbox(t);
   const dry = run("--harness", "opencode,copilot", "--user", "--dry-run");
   const opencode = join(home, ".config/opencode/skills/follow-me/SKILL.md");
   const copilot = join(home, ".copilot/skills/follow-me/SKILL.md");
@@ -57,15 +70,15 @@ test("--user writes under HOME and --dry-run writes nothing", () => {
   assert.equal(existsSync(join(repo, ".github")), false);
 });
 
-test("--all shares one file between harnesses with the same directory", () => {
-  const { run } = sandbox();
+test("--all shares one file between harnesses with the same directory", (t) => {
+  const { run } = sandbox(t);
   const r = run("--all");
   assert.equal(r.code, 0, r.err);
   assert.equal(r.out.trim().split("\n").length, 6);
 });
 
-test("install fails clearly with nothing detected or an unknown harness", () => {
-  const { run } = sandbox();
+test("install fails clearly with nothing detected or an unknown harness", (t) => {
+  const { run } = sandbox(t);
   const none = run();
   assert.equal(none.code, 1);
   assert.match(none.err, /no harness config directory found/);
@@ -74,10 +87,72 @@ test("install fails clearly with nothing detected or an unknown harness", () => 
   assert.match(bad.err, /unknown harness "emacs"/);
 });
 
-test("--list prints every harness with paths and docs", () => {
-  const { run } = sandbox();
+test("--list prints every harness with paths and docs", (t) => {
+  const { run } = sandbox(t);
   const r = run("--list");
   assert.equal(r.code, 0);
   assert.match(r.out, /cursor {2}Cursor\n {2}project {2}\.cursor\/skills\/follow-me\/SKILL\.md\n/);
   assert.match(r.out, /docs {5}https:\/\/geminicli\.com\/docs\/cli\/skills\//);
+});
+
+test("uninstall removes what install wrote at project scope, then reports absent", (t) => {
+  const { home, repo, run, uninstall } = sandbox(t);
+  mkdirSync(join(home, ".claude"));
+  mkdirSync(join(home, ".codex"));
+  const claude = join(repo, ".claude/skills/follow-me/SKILL.md");
+  const agents = join(repo, ".agents/skills/follow-me/SKILL.md");
+  assert.equal(run().code, 0);
+
+  const first = uninstall();
+  assert.equal(first.code, 0, first.err);
+  assert.deepEqual(first.out.trim().split("\n"), [`removed ${claude}`, `removed ${agents}`]);
+  assert.deepEqual(readdirSync(join(repo, ".claude/skills")), []);
+  assert.deepEqual(readdirSync(join(repo, ".agents/skills")), []);
+
+  const second = uninstall();
+  assert.deepEqual(second.out.trim().split("\n"), [`absent ${claude}`, `absent ${agents}`]);
+});
+
+test("uninstall --user --dry-run removes nothing, and a folder with other files stays", (t) => {
+  const { home, run, uninstall } = sandbox(t);
+  assert.equal(run("--harness", "opencode,copilot", "--user").code, 0);
+  const opencode = join(home, ".config/opencode/skills/follow-me/SKILL.md");
+  const copilot = join(home, ".copilot/skills/follow-me/SKILL.md");
+  const mine = join(home, ".copilot/skills/follow-me/notes.md");
+  writeFileSync(mine, "mine\n");
+
+  const dry = uninstall("--harness", "opencode,copilot", "--user", "--dry-run");
+  assert.deepEqual(dry.out.trim().split("\n"), [
+    `would remove ${opencode}`,
+    `would remove ${copilot}`,
+  ]);
+  assert.equal(existsSync(opencode), true);
+
+  const real = uninstall("--harness", "opencode,copilot", "--user");
+  assert.deepEqual(real.out.trim().split("\n"), [`removed ${opencode}`, `removed ${copilot}`]);
+  assert.deepEqual(readdirSync(join(home, ".config/opencode/skills")), []);
+  assert.deepEqual(readdirSync(join(home, ".copilot/skills/follow-me")), ["notes.md"]);
+});
+
+test("uninstall --all visits every distinct file once", (t) => {
+  const { repo, run, uninstall } = sandbox(t);
+  assert.equal(run("--harness", "cursor").code, 0);
+  const r = uninstall("--all");
+  assert.equal(r.code, 0, r.err);
+  const lines = r.out.trim().split("\n");
+  assert.equal(lines.length, 6);
+  assert.deepEqual(
+    lines.filter((line) => !line.startsWith("absent ")),
+    [`removed ${join(repo, ".cursor/skills/follow-me/SKILL.md")}`],
+  );
+});
+
+test("uninstall fails clearly with nothing detected or an unknown harness", (t) => {
+  const { uninstall } = sandbox(t);
+  const none = uninstall();
+  assert.equal(none.code, 1);
+  assert.match(none.err, /no harness config directory found/);
+  const bad = uninstall("--harness", "emacs");
+  assert.equal(bad.code, 1);
+  assert.match(bad.err, /unknown harness "emacs"/);
 });
