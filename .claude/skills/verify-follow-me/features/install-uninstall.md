@@ -8,12 +8,12 @@ Install copies the follow-me skill into the skill directories of the coding agen
 - `install-dry-run` reports what would be written and writes nothing.
 - `install-detect` writes only for harnesses it detects under HOME.
 - `install-unchanged` reports `unchanged` on a second run.
-- `install-user` writes under HOME with `--user`.
+- `install-project` writes into the repo with `--project`; the default is HOME.
 - `uninstall` removes the files and reports `absent` on a rerun.
 
 ## How to get to it (user POV)
 
-- Run `follow-me install` in a project, or `follow-me install --user` for the home skill dirs.
+- Run `follow-me install` for the home skill dirs, or `follow-me install --project` in a repo for a repo-local copy.
 - Run `follow-me install --list` to see the harnesses.
 - Run `follow-me uninstall` with the same flags to remove what install wrote.
 
@@ -36,7 +36,7 @@ Preconditions:
 - **Detect and install.** `"$FM" install` prints `wrote <repo>/.claude/skills/follow-me/SKILL.md` and nothing for harnesses whose dir is absent from HOME. `cmp` that file with `skills/follow-me/SKILL.md` in the follow-me checkout. They are identical.
 - **Unchanged.** Run `"$FM" install` again. It prints `unchanged <same path>`.
 - **Uninstall.** `"$FM" uninstall` prints `removed <path>`, and the file is gone. Run it again for `absent <path>`.
-- **User scope.** `"$FM" install --harness claude --user` writes `$T/home/.claude/skills/follow-me/SKILL.md`. `"$FM" uninstall --all --user` removes it and prints `absent` for the other six.
+- **User scope (default).** `"$FM" install --harness claude` writes `$T/home/.claude/skills/follow-me/SKILL.md`. `"$FM" uninstall --all` removes it and prints `absent` for the other six.
 - **Bad harness.** `"$FM" install --harness claude-code` exits `1` with `unknown harness "claude-code" (known: claude, ...)`.
 - **Proof.** Save each command's stdout and exit code under `$EV/install/`, plus `find "$T" -name SKILL.md` before and after.
 

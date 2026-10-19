@@ -16,7 +16,8 @@ export type SkillTargets = {
   /** Comma-separated harness ids from `--harness`. */
   readonly harness: string | undefined;
   readonly all: boolean;
-  readonly user: boolean;
+  /** Install into the current repo instead of the home directory. */
+  readonly project: boolean;
   readonly dryRun: boolean;
 };
 
@@ -79,7 +80,7 @@ export function planSkillFiles(
   home: string,
   repoRoot: string,
 ): readonly PlannedFile[] {
-  const scope: Scope = options.user ? "user" : "project";
+  const scope: Scope = options.project ? "project" : "user";
   const byPath = new Map<string, PlannedFile>();
   for (const harness of chooseHarnesses(options, home)) {
     for (const file of plannedInstall(harness, scope, home, repoRoot)) {

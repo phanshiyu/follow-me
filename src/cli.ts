@@ -71,10 +71,10 @@ const USAGE = `usage: follow-me <command>
   clean [--all] [--dry-run]                 remove sessions of deleted branches, finished
                                             review drafts and leftovers of dead processes;
                                             --all removes .follow-me/ entirely
-  install [--harness <ids>|--all] [--user] [--dry-run]
+  install [--harness <ids>|--all] [--project] [--dry-run]
                                             copy the skill into coding agents' skill dirs
   install --list                            show each harness, its skill dirs and docs
-  uninstall [--harness <ids>|--all] [--user] [--dry-run]
+  uninstall [--harness <ids>|--all] [--project] [--dry-run]
                                             remove the skill files install writes
 
 --walk writes the prompt for a reviewer: a story with narration instead of a split.
@@ -696,7 +696,7 @@ function skillTargets(args: Args): SkillTargets {
   return {
     harness: args.values.get("harness"),
     all: args.flags.has("all"),
-    user: args.flags.has("user"),
+    project: args.flags.has("project"),
     dryRun: args.flags.has("dry-run"),
   };
 }
@@ -747,7 +747,7 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
       case "install": {
         const args = parseArgs(rest, {
           values: ["harness"],
-          flags: ["all", "user", "dry-run", "list"],
+          flags: ["all", "project", "dry-run", "list"],
         });
         return runInstall(
           { ...skillTargets(args), list: args.flags.has("list") },
@@ -757,7 +757,7 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
         );
       }
       case "uninstall": {
-        const args = parseArgs(rest, { values: ["harness"], flags: ["all", "user", "dry-run"] });
+        const args = parseArgs(rest, { values: ["harness"], flags: ["all", "project", "dry-run"] });
         return runUninstall(skillTargets(args), homedir(), cwd, say);
       }
       case undefined:

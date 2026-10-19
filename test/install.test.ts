@@ -36,27 +36,27 @@ function sandbox(t: TestContext) {
   return { home, repo, run, uninstall };
 }
 
-test("install writes detected harnesses at project scope, then reports unchanged", (t) => {
+test("install --project writes detected harnesses into the repo, then reports unchanged", (t) => {
   const { home, repo, run } = sandbox(t);
   mkdirSync(join(home, ".claude"));
   mkdirSync(join(home, ".codex"));
   const claude = join(repo, ".claude/skills/follow-me/SKILL.md");
   const agents = join(repo, ".agents/skills/follow-me/SKILL.md");
 
-  const first = run();
+  const first = run("--project");
   assert.equal(first.code, 0, first.err);
   assert.deepEqual(first.out.trim().split("\n"), [`wrote ${claude}`, `wrote ${agents}`]);
   assert.equal(readFileSync(claude, "utf8"), readFileSync(SKILL, "utf8"));
   assert.equal(readFileSync(agents, "utf8"), readFileSync(SKILL, "utf8"));
   assert.equal(existsSync(join(repo, ".cursor")), false);
 
-  const second = run();
+  const second = run("--project");
   assert.deepEqual(second.out.trim().split("\n"), [`unchanged ${claude}`, `unchanged ${agents}`]);
 });
 
-test("--user writes under HOME and --dry-run writes nothing", (t) => {
+test("the default scope is HOME, and --dry-run writes nothing", (t) => {
   const { home, repo, run } = sandbox(t);
-  const dry = run("--harness", "opencode,copilot", "--user", "--dry-run");
+  const dry = run("--harness", "opencode,copilot", "--dry-run");
   const opencode = join(home, ".config/opencode/skills/follow-me/SKILL.md");
   const copilot = join(home, ".copilot/skills/follow-me/SKILL.md");
   assert.deepEqual(dry.out.trim().split("\n"), [
@@ -65,7 +65,7 @@ test("--user writes under HOME and --dry-run writes nothing", (t) => {
   ]);
   assert.equal(existsSync(opencode), false);
 
-  assert.equal(run("--harness", "opencode,copilot", "--user").code, 0);
+  assert.equal(run("--harness", "opencode,copilot").code, 0);
   assert.equal(readFileSync(copilot, "utf8"), readFileSync(SKILL, "utf8"));
   assert.equal(existsSync(join(repo, ".github")), false);
 });
@@ -95,40 +95,40 @@ test("--list prints every harness with paths and docs", (t) => {
   assert.match(r.out, /docs {5}https:\/\/geminicli\.com\/docs\/cli\/skills\//);
 });
 
-test("uninstall removes what install wrote at project scope, then reports absent", (t) => {
+test("uninstall --project removes what install wrote in the repo, then reports absent", (t) => {
   const { home, repo, run, uninstall } = sandbox(t);
   mkdirSync(join(home, ".claude"));
   mkdirSync(join(home, ".codex"));
   const claude = join(repo, ".claude/skills/follow-me/SKILL.md");
   const agents = join(repo, ".agents/skills/follow-me/SKILL.md");
-  assert.equal(run().code, 0);
+  assert.equal(run("--project").code, 0);
 
-  const first = uninstall();
+  const first = uninstall("--project");
   assert.equal(first.code, 0, first.err);
   assert.deepEqual(first.out.trim().split("\n"), [`removed ${claude}`, `removed ${agents}`]);
   assert.deepEqual(readdirSync(join(repo, ".claude/skills")), []);
   assert.deepEqual(readdirSync(join(repo, ".agents/skills")), []);
 
-  const second = uninstall();
+  const second = uninstall("--project");
   assert.deepEqual(second.out.trim().split("\n"), [`absent ${claude}`, `absent ${agents}`]);
 });
 
-test("uninstall --user --dry-run removes nothing, and a folder with other files stays", (t) => {
+test("uninstall --dry-run removes nothing, and a folder with other files stays", (t) => {
   const { home, run, uninstall } = sandbox(t);
-  assert.equal(run("--harness", "opencode,copilot", "--user").code, 0);
+  assert.equal(run("--harness", "opencode,copilot").code, 0);
   const opencode = join(home, ".config/opencode/skills/follow-me/SKILL.md");
   const copilot = join(home, ".copilot/skills/follow-me/SKILL.md");
   const mine = join(home, ".copilot/skills/follow-me/notes.md");
   writeFileSync(mine, "mine\n");
 
-  const dry = uninstall("--harness", "opencode,copilot", "--user", "--dry-run");
+  const dry = uninstall("--harness", "opencode,copilot", "--dry-run");
   assert.deepEqual(dry.out.trim().split("\n"), [
     `would remove ${opencode}`,
     `would remove ${copilot}`,
   ]);
   assert.equal(existsSync(opencode), true);
 
-  const real = uninstall("--harness", "opencode,copilot", "--user");
+  const real = uninstall("--harness", "opencode,copilot");
   assert.deepEqual(real.out.trim().split("\n"), [`removed ${opencode}`, `removed ${copilot}`]);
   assert.deepEqual(readdirSync(join(home, ".config/opencode/skills")), []);
   assert.deepEqual(readdirSync(join(home, ".copilot/skills/follow-me")), ["notes.md"]);

@@ -26,13 +26,13 @@ You need Node 24 or newer and git.
 npm i -g @shiyuphan/follow-me
 ```
 
-follow-me ships an Agent Skill that teaches a coding agent to drive the CLI. To install it, run this from the root of the repo you work in:
+follow-me ships an Agent Skill that teaches a coding agent to drive the CLI. Install it once:
 
 ```sh
 follow-me install
 ```
 
-`install` looks in your home directory for the config directories of Claude Code, OpenCode, Codex CLI, Cursor, Gemini CLI, and GitHub Copilot CLI. It copies the skill into the repo's skill directory for each one it finds, for example `.claude/skills/follow-me/SKILL.md`. Add `--user` to install into your home directory instead, so every repo sees it. Other flags are `--harness claude,codex`, `--all`, and `--dry-run`.
+`install` looks in your home directory for the config directories of Claude Code, OpenCode, Codex CLI, Cursor, Gemini CLI, and GitHub Copilot CLI. It copies the skill into the user-level skill directory of each one it finds, for example `~/.claude/skills/follow-me/SKILL.md`, so every repo sees it. Add `--project` to install into the current repo instead. Other flags are `--harness claude,codex`, `--all`, and `--dry-run`.
 
 ```sh
 follow-me install --list    # each harness, where its skill goes, and its docs

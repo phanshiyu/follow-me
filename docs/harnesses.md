@@ -18,7 +18,7 @@ follow-me install
 | - | - |
 | `--harness <ids>` | Install into the listed harnesses only. Comma-separate ids, for example `claude,codex`. |
 | `--all` | Install into every harness in the table, even if it is not detected. |
-| `--user` | Install into your home directory instead of the repo, so every repo sees the skill. |
+| `--project` | Install into the current repo instead of your home directory, for a repo-local copy. |
 | `--dry-run` | Print what would be written and write nothing. |
 | `--list` | Print each harness with its skill directories and docs link. |
 
@@ -34,8 +34,8 @@ that left it empty. It never removes a parent directory or other files in the fo
 prints as `removed`, `absent` or, with `--dry-run`, `would remove`.
 
 ```sh
-follow-me uninstall                    # detected harnesses, project scope
-follow-me uninstall --all --user       # every harness, home directory
+follow-me uninstall                    # detected harnesses, home directory
+follow-me uninstall --all --project    # every harness, this repo
 ```
 
 Without `--harness` or `--all` it only visits detected harnesses, the same ones install picks, so
