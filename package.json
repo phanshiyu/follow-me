@@ -1,12 +1,35 @@
 {
-  "name": "follow-me",
+  "name": "@shiyuphan/follow-me",
   "version": "0.1.0",
   "description": "Split a branch's final changes into fine, ordered commits that read like the author's thought process, review them hunk by hunk, and hand the review back to a coding agent.",
   "license": "MIT",
   "type": "module",
-  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/phanshiyu/follow-me.git"
+  },
+  "homepage": "https://github.com/phanshiyu/follow-me#readme",
+  "bugs": {
+    "url": "https://github.com/phanshiyu/follow-me/issues"
+  },
+  "keywords": [
+    "git",
+    "commits",
+    "code-review",
+    "split",
+    "narration",
+    "claude",
+    "agent-skill"
+  ],
   "bin": {
-    "follow-me": "./bin/follow-me.ts"
+    "follow-me": "./dist/bin/follow-me.js"
+  },
+  "files": [
+    "dist",
+    "skills"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "engines": {
     "node": ">=24"
@@ -16,14 +39,16 @@
     "lint:fix": "biome check --write .",
     "typecheck": "tsc --noEmit",
     "test": "node --test 'src/**/*.test.ts' 'test/**/*.test.ts'",
-    "check": "npm run lint && npm run typecheck && npm test"
+    "check": "npm run lint && npm run typecheck && npm test",
+    "prepublishOnly": "npm run check && npm run build",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && cp -R ui dist/ui"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.135.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",
     "@types/node": "^26.6.5",
     "typescript": "^7.0.2"
-  },
-  "dependencies": {
-    "@anthropic-ai/sdk": "0.135.0"
   }
 }
