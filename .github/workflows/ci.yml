@@ -29,4 +29,10 @@ jobs:
       - run: git config --global user.email ci@example.com && git config --global user.name ci
       - run: npm run lint
       - run: npm run typecheck
-      - run: npm test
+      - name: test
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee test.log || {
+            grep -n -A 40 '^not ok' test.log | head -c 3500 | tr '\n' ' ' | sed 's/^/::error::/'; echo
+            exit 1
+          }
