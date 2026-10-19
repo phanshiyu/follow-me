@@ -71,7 +71,8 @@ export type ModeUnit = {
 export type Unit = TextHunk | FileUnit | ModeUnit;
 
 /**
- * A text file touched by at least one hunk. Existence per commit is derived:
+ * A text file touched by at least one hunk or a mode flip (then hunks is empty and the mode
+ * unit writes the base bytes under the new mode). Existence per commit is derived:
  * present on both sides: always present. base null: present once any change line is
  * applied. tip null: present until every change line is applied.
  */
@@ -129,7 +130,7 @@ export type TreeChange =
 export type ProjectedCommit = {
   readonly index: number;
   readonly message: string;
-  /** Selections fully resolved: no "rest" left. */
+  /** Hunk selections resolved to explicit lines; whole-file and mode units stay "rest". */
   readonly refs: readonly UnitRef[];
   readonly changes: readonly TreeChange[];
 };
