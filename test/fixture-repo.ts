@@ -86,6 +86,16 @@ const BRANCH_LIB = [
  */
 export function makeFixtureRepo(): FixtureRepo {
   const dir = mkdtempSync(join(tmpdir(), "follow-me-fixture-"));
+  const cleanup = () => rmSync(dir, { recursive: true, force: true });
+  try {
+    return { dir, ...buildFixture(dir), cleanup };
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
+}
+
+function buildFixture(dir: string): { base: string; branch: string } {
   git(dir, "init", "-q", "-b", "main");
   write(dir, "src/lib.js", BASE_LIB);
   write(dir, "src/old-name.js", "export const legacy = true;\n");
@@ -114,12 +124,7 @@ export function makeFixtureRepo(): FixtureRepo {
   git(dir, "commit", "-q", "-m", "feature work");
   const branch = git(dir, "rev-parse", "HEAD");
 
-  return {
-    dir,
-    base,
-    branch,
-    cleanup: () => rmSync(dir, { recursive: true, force: true }),
-  };
+  return { base, branch };
 }
 
 /**

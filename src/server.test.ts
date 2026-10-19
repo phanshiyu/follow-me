@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { type TestContext, test } from "node:test";
 import type { ReviewState } from "./server.ts";
 import { loadDraftComments, serveReview } from "./server.ts";
 import type { Review } from "./types.ts";
@@ -89,8 +89,9 @@ type Running = {
   readonly done: Promise<Review>;
 };
 
-async function start(state: ReviewState): Promise<Running> {
+async function start(t: TestContext, state: ReviewState): Promise<Running> {
   const dir = await mkdtemp(join(tmpdir(), "follow-me-server-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
   const reviewsDir = join(dir, "reviews");
   let announce: (url: string) => void = () => {};
   const listening = new Promise<string>((resolve) => {
@@ -121,8 +122,7 @@ async function post(url: string, path: string, body: unknown): Promise<Response>
 }
 
 test("a review session autosaves a draft and ends by writing the Review", async (t) => {
-  const run = await start(twoCommitState());
-  t.after(() => rm(run.dir, { recursive: true, force: true }));
+  const run = await start(t, twoCommitState());
 
   const initial = await jsonOf(await fetch(new URL("/api/state", run.url)));
   assert.equal(initial.version, 3);
@@ -182,8 +182,7 @@ test("a review session autosaves a draft and ends by writing the Review", async 
 });
 
 test("a malformed comment gets 400 and leaves the draft unchanged", async (t) => {
-  const run = await start(twoCommitState());
-  t.after(() => rm(run.dir, { recursive: true, force: true }));
+  const run = await start(t, twoCommitState());
   const { id } = await jsonOf(await post(run.url, "/api/comments", newComment("keep me")));
   const draftFile = join(run.dir, "v3.draft.json");
   const before = await readFile(draftFile, "utf8");
@@ -224,8 +223,7 @@ test("a malformed comment gets 400 and leaves the draft unchanged", async (t) =>
 });
 
 test("a draft from an unfinished session comes back through loadDraftComments", async (t) => {
-  const first = await start(twoCommitState());
-  t.after(() => rm(first.dir, { recursive: true, force: true }));
+  const first = await start(t, twoCommitState());
   const { id } = await jsonOf(await post(first.url, "/api/comments", newComment("pending")));
   const restored = await loadDraftComments(first.dir, twoCommitState().version);
   assert.equal(restored.length, 1);
@@ -239,8 +237,7 @@ test("a draft from an unfinished session comes back through loadDraftComments", 
 });
 
 test("requests from a foreign origin are refused", async (t) => {
-  const run = await start(twoCommitState());
-  t.after(() => rm(run.dir, { recursive: true, force: true }));
+  const run = await start(t, twoCommitState());
   const res = await fetch(new URL("/api/comments", run.url), {
     method: "POST",
     headers: { origin: "http://evil.example", "content-type": "application/json" },
@@ -252,8 +249,7 @@ test("requests from a foreign origin are refused", async (t) => {
 });
 
 test("the UI files are served at /, /app.js, /playback.js and /style.css", async (t) => {
-  const run = await start(twoCommitState());
-  t.after(() => rm(run.dir, { recursive: true, force: true }));
+  const run = await start(t, twoCommitState());
   const page = await fetch(new URL("/", run.url));
   assert.equal(page.headers.get("content-type"), "text/html; charset=utf-8");
   assert.match(await page.text(), /<title>follow-me review<\/title>/);
