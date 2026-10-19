@@ -139,12 +139,11 @@ const DECLARATION =
   /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\*?|class|def|fn|func|interface|struct|enum|impl|trait|module)\s+([A-Za-z_$][\w$]*)/;
 
 /**
- * The name of the declaration nearest above the chunk's last line, so a label can say where the
- * change sits. Lines removed in the hunk are skipped; they no longer exist at the tip.
+ * The function or class a hunk line sits in: the nearest declaration at or above it. Lines removed in the hunk are skipped; they no longer exist at the tip.
  * @param {readonly HunkLine[]} body
  * @param {number} last
  */
-function enclosingName(body, last) {
+export function scopeOf(body, last) {
   for (let i = last; i >= 0; i -= 1) {
     const line = body[i];
     if (line === undefined || line.op === "-") continue;
@@ -225,7 +224,7 @@ export function buildScript(commits, units) {
       runsOf(unit.body, mine).forEach((lines, n) => {
         const additions = lines.filter((i) => unit.body[i]?.op === "+");
         const removals = lines.filter((i) => unit.body[i]?.op === "-");
-        const name = enclosingName(unit.body, lines.at(-1) ?? 0);
+        const name = scopeOf(unit.body, lines.at(-1) ?? 0);
         beats.push({
           kind: "chunk",
           commit: commit.index,
@@ -382,6 +381,38 @@ export function lineStates(beats, steps, position, commit) {
   const beat = beats[now];
   const current = beat?.kind === "chunk" && beat.commit === commit ? now : null;
   return { states, upcoming, current };
+}
+
+/**
+ * How a hunk reads in one commit. The commit's own lines are the change. Lines earlier commits
+ * added are now part of the file and read as context; lines they removed are gone. Lines later
+ * commits remove are still there as context, and lines later commits add fold into one row per
+ * run and owner.
+ * @param {readonly HunkLine[]} body
+ * @param {readonly (number | undefined)[]} owners owning commit per change index
+ * @param {number} commit
+ * @returns {({ kind: "line", line: number, mine: boolean } | { kind: "fold", lines: number[], commit: number })[]}
+ */
+export function rowsOf(body, owners, commit) {
+  /** @type {ReturnType<typeof rowsOf>} */
+  const rows = [];
+  body.forEach((line, i) => {
+    const owner = line.op === " " ? undefined : owners[line.change];
+    if (line.op === " " || owner === undefined || owner === commit) {
+      rows.push({ kind: "line", line: i, mine: owner === commit });
+      return;
+    }
+    const later = owner > commit;
+    if (line.op === "-" ? later : !later) {
+      rows.push({ kind: "line", line: i, mine: false });
+      return;
+    }
+    if (line.op === "-") return;
+    const last = rows.at(-1);
+    if (last?.kind === "fold" && last.commit === owner) last.lines.push(i);
+    else rows.push({ kind: "fold", lines: [i], commit: owner });
+  });
+  return rows;
 }
 
 /**

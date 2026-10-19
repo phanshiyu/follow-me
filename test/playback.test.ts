@@ -14,6 +14,7 @@ import {
   parseSpeed,
   pickVoice,
   progress,
+  rowsOf,
   schedule,
   speechRate,
 } from "../ui/playback.js";
@@ -234,6 +235,27 @@ test("seeking moves by beat and by commit, clamped to the plan", () => {
   );
   assert.deepEqual([introOf(beats, 1), introOf(beats, 2), introOf(beats, -1)], [3, 7, 0]);
   assert.deepEqual([commitOf(beats, 2), commitOf(beats, 3), commitOf(beats, 7)], [0, 1, 1]);
+});
+
+test("a hunk reads with earlier lines as context and later additions folded per commit", () => {
+  const body: HunkLine[] = [
+    { op: "+", text: "import\n", change: 0 },
+    { op: " ", text: "fn() {\n" },
+    { op: "-", text: "old\n", change: 1 },
+    { op: "+", text: "mine\n", change: 2 },
+    { op: "-", text: "later gone\n", change: 3 },
+    { op: "+", text: "later a\n", change: 4 },
+    { op: "+", text: "later b\n", change: 5 },
+    { op: "+", text: "last\n", change: 6 },
+  ];
+  assert.deepEqual(rowsOf(body, [0, 0, 1, 2, 2, 2, 3], 1), [
+    { kind: "line", line: 0, mine: false },
+    { kind: "line", line: 1, mine: false },
+    { kind: "line", line: 3, mine: true },
+    { kind: "line", line: 4, mine: false },
+    { kind: "fold", lines: [5, 6], commit: 2 },
+    { kind: "fold", lines: [7], commit: 3 },
+  ]);
 });
 
 test("progress weighs commits by chunks and fills by the beats behind, and names the chunk", () => {

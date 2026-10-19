@@ -11,8 +11,10 @@ import {
   parseSpeed,
   pickVoice,
   progress,
+  rowsOf,
   SPEEDS,
   schedule,
+  scopeOf,
   speechRate,
   speechTimeout,
 } from "/playback.js";
@@ -254,46 +256,56 @@ function describeFileUnit(unit) {
   return `${unit.reason} file ${change}`;
 }
 
-function diffLine(unit, commit, line, index, pickKey) {
-  const base = el("span", { class: "op", text: line.op });
-  const text = el("span", { class: "text", text: line.text.replace(/\n$/, "") });
+/** One line of a hunk. Only the commit's own change lines can be picked for a comment. */
+function diffLine(unit, index, mine, pickKey) {
+  const line = unit.body[index];
   const key = lineKey(unit.id, index);
-  if (line.op === " ")
+  const text = el("span", { class: "text", text: line.text.replace(/\n$/, "") });
+  if (!mine) {
     return el(
       "div",
       { class: "dl", "data-line": key },
       el("span", { class: "gutter" }),
-      base,
+      el("span", { class: "op", text: " " }),
       text,
     );
-
-  const owner = owners.get(unit.id)?.get(line.change);
-  const mine = owner === commit.index;
+  }
   const picked = picks.get(pickKey)?.has(line.change) ?? false;
-  const classes = ["dl", line.op === "+" ? "add" : "del", mine ? "mine pickable" : "other"];
+  const classes = ["dl", line.op === "+" ? "add" : "del", "mine"];
   if (picked) classes.push("picked");
-  const node = el(
+  return el(
     "div",
     {
       class: classes.join(" "),
       "data-line": key,
-      title: mine ? "Click to select this line for a comment" : undefined,
-      onclick: mine
-        ? () => {
-            const set = picks.get(pickKey) ?? new Set();
-            if (!set.delete(line.change)) set.add(line.change);
-            picks.set(pickKey, set);
-            render();
-          }
-        : undefined,
+      title: "Click to select this line for a comment",
+      onclick: () => {
+        const set = picks.get(pickKey) ?? new Set();
+        if (!set.delete(line.change)) set.add(line.change);
+        picks.set(pickKey, set);
+        render();
+      },
     },
     el("span", { class: "gutter", text: String(line.change) }),
-    base,
+    el("span", { class: "op", text: line.op }),
     text,
   );
-  if (!mine && owner !== undefined)
-    node.append(el("span", { class: "label", text: `→ commit ${owner + 1}` }));
-  return node;
+}
+
+/** Lines a later commit adds, folded into one row that leads to that commit. */
+function foldRow(lines, owner) {
+  const n = lines.length;
+  return el("button", {
+    type: "button",
+    class: "fold",
+    text: `${n} line${n === 1 ? "" : "s"} arrive${n === 1 ? "s" : ""} in commit ${owner + 1}`,
+    onclick: () => select(owner),
+  });
+}
+
+function ownersOf(unit) {
+  const byChange = owners.get(unit.id);
+  return Array.from({ length: unit.changeCount }, (_, c) => byChange?.get(c));
 }
 
 function unitComments(unit, commit) {
@@ -323,30 +335,49 @@ function unitComments(unit, commit) {
   );
 }
 
+/** Narration shown in place while browsing; playback moves its own card instead. */
+function staticNarration(text) {
+  if (!text || player.view === "play") return null;
+  return el("blockquote", { class: "narration" }, text);
+}
+
 function unitView(unit, commit) {
   const pickKey = `${commit.index}:${unit.id}`;
-  const head = el("div", { class: "unit-head" }, el("span", { text: unit.id }));
+  const ref = commit.refs.find((r) => r.unit === unit.id);
+  const head = el("div", { class: "unit-head", title: unit.id });
   let content;
   if (unit.kind === "hunk") {
-    const mineCount = [...(owners.get(unit.id) ?? [])].filter(([, o]) => o === commit.index).length;
+    const rows = rowsOf(unit.body, ownersOf(unit), commit.index);
+    const first = rows.find((r) => r.kind === "line" && r.mine);
+    const scope = first === undefined ? null : scopeOf(unit.body, first.line);
+    const mineCount = rows.filter((r) => r.kind === "line" && r.mine).length;
     head.append(
+      el("span", { class: "scope", text: scope === null ? "" : `in ${scope}` }),
       el("span", { class: "spacer" }),
-      el("span", { text: `takes ${mineCount} of ${unit.changeCount} changes` }),
+      el("span", {
+        text: `${mineCount} of ${unit.changeCount} changed lines in this commit`,
+      }),
     );
     content = el(
       "div",
       { class: "diff" },
-      ...unit.body.map((line, index) => diffLine(unit, commit, line, index, pickKey)),
+      ...rows.map((row) =>
+        row.kind === "fold"
+          ? foldRow(row.lines, row.commit)
+          : diffLine(unit, row.line, row.mine, pickKey),
+      ),
     );
   } else {
     const summary =
       unit.kind === "file" ? describeFileUnit(unit) : `mode change ${unit.from} → ${unit.to}`;
+    head.append(el("span", { text: summary }));
     content = el("div", { class: "card", text: `${summary}: ${unit.path}` });
   }
   return el(
     "div",
     { class: "unit", "data-unit": unit.id },
     head,
+    staticNarration(ref?.narration?.trim()),
     content,
     unitComments(unit, commit),
   );
@@ -422,6 +453,7 @@ function renderMain() {
       "div",
       { class: "commit-head" },
       el("div", { class: "message", text: commit.message }),
+      staticNarration(commit.narration?.trim()),
       ...commentsAt(messageAnchor).map(commentView),
       // A walk plan's messages and order are the planner's, not the author's, so only code is
       // up for comment there.
@@ -781,6 +813,7 @@ function pause() {
 function enterPlay() {
   player.view = "play";
   $("player").hidden = false;
+  render();
   seek(beatStart(steps, introOf(beats, selected)));
 }
 

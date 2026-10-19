@@ -404,13 +404,6 @@ kbd {
   user-select: none;
 }
 
-.dl .label {
-  margin-left: 12px;
-  font-size: 11px;
-  color: var(--muted);
-  font-style: italic;
-}
-
 .dl.add.mine {
   background: var(--add-bg);
   color: var(--add-text);
@@ -421,12 +414,29 @@ kbd {
   color: var(--del-text);
 }
 
-.dl.other {
-  opacity: 0.4;
+.dl.mine {
+  cursor: pointer;
 }
 
-.dl.mine.pickable {
-  cursor: pointer;
+.fold {
+  display: block;
+  width: 100%;
+  padding: 1px 10px 1px calc(6ch + 6px);
+  border: none;
+  border-radius: 0;
+  border-block: 1px dashed var(--border);
+  background: var(--panel);
+  color: var(--muted);
+  font: inherit;
+  text-align: left;
+}
+
+.fold:hover {
+  color: var(--accent);
+}
+
+.unit-head .scope {
+  color: var(--text);
 }
 
 .dl.picked {
@@ -565,7 +575,7 @@ select:disabled {
   display: none;
 }
 
-.dl.struck .text {
+.dl.del .text {
   text-decoration: line-through;
 }
 
