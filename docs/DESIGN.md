@@ -60,3 +60,28 @@ not errors, so a human can still apply.
 
 Two planners write the same draft format. An agent reads `follow-me prompt`
 and writes `draft.json` itself. `follow-me plan` asks the Anthropic API.
+
+## Reviewer mode and playback
+
+The same engine serves a second persona. A reviewer runs `follow-me walk` on a branch someone else
+wrote, watches it being written commit by commit with narration read aloud, and comments on the
+code. Nothing is applied.
+
+Narration lives in the plan. A commit and any unit ref may carry `narration`, so one planner call
+produces both the order and the voice-over, and validation passes it through to
+`ProjectedCommit`. A unit entry with narration serializes as `{ "unit": "h_x:0-3", "narration": … }`;
+without it the entry stays a plain string, so older plans and their hashes are unchanged. The walk
+prompt shares the unit dump and the rules with the split prompt and differs only in its goal.
+
+`Review.mode` is `split` or `walk`, and a file without it reads as `split`. A walk review is a code
+review for the author, not plan feedback, so `lastReview` ignores it: walk comments never reach the
+planner as comments to answer. `follow-me feedback` renders a walk review grouped by file, quoting
+each hunk as it reads in that commit with its line number on the tip. Walk reviews share
+`reviews/vN.json` with plan reviews, so one plan version gets one review of either kind.
+
+Playback is a script of steps built from the projected commits: a commit begins (its narration,
+else its title, is spoken), each unit begins (its narration is spoken and waited for), then each of
+the commit's own change lines appears or fades out. The UI holds a position into that script, and
+every line's look is a pure function of the position (`ui/playback.js`), so seeking, pausing and
+re-rendering never disagree. Speech uses the browser's `speechSynthesis`; muting keeps the timing
+without audio, and a timeout bounds engines that never report the end of an utterance.

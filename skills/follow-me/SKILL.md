@@ -1,6 +1,6 @@
 ---
 name: follow-me
-description: Split the current branch's net change into fine, story-ordered commits that read like the author's thought process, then hand them to a human for hunk-by-hunk review. Use when the user asks to clean up, reorder, split or "tell the story" of a branch's commits, or to act on a follow-me review.
+description: Split the current branch's net change into fine, story-ordered commits that read like the author's thought process, then hand them to a human for hunk-by-hunk review. Also plans a narrated walk-through of someone else's branch for a reviewer. Use when the user asks to clean up, reorder, split or "tell the story" of a branch's commits, to walk through or review a branch, or to act on a follow-me review or code review.
 ---
 
 # follow-me
@@ -35,6 +35,26 @@ When the user says they finished reviewing:
    `{ "comment": "c_abc234", "status": "addressed" | "declined" | "deferred", "note": "..." }`.
    Say why when you decline. Do not leave a comment unanswered.
 3. `follow-me check`, repair until green, then `follow-me apply`, and ask the user to review again.
+
+## As a reviewer
+
+`follow-me walk` is for someone reading a branch they did not write. It plays the branch back
+commit by commit in the browser, typing each line out while it reads your narration aloud, and the
+reviewer comments on the code. Nothing is applied and no branch is written.
+
+1. `follow-me walk [--branch <name>]` opens the session. If there is no plan yet and no API key, it
+   prints two commands and stops. Run the first, `follow-me prompt --walk`, and read all of it.
+2. Write the draft it names. The order rules are the same, and every commit also gets a
+   `narration`: what the author is thinking while writing it, first person, present tense, two or
+   three sentences, no markdown. Give a unit narration as `{ "unit": "h_x:0-3", "narration": "..." }`
+   when the why of that hunk is not obvious from the commit's narration.
+3. `follow-me check` until green, then tell the user to run `follow-me walk` again. Do not apply.
+
+When you are the author's agent and `follow-me feedback` starts with `# Code review`, the review
+came from a walk. It quotes each commented line as a diff excerpt with its line number on the
+branch. Address every item in the code on the branch itself, then tell the user what you changed
+and what you declined and why. Do not write a follow-me draft or `responses` for it; those answer
+plan reviews only.
 
 ## Rules
 
