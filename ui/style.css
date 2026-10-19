@@ -202,9 +202,130 @@ button.link {
   padding: 16px 24px 64px;
 }
 
-.commit-head h2 {
-  margin: 0 0 4px;
+.stage {
+  position: sticky;
+  top: -16px;
+  z-index: 2;
+  margin: -16px -24px 8px;
+  padding: 10px 24px 8px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.stage h2 {
+  margin: 0;
+  font-size: 15px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stage h2:focus {
+  outline: none;
+}
+
+.stage .part {
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.play {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 92px;
+}
+
+.play .icon {
+  width: 1.2em;
+  font-size: 12px;
+  text-align: center;
+}
+
+.steps,
+.strip {
+  margin: 0;
+  padding: 0;
+  border: none;
+  min-inline-size: 0;
+}
+
+.steps {
+  display: flex;
+  gap: 4px;
+}
+
+.strip {
+  flex: 1 1 160px;
+  min-width: 120px;
+  display: flex;
+  gap: 3px;
+  height: 14px;
+}
+
+.strip .seg {
+  position: relative;
+  flex-basis: 0;
+  min-width: 6px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.strip .seg.here {
+  outline: 1px solid var(--accent);
+}
+
+.strip .fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--accent);
+}
+
+.commit-list .mark {
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.keys {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  padding: 16px 20px;
+  min-width: 360px;
+}
+
+.keys::backdrop {
+  background: rgb(0 0 0 / 0.3);
+}
+
+.keys h2 {
+  margin: 0 0 8px;
   font-size: 16px;
+}
+
+.keys dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 16px;
+  margin: 0 0 12px;
+}
+
+.keys dd {
+  margin: 0;
+}
+
+kbd {
+  font: 12px var(--font-mono);
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--panel);
 }
 
 .message {
@@ -381,9 +502,10 @@ textarea {
 
 .player {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: 8px 12px;
+  gap: 12px;
+  white-space: nowrap;
   padding: 6px 16px;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
@@ -465,7 +587,7 @@ select:disabled {
 }
 
 .countdown {
-  margin: 8px 0;
+  margin: 6px 0 0;
   color: var(--muted);
   font-size: 13px;
 }

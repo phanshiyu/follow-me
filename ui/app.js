@@ -2,6 +2,7 @@ import {
   beatAt,
   beatStart,
   buildScript,
+  chunkOf,
   commitOf,
   hasNarration,
   introOf,
@@ -9,6 +10,7 @@ import {
   lineStates,
   parseSpeed,
   pickVoice,
+  progress,
   SPEEDS,
   schedule,
   speechRate,
@@ -365,6 +367,11 @@ function renderList() {
         },
         el("span", { class: "index", text: String(i + 1) }),
         el("span", { class: "title", text: firstLine(commit.message) }),
+        player.view === "play" && i === selected
+          ? el("span", { class: "mark", "aria-label": "playing", text: "▶" })
+          : watched.has(i)
+            ? el("span", { class: "mark", "aria-label": "watched", text: "✓" })
+            : null,
         count > 0 ? el("span", { class: "badge", text: String(count) }) : null,
       );
     }),
@@ -410,10 +417,10 @@ function renderMain() {
   }
 
   main.replaceChildren(
+    stage,
     el(
       "div",
       { class: "commit-head" },
-      el("h2", { text: `Commit ${selected + 1} of ${state.commits.length}` }),
       el("div", { class: "message", text: commit.message }),
       ...commentsAt(messageAnchor).map(commentView),
       // A walk plan's messages and order are the planner's, not the author's, so only code is
@@ -490,11 +497,17 @@ const player = {
   voice: null,
 };
 let beats = [];
+/** Commits whose outro playback reached. */
+const watched = new Set();
+/** When p last restarted a commit, so a second press soon after goes one further back. */
+let restartedAt = 0;
 let steps = [];
 let narrated = true;
 let voices = [];
 /** The one narration card. It moves to whatever the reviewer is looking at. */
 const card = el("blockquote", { class: "narration", "aria-live": "polite" });
+/** Sticky header of the code pane: where the reviewer is. */
+const stage = el("div", { class: "stage" });
 
 function stored(key) {
   try {
@@ -591,10 +604,50 @@ function chunkText(beat) {
 }
 
 /** Renders the position: which lines exist yet, the placeholders, the card and the countdown. */
+function renderStage() {
+  const commit = state.commits[selected];
+  if (!commit) return;
+  const beat = beatAt(steps, player.position);
+  const here = player.view === "play" ? beats[beat] : undefined;
+  const chunk = here === undefined ? null : chunkOf(beats, beat);
+  const path = here?.kind === "chunk" ? unitsById.get(here.unit)?.path : undefined;
+  const parts = [
+    firstLine(commit.message),
+    chunk === null ? null : `chunk ${chunk.index} of ${chunk.count}`,
+    path ?? null,
+  ].filter((p) => p !== null);
+  stage.replaceChildren(
+    el(
+      "h2",
+      { tabindex: "-1" },
+      el("span", { text: `Commit ${selected + 1} of ${state.commits.length}` }),
+      ...parts.map((p) => el("span", { class: "part", text: ` · ${p}` })),
+    ),
+  );
+  const strip = $("strip");
+  strip.replaceChildren(
+    ...progress(beats, player.view === "play" ? beat : 0).map((seg) =>
+      el(
+        "button",
+        {
+          type: "button",
+          class: seg.commit === selected ? "seg here" : "seg",
+          style: `flex-grow: ${seg.weight}`,
+          title: `Commit ${seg.commit + 1}: ${firstLine(state.commits[seg.commit]?.message ?? "")}`,
+          "aria-label": `Go to commit ${seg.commit + 1}`,
+          onclick: () => seek(beatStart(steps, introOf(beats, seg.commit))),
+        },
+        el("span", { class: "fill", style: `width: ${Math.round(seg.filled * 100)}%` }),
+      ),
+    ),
+  );
+}
+
 function applyPlayback() {
   const main = $("main");
   for (const node of main.querySelectorAll(".ph, .countdown")) node.remove();
   card.remove();
+  renderStage();
   if (player.view !== "play") {
     for (const node of main.querySelectorAll("[data-line], .unit")) {
       node.classList.remove("pending", "struck", "in-chunk");
@@ -656,7 +709,8 @@ function applyPlayback() {
       el("span", { class: "bar", style: `animation-duration: ${step.ms}ms` }),
     );
     countdown.classList.toggle("paused", !player.playing);
-    main.querySelector(".commit-head")?.append(countdown);
+    stage.append(countdown);
+    watched.add(beat.commit);
   }
 }
 
@@ -668,7 +722,10 @@ function present() {
     selected = commit;
     render();
     $("main").scrollTop = 0;
-  } else applyPlayback();
+  } else {
+    applyPlayback();
+    renderList();
+  }
   if (beat?.kind === "chunk") {
     const anchor = card.isConnected ? card : anchorOf(beat);
     if (anchor) scrollToChunk(anchor);
@@ -694,6 +751,7 @@ async function playLoop(generation) {
     present();
   }
   player.playing = false;
+  renderList();
   updatePlayer();
 }
 
@@ -736,6 +794,41 @@ function enterBrowse() {
   updatePlayer();
 }
 
+function currentBeat() {
+  return beatAt(steps, player.position);
+}
+
+/** Seeks to a beat; the beat starts over, so its narration replays. */
+function toBeat(beat) {
+  seek(beatStart(steps, Math.max(0, Math.min(beats.length, beat))));
+}
+
+function stepBeat(delta) {
+  if (player.view !== "play") enterPlay();
+  toBeat(currentBeat() + delta);
+}
+
+function nextCommit() {
+  if (player.view !== "play") return select(selected + 1);
+  toBeat(introOf(beats, selected + 1));
+}
+
+/** Restarts the commit; a second press within 1.5s goes to the previous one. */
+function previousCommit() {
+  if (player.view !== "play") return select(selected - 1);
+  const now = performance.now();
+  const intro = introOf(beats, selected);
+  const again = now - restartedAt < 1500 || currentBeat() === intro;
+  restartedAt = now;
+  toBeat(again ? introOf(beats, selected - 1) : intro);
+}
+
+function toggleKeys() {
+  const sheet = $("keys");
+  if (sheet.open) sheet.close();
+  else sheet.showModal();
+}
+
 function setSpeed(speed) {
   player.speed = speed;
   steps = schedule(beats, speed);
@@ -744,12 +837,23 @@ function setSpeed(speed) {
 
 function updatePlayer() {
   $("main").querySelector(".countdown")?.classList.toggle("paused", !player.playing);
-  $("play").textContent = player.playing ? "Pause" : "Play";
+  const play = $("play");
+  play.querySelector(".icon").textContent = player.playing ? "❚❚" : "▶";
+  play.querySelector(".label").textContent = player.playing ? "Pause" : "Play";
+  play.setAttribute("aria-pressed", String(player.playing));
   $("view-toggle").textContent = player.view === "play" ? "Show all" : "Play";
   const mute = $("mute");
   mute.disabled = synth === null;
   mute.textContent = synth === null ? "No speech" : player.muted ? "Unmute" : "Mute";
   mute.setAttribute("aria-pressed", String(player.muted));
+}
+
+function toggleMute() {
+  if (!narrated || synth === null) return;
+  player.muted = !player.muted;
+  store("muted", String(player.muted));
+  if (player.muted) synth.cancel();
+  updatePlayer();
 }
 
 function loadVoices() {
@@ -785,17 +889,18 @@ function setUpPlayer() {
   synth?.addEventListener("voiceschanged", loadVoices);
   loadVoices();
   $("play").addEventListener("click", () => (player.playing ? pause() : play()));
-  $("prev").addEventListener("click", () => select(selected - 1));
-  $("next").addEventListener("click", () => select(selected + 1));
-  $("mute").addEventListener("click", () => {
-    player.muted = !player.muted;
-    store("muted", String(player.muted));
-    if (player.muted) synth?.cancel();
-    updatePlayer();
+  $("prev-commit").addEventListener("click", previousCommit);
+  $("next-commit").addEventListener("click", nextCommit);
+  $("prev-beat").addEventListener("click", () => stepBeat(-1));
+  $("next-beat").addEventListener("click", () => stepBeat(1));
+  $("keys-button").addEventListener("click", toggleKeys);
+  $("mute").addEventListener("click", toggleMute);
+  $("view-toggle").addEventListener("click", () => {
+    if (player.view === "play") enterBrowse();
+    else play();
+    // Space should now drive playback, not this button.
+    stage.querySelector("h2")?.focus({ preventScroll: true });
   });
-  $("view-toggle").addEventListener("click", () =>
-    player.view === "play" ? enterBrowse() : play(),
-  );
   updatePlayer();
 }
 
@@ -836,12 +941,28 @@ async function endReview() {
   done.hidden = false;
 }
 
+/** Playback keys. Shift+arrows move by commit, plain arrows by chunk. */
+const KEYS = {
+  ArrowRight: (shift) => (shift ? nextCommit() : stepBeat(1)),
+  ArrowLeft: (shift) => (shift ? previousCommit() : stepBeat(-1)),
+  l: () => stepBeat(1),
+  h: () => stepBeat(-1),
+  n: nextCommit,
+  j: nextCommit,
+  p: previousCommit,
+  k: previousCommit,
+  r: () => player.view === "play" && toBeat(currentBeat()),
+  m: toggleMute,
+  "?": toggleKeys,
+};
+
 document.addEventListener("keydown", (event) => {
   const target = event.target;
   if (
     target instanceof HTMLTextAreaElement ||
     target instanceof HTMLInputElement ||
-    target instanceof HTMLSelectElement
+    target instanceof HTMLSelectElement ||
+    $("keys").open
   ) {
     return;
   }
@@ -851,9 +972,12 @@ document.addEventListener("keydown", (event) => {
     event.preventDefault();
     if (player.playing) pause();
     else play();
+    return;
   }
-  if (event.key === "j" || event.key === "n") select(selected + 1);
-  if (event.key === "k" || event.key === "p") select(selected - 1);
+  const action = Object.hasOwn(KEYS, event.key) ? KEYS[event.key] : undefined;
+  if (action === undefined) return;
+  event.preventDefault();
+  action(event.shiftKey);
 });
 
 $("end").addEventListener("click", () => guarded(endReview));

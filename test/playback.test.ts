@@ -5,6 +5,7 @@ import {
   beatAt,
   beatStart,
   buildScript,
+  chunkOf,
   commitOf,
   duration,
   hasNarration,
@@ -12,6 +13,7 @@ import {
   lineStates,
   parseSpeed,
   pickVoice,
+  progress,
   schedule,
   speechRate,
 } from "../ui/playback.js";
@@ -232,6 +234,22 @@ test("seeking moves by beat and by commit, clamped to the plan", () => {
   );
   assert.deepEqual([introOf(beats, 1), introOf(beats, 2), introOf(beats, -1)], [3, 7, 0]);
   assert.deepEqual([commitOf(beats, 2), commitOf(beats, 3), commitOf(beats, 7)], [0, 1, 1]);
+});
+
+test("progress weighs commits by chunks and fills by the beats behind, and names the chunk", () => {
+  const beats = buildScript(commits, units);
+  assert.deepEqual(progress(beats, 4), [
+    { commit: 0, weight: 1, filled: 1 },
+    { commit: 1, weight: 2, filled: 0.25 },
+  ]);
+  assert.deepEqual(
+    progress(beats, beats.length).map((s) => s.filled),
+    [1, 1],
+  );
+  assert.deepEqual(
+    [chunkOf(beats, 1), chunkOf(beats, 4), chunkOf(beats, 5), chunkOf(beats, 3)],
+    [{ index: 1, count: 1 }, { index: 1, count: 2 }, { index: 2, count: 2 }, null],
+  );
 });
 
 test("a plan has narration when any commit or unit carries a non-blank one", () => {

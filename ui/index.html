@@ -19,12 +19,20 @@
       <button id="end" type="button" class="primary">End review</button>
     </header>
     <section id="player" class="player" aria-label="Playback" hidden>
-      <button id="play" type="button" class="primary" title="Play or pause (space)">Play</button>
-      <button id="prev" type="button" title="Previous commit (p)">Previous</button>
-      <button id="next" type="button" title="Next commit (n)">Next</button>
+      <button id="play" type="button" class="primary play" title="Play or pause (space)">
+        <span class="icon" aria-hidden="true"></span><span class="label"></span>
+      </button>
+      <fieldset class="steps" aria-label="Step">
+        <button id="prev-commit" type="button" title="Restart this commit, press again for the previous one (p)">⏮ Commit</button>
+        <button id="prev-beat" type="button" title="Previous chunk (left arrow)">◀ Chunk</button>
+        <button id="next-beat" type="button" title="Next chunk (right arrow)">Chunk ▶</button>
+        <button id="next-commit" type="button" title="Next commit (n)">Commit ⏭</button>
+      </fieldset>
       <label>Speed <select id="speed"></select></label>
       <label id="voice-label">Voice <select id="voice"></select></label>
-      <button id="mute" type="button" aria-pressed="false">Mute</button>
+      <button id="mute" type="button" aria-pressed="false" title="Mute (m)">Mute</button>
+      <button id="keys-button" type="button" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
+      <fieldset id="strip" class="strip" aria-label="Progress"></fieldset>
     </section>
     <div id="app" class="layout">
       <nav class="sidebar" aria-label="Commits">
@@ -34,6 +42,21 @@
       <main id="main" class="main"></main>
     </div>
     <div id="done" class="done" hidden></div>
+    <dialog id="keys" class="keys" aria-labelledby="keys-title">
+      <h2 id="keys-title">Keyboard shortcuts</h2>
+      <dl>
+        <dt><kbd>Space</kbd></dt><dd>Play or pause</dd>
+        <dt><kbd>→</kbd> <kbd>l</kbd></dt><dd>Next chunk</dd>
+        <dt><kbd>←</kbd> <kbd>h</kbd></dt><dd>Previous chunk</dd>
+        <dt><kbd>n</kbd> <kbd>j</kbd> <kbd>Shift →</kbd></dt><dd>Next commit</dd>
+        <dt><kbd>p</kbd> <kbd>k</kbd> <kbd>Shift ←</kbd></dt><dd>Restart this commit, twice for the previous one</dd>
+        <dt><kbd>r</kbd></dt><dd>Replay the narration</dd>
+        <dt><kbd>c</kbd></dt><dd>Comment on the current chunk</dd>
+        <dt><kbd>m</kbd></dt><dd>Mute</dd>
+        <dt><kbd>⌘ Enter</kbd></dt><dd>Save a comment, <kbd>Esc</kbd> cancels</dd>
+      </dl>
+      <form method="dialog"><button type="submit">Close</button></form>
+    </dialog>
     <script src="/app.js" type="module"></script>
   </body>
 </html>

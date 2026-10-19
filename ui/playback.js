@@ -385,6 +385,44 @@ export function lineStates(beats, steps, position, commit) {
 }
 
 /**
+ * One progress segment per commit, weighted by its chunk count, filled by the share of its
+ * beats already behind the current one.
+ * @param {readonly Beat[]} beats
+ * @param {number} beat
+ * @returns {{ commit: number, weight: number, filled: number }[]}
+ */
+export function progress(beats, beat) {
+  /** @type {Map<number, { chunks: number, total: number, behind: number }>} */
+  const tally = new Map();
+  beats.forEach((b, i) => {
+    const t = tally.get(b.commit) ?? { chunks: 0, total: 0, behind: 0 };
+    tally.set(b.commit, {
+      chunks: t.chunks + (b.kind === "chunk" ? 1 : 0),
+      total: t.total + 1,
+      behind: t.behind + (i < beat ? 1 : 0),
+    });
+  });
+  return [...tally].map(([commit, t]) => ({
+    commit,
+    weight: Math.max(1, t.chunks),
+    filled: t.behind / t.total,
+  }));
+}
+
+/**
+ * Which chunk of its commit a beat is, 1-based, or null for an intro, outro or the end.
+ * @param {readonly Beat[]} beats
+ * @param {number} beat
+ * @returns {{ index: number, count: number } | null}
+ */
+export function chunkOf(beats, beat) {
+  const here = beats[beat];
+  if (here?.kind !== "chunk") return null;
+  const mine = beats.flatMap((b, i) => (b.kind === "chunk" && b.commit === here.commit ? [i] : []));
+  return { index: mine.indexOf(beat) + 1, count: mine.length };
+}
+
+/**
  * A speed from storage or a select, snapped to the offered steps.
  * @param {unknown} value
  */
