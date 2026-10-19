@@ -82,6 +82,13 @@ SHAs and re-running `apply` is a no-op.
 - The review server binds `127.0.0.1` only and rejects cross-origin requests.
 - Everything under `.follow-me/` is ignored by git.
 
+Three guarantees hold across sessions. The original branch is never written. `apply` puts the
+split on `<branch>-split` or `--name`, and refuses the branch being split and any branch checked
+out in a worktree, even with `--force`. Sessions are isolated per worktree. Each worktree keeps
+its own `.follow-me/`, each branch its own directory, and a lock stops two agents from applying or
+reviewing one session at once. `follow-me clean` removes leftovers: sessions of deleted branches,
+review drafts no review can resume, and files of processes that died.
+
 ## Development
 
 ```sh

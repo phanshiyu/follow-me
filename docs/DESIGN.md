@@ -45,11 +45,18 @@ the tip commit and commit `i` of `n` gets committer time `tipTime - (n - 1 - i)`
 so the same plan yields the same SHAs and re-running is a no-op. The branch ref
 moves only if it still points where the last apply left it.
 
+The split never lands on the branch being split, and never on a branch checked out in any
+worktree, `--force` included; `--force` only lets apply move a branch follow-me did not create.
+New blobs, trees and commits go to a quarantine directory inside the object store
+(`GIT_OBJECT_DIRECTORY`, with the real store as an alternate) and are hard-linked in right
+before `update-ref`, so a refused or failed apply leaves no refs and no objects.
+
 ## Review loop
 
 `.follow-me/<branch-slug>/` holds `session.json` (the anchor), `draft.json`
 (planner output), `plans/vN.json` (frozen on apply, deduplicated by hash),
-`reviews/vN.json` (written once when a review ends) and `applied.json`.
+`reviews/vN.json` (written once when a review ends), `reviews/vN.draft.json` (autosave of an
+unfinished review), `applied.json` and, while apply, review or walk runs, `lock`.
 One writer per file.
 
 Comments anchor to `(commit index, unit id, optional change lines)`, a commit
@@ -60,6 +67,29 @@ not errors, so a human can still apply.
 
 Two planners write the same draft format. An agent reads `follow-me prompt`
 and writes `draft.json` itself. `follow-me plan` asks the Anthropic API.
+
+## Many sessions
+
+State is split so concurrent sessions share nothing they write.
+
+- `.follow-me/` sits at `git rev-parse --show-toplevel` of the cwd. In a linked worktree that is
+  the worktree itself, not the main checkout, so each worktree has its own `.follow-me/` and its
+  own `.gitignore` in it. Two repos are two roots.
+- Within a root, each branch has its own `<slug>/` directory. Slugs map `/` to `-`, so `a/b`
+  and `a-b` would collide; `session.json` names its branch, and the second branch is refused.
+- The only thing worktrees share is the repo: refs and the object store. Split branches are
+  `<branch>-split` per session, so two worktrees write different refs, each by compare-and-swap.
+  Objects are content-addressed and adopted with link, which never overwrites.
+- Two agents on the same session is the one real shared writer, so apply, review and walk hold
+  `<slug>/lock`. The lock is written whole to a temp file and linked into place, which fails
+  like `open(wx)` when it exists. It records the pid; a lock whose pid is dead is taken over, and
+  release removes it only if it still carries this process's token.
+- Review servers bind port 0 by default, so any number run at once.
+
+`follow-me clean` converges a root to what live sessions need. It removes sessions whose branch
+is gone, review drafts at or below the latest finished review, and locks, `*.<pid>.*.tmp` files
+and object quarantines whose pid is dead. Plan versions stay; reviews refer to them. `--all`
+removes `.follow-me/` and refuses while a live process holds a session.
 
 ## Reviewer mode and playback
 
