@@ -28,9 +28,18 @@ export class PlanRequestError extends Error {
   }
 }
 
-const unitList = { type: "array", items: { type: "string" } };
+const narratedUnit = {
+  type: "object",
+  properties: { unit: { type: "string" }, narration: { type: "string" } },
+  required: ["unit", "narration"],
+  additionalProperties: false,
+};
+const unitList = { type: "array", items: { anyOf: [{ type: "string" }, narratedUnit] } };
 
-/** Mirrors PlanFile on the wire. Structured outputs need every property required and closed objects. */
+/**
+ * Mirrors PlanFile on the wire. Structured outputs need every property required and closed
+ * objects, so commit narration is nullable instead of optional; the plan parser reads null as none.
+ */
 export const PLAN_SCHEMA = {
   type: "object",
   properties: {
@@ -41,8 +50,12 @@ export const PLAN_SCHEMA = {
       type: "array",
       items: {
         type: "object",
-        properties: { message: { type: "string" }, units: unitList },
-        required: ["message", "units"],
+        properties: {
+          message: { type: "string" },
+          narration: { anyOf: [{ type: "string" }, { type: "null" }] },
+          units: unitList,
+        },
+        required: ["message", "narration", "units"],
         additionalProperties: false,
       },
     },

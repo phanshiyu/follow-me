@@ -98,9 +98,19 @@ export type Diff = {
 export type Selection =
   | { readonly kind: "rest" }
   | { readonly kind: "lines"; readonly changes: readonly number[] };
-export type UnitRef = { readonly unit: UnitId; readonly select: Selection };
+/** narration is what the author is thinking as this unit is written, spoken during playback. */
+export type UnitRef = {
+  readonly unit: UnitId;
+  readonly select: Selection;
+  readonly narration?: string;
+};
 
-export type PlannedCommit = { readonly message: string; readonly units: readonly UnitRef[] };
+/** narration is the author thinking aloud while writing this commit: first person, present tense. */
+export type PlannedCommit = {
+  readonly message: string;
+  readonly narration?: string;
+  readonly units: readonly UnitRef[];
+};
 export type ResponseStatus = "addressed" | "declined" | "deferred";
 export type CommentResponse = {
   readonly comment: CommentId;
@@ -108,7 +118,10 @@ export type CommentResponse = {
   readonly note: string;
 };
 
-/** Wire format of plans/vN.json and draft.json. Unit refs serialize as "h_x" or "h_x:0-3,7". */
+/**
+ * Wire format of plans/vN.json and draft.json. Unit refs serialize as "h_x" or "h_x:0-3,7", or as
+ * { "unit": "h_x:0-3", "narration": "..." } when they carry narration.
+ */
 export type PlanFile = {
   readonly schema: "follow-me/plan@1";
   readonly base: Sha;
@@ -130,6 +143,7 @@ export type TreeChange =
 export type ProjectedCommit = {
   readonly index: number;
   readonly message: string;
+  readonly narration?: string;
   /** Hunk selections resolved to explicit lines; whole-file and mode units stay "rest". */
   readonly refs: readonly UnitRef[];
   readonly changes: readonly TreeChange[];

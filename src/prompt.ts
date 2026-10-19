@@ -139,13 +139,19 @@ const FORMAT = (
   "tip": "${tip}",
   "commits": [
     { "message": "Add the Token type\\n\\nThe parser needs it.", "units": ["h_0123456789ab", "h_ba9876543210:0-3,7"] },
-    { "message": "Parse tokens", "units": ["h_ba9876543210", "f_0123456789ab"] }
+    {
+      "message": "Parse tokens",
+      "narration": "Now that tokens exist I can finally read them. I start with the happy path.",
+      "units": [{ "unit": "h_ba9876543210", "narration": "The loop is boring on purpose." }, "f_0123456789ab"]
+    }
   ],
   "responses": [
     { "comment": "c_abc234", "status": "addressed", "note": "Split the hunk and moved it earlier." }
   ]
 }
 
+\`narration\` is optional on a commit and on a unit. A unit with narration is written as
+\`{ "unit": "<ref>", "narration": "..." }\` instead of the plain ref string.
 \`responses\` is [] when there are no review comments. \`status\` is one of "addressed",
 "declined" or "deferred", and \`note\` says what you did or why not.`;
 

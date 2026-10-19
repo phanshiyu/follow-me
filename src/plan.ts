@@ -62,6 +62,32 @@ export function isArray(v: unknown): v is readonly unknown[] {
   return Array.isArray(v);
 }
 
+const INVALID: unique symbol = Symbol("invalid narration");
+
+/** Absent, null and blank all mean no narration, so a planner may always write the field. */
+function parseNarration(v: unknown): string | null | typeof INVALID {
+  if (v === undefined || v === null) return null;
+  if (typeof v !== "string") return INVALID;
+  return v.trim() === "" ? null : v;
+}
+
+function withNarration(narration: string | null): { readonly narration?: string } {
+  return narration === null ? {} : { narration };
+}
+
+/** A unit entry is "h_x:0-3" or { "unit": "h_x:0-3", "narration": "..." }. */
+function parseUnitEntry(u: unknown): UnitRef | { readonly error: string } {
+  if (typeof u === "string") return parseUnitRef(u);
+  if (!isFields<"unit" | "narration">(u) || typeof u.unit !== "string") {
+    return { error: 'expected a unit ref string or { "unit", "narration" }' };
+  }
+  const ref = parseUnitRef(u.unit);
+  if ("error" in ref) return ref;
+  const narration = parseNarration(u.narration);
+  if (narration === INVALID) return { error: "narration must be a string" };
+  return { ...ref, ...withNarration(narration) };
+}
+
 /** Boundary parse of draft.json or plans/vN.json. Reports every malformed field. */
 export function parsePlanFile(draft: unknown): PlanFile | PlanIssue[] {
   const issues: PlanIssue[] = [];
@@ -86,21 +112,25 @@ export function parsePlanFile(draft: unknown): PlanFile | PlanIssue[] {
   else {
     for (const [i, c] of draft.commits.entries()) {
       const at = `$.commits[${i}]`;
-      if (!isFields<"message" | "units">(c)) {
+      if (!isFields<"message" | "narration" | "units">(c)) {
         bad(at, "expected an object");
         continue;
       }
       if (typeof c.message !== "string") bad(`${at}.message`, "expected a string");
+      const narration = parseNarration(c.narration);
+      if (narration === INVALID) bad(`${at}.narration`, "expected a string");
       const units: UnitRef[] = [];
       if (!isArray(c.units)) bad(`${at}.units`, "expected an array of unit refs");
       else {
         for (const [j, u] of c.units.entries()) {
-          const ref = typeof u === "string" ? parseUnitRef(u) : { error: "expected a string" };
+          const ref = parseUnitEntry(u);
           if ("error" in ref) bad(`${at}.units[${j}]`, ref.error);
           else units.push(ref);
         }
       }
-      if (typeof c.message === "string") commits.push({ message: c.message, units });
+      if (typeof c.message === "string" && narration !== INVALID) {
+        commits.push({ message: c.message, ...withNarration(narration), units });
+      }
     }
   }
 
@@ -130,7 +160,15 @@ export function serializePlanFile(file: PlanFile): unknown {
     schema: file.schema,
     base: file.base,
     tip: file.tip,
-    commits: file.commits.map((c) => ({ message: c.message, units: c.units.map(formatUnitRef) })),
+    commits: file.commits.map((c) => ({
+      message: c.message,
+      ...withNarration(c.narration ?? null),
+      units: c.units.map((ref) =>
+        ref.narration === undefined
+          ? formatUnitRef(ref)
+          : { unit: formatUnitRef(ref), narration: ref.narration },
+      ),
+    })),
     responses: file.responses.map((r) => ({ comment: r.comment, status: r.status, note: r.note })),
   };
 }
@@ -193,7 +231,7 @@ function claim(diff: Diff, file: PlanFile, issues: PlanIssue[]): Claims {
         issues.push({ kind: "duplicate", unit: ref.unit, changes: lines, commits: [owner, k] });
       }
       const sorted = [...changes].sort((a, b) => a - b);
-      slotsOf[k]?.splice(j, 1, { unit: ref.unit, select: { kind: "lines", changes: sorted } });
+      slotsOf[k]?.splice(j, 1, { ...ref, select: { kind: "lines", changes: sorted } });
     }
   });
 
@@ -230,7 +268,7 @@ function claim(diff: Diff, file: PlanFile, issues: PlanIssue[]): Claims {
       slotsOf[k]?.splice(
         j,
         1,
-        unit.kind === "hunk" ? { unit: ref.unit, select: { kind: "lines", changes: free } } : ref,
+        unit.kind === "hunk" ? { ...ref, select: { kind: "lines", changes: free } } : ref,
       );
     }
   });
@@ -347,7 +385,13 @@ function project(
         if (other.startsWith(`${path}/`)) conflict(path, other);
       }
     }
-    return { index: k, message: commit.message, refs, changes };
+    return {
+      index: k,
+      message: commit.message,
+      ...withNarration(commit.narration ?? null),
+      refs,
+      changes,
+    };
   });
 
   const last = file.commits.length - 1;

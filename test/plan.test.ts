@@ -5,7 +5,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { loadDiff } from "../src/git.ts";
-import { isCommentId, isPlanVersion, PLAN_SCHEMA, validatePlan } from "../src/plan.ts";
+import {
+  isCommentId,
+  isPlanVersion,
+  PLAN_SCHEMA,
+  parsePlanFile,
+  planHash,
+  serializePlanFile,
+  validatePlan,
+} from "../src/plan.ts";
 import type { Diff, Review, UnitId } from "../src/types.ts";
 import { makeFixtureRepo } from "./fixture-repo.ts";
 
@@ -107,7 +115,11 @@ test("malformed: every bad field is reported with its JSON path", () => {
     { kind: "malformed", at: "$.base", reason: "expected a full commit sha" },
     { kind: "malformed", at: "$.commits[0].message", reason: "expected a string" },
     { kind: "malformed", at: "$.commits[0].units[0]", reason: '"h_zz" is not a unit id' },
-    { kind: "malformed", at: "$.commits[0].units[1]", reason: "expected a string" },
+    {
+      kind: "malformed",
+      at: "$.commits[0].units[1]",
+      reason: 'expected a unit ref string or { "unit", "narration" }',
+    },
     { kind: "malformed", at: "$.commits[1]", reason: "expected an object" },
     { kind: "malformed", at: "$.responses", reason: "expected an array" },
   ]);
@@ -316,4 +328,71 @@ test("final-mismatch: a diff whose tip disagrees with its hunks", () => {
       got: "100644 with 36 bytes",
     },
   ]);
+});
+
+test("narration round-trips, using the object form only where a unit carries it", () => {
+  const lib = unitAt(diff, "src/lib.js", 1);
+  const readme = unitAt(diff, "README.md");
+  const wire = {
+    schema: PLAN_SCHEMA,
+    base: diff.base,
+    tip: diff.tip,
+    commits: [
+      {
+        message: "feat: guard div",
+        narration: "Division by zero bites first, so I guard it before anything else.",
+        units: [{ unit: `${lib}:2`, narration: "One line, the check itself." }, readme],
+      },
+      { message: "feat: the rest", units: [`${lib}:0-1`] },
+    ],
+    responses: [],
+  };
+  const parsed = parsePlanFile({
+    ...wire,
+    commits: [...wire.commits, { message: "chore: blank", narration: "  ", units: [] }],
+  });
+  assert.ok(!Array.isArray(parsed), JSON.stringify(parsed));
+  assert.deepEqual(serializePlanFile(parsed), {
+    ...wire,
+    commits: [...wire.commits, { message: "chore: blank", units: [] }],
+  });
+  const reparsed = parsePlanFile(serializePlanFile(parsed));
+  assert.ok(!Array.isArray(reparsed));
+  assert.equal(planHash(reparsed), planHash(parsed));
+  assert.deepEqual(
+    parsePlanFile({ ...wire, commits: [{ message: "x", narration: 3, units: [] }] }),
+    [{ kind: "malformed", at: "$.commits[0].narration", reason: "expected a string" }],
+  );
+});
+
+test("validation carries commit and unit narration into the projected commits", () => {
+  const lib = unitAt(diff, "src/lib.js", 1);
+  const verdict = validatePlan(diff, {
+    schema: PLAN_SCHEMA,
+    base: diff.base,
+    tip: diff.tip,
+    commits: [
+      {
+        message: "feat: guard div",
+        narration: "I guard division first.",
+        units: [{ unit: `${lib}:2`, narration: "Just the check." }],
+      },
+      {
+        message: "feat: the rest",
+        units: everything(diff).map((u) => (u === lib ? { unit: u, narration: "The rest." } : u)),
+      },
+    ],
+    responses: [],
+  });
+  assert.ok(verdict.ok);
+  const [first, second] = verdict.plan.commits;
+  assert.equal(first?.narration, "I guard division first.");
+  assert.deepEqual(first?.refs, [
+    { unit: lib, select: { kind: "lines", changes: [2] }, narration: "Just the check." },
+  ]);
+  assert.equal(second?.narration, undefined);
+  assert.deepEqual(
+    second?.refs.find((r) => r.unit === lib),
+    { unit: lib, select: { kind: "lines", changes: [0, 1, 3, 4, 5, 6] }, narration: "The rest." },
+  );
 });
