@@ -135,7 +135,7 @@ test("uninstall --dry-run removes nothing, and a folder with other files stays",
 });
 
 test("uninstall --all visits every distinct file once", (t) => {
-  const { repo, run, uninstall } = sandbox(t);
+  const { home, run, uninstall } = sandbox(t);
   assert.equal(run("--harness", "cursor").code, 0);
   const r = uninstall("--all");
   assert.equal(r.code, 0, r.err);
@@ -143,7 +143,7 @@ test("uninstall --all visits every distinct file once", (t) => {
   assert.equal(lines.length, 6);
   assert.deepEqual(
     lines.filter((line) => !line.startsWith("absent ")),
-    [`removed ${join(repo, ".cursor/skills/follow-me/SKILL.md")}`],
+    [`removed ${join(home, ".cursor/skills/follow-me/SKILL.md")}`],
   );
 });
 
