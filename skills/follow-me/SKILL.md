@@ -8,7 +8,7 @@ description: Split the current branch's net change into fine, story-ordered comm
 follow-me rewrites a branch as small commits ordered so a reader follows your thinking. It never
 touches your working tree or index. It writes a new branch and keeps state in `.follow-me/<slug>/`.
 
-Run every command from the repo root. If `follow-me` is not on PATH, ask the user how it is installed.
+Run every command from the repo root. If `follow-me` is not on PATH, ask the user how to run it.
 
 ## First pass
 
@@ -62,14 +62,3 @@ plan reviews only.
 - Use unit ids exactly as printed. `h_x:0-3,7` takes change lines 0 to 3 and 7 of that hunk.
   A bare `h_x` takes whatever lines no other commit claimed.
 - `f_` and `m_` units are whole; they never take line lists.
-
-## Install
-
-Copy or symlink this folder into the repo you want to use it in:
-
-```sh
-mkdir -p .claude/skills
-ln -s /path/to/follow-me/skills/follow-me .claude/skills/follow-me
-```
-
-For every repo at once, link it into `~/.claude/skills/follow-me` instead.
