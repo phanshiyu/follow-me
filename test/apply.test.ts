@@ -168,3 +168,30 @@ test("symlink, empty file, type change and gitlink units apply in reverse diff o
   );
   assert.deepEqual(snapshot(repo.dir), before);
 });
+
+function objectFiles(dir: string): string {
+  return execFileSync("find", [".git/objects"], { cwd: dir, encoding: "utf8" });
+}
+
+test("a refused write leaves no refs and no objects behind", async (t) => {
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  git(repo.dir, "branch", "taken", "main");
+  const objects = objectFiles(repo.dir);
+  const diff = await loadDiff(repo.dir, "main", "feature");
+  const verdict = validatePlan(diff, storyPlan(diff));
+  assert.ok(verdict.ok);
+
+  await assert.rejects(
+    writeBranch(repo.dir, diff, verdict.plan, { name: "taken", expectedOld: null, force: false }),
+    {
+      message:
+        "branch taken already exists and follow-me did not write it; pass --force to overwrite",
+    },
+  );
+  assert.equal(
+    git(repo.dir, "for-each-ref", "--format=%(refname)"),
+    "refs/heads/feature\nrefs/heads/main\nrefs/heads/taken",
+  );
+  assert.equal(objectFiles(repo.dir), objects);
+});

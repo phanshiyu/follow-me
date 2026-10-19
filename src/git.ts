@@ -1,6 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { link, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { isSha, neededBlobs, parseDiff } from "./diff.ts";
 import type { ValidPlan } from "./plan.ts";
@@ -174,12 +173,18 @@ function identityEnv(who: { author: Identity; committer: Identity }, back: numbe
   };
 }
 
-async function indexLine(repo: string, change: TreeChange, zero: string): Promise<Buffer> {
+async function indexLine(
+  repo: string,
+  change: TreeChange,
+  zero: string,
+  env: Record<string, string>,
+): Promise<Buffer> {
   const entry = async (): Promise<string> => {
     if (change.op === "delete") return `0 ${zero}`;
     if (change.op === "link") return `${change.entry.mode} ${change.entry.blob}`;
     const blob = await gitText(repo, ["hash-object", "-w", "--stdin"], {
       input: Buffer.from(change.bytes, "latin1"),
+      env,
     });
     return `${change.mode} ${toSha(blob, change.path)}`;
   };
@@ -190,9 +195,34 @@ async function indexLine(repo: string, change: TreeChange, zero: string): Promis
   ]);
 }
 
+/** Prefix of the quarantine directories writeBranch creates inside the object store. */
+export const QUARANTINE_PREFIX = "follow-me-incoming-";
+
+export async function objectsDir(repo: string): Promise<string> {
+  return gitText(repo, ["rev-parse", "--path-format=absolute", "--git-path", "objects"]);
+}
+
+/** Hard-links the quarantined loose objects into the store; an object already there stays. */
+async function adoptObjects(quarantine: string, objects: string): Promise<void> {
+  for (const fanout of await readdir(quarantine)) {
+    if (!/^[0-9a-f]{2}$/.test(fanout)) continue;
+    await mkdir(join(objects, fanout), { recursive: true });
+    for (const name of await readdir(join(quarantine, fanout))) {
+      if (name.startsWith("tmp_")) continue;
+      try {
+        await link(join(quarantine, fanout, name), join(objects, fanout, name));
+      } catch (error) {
+        if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+      }
+    }
+  }
+}
+
 /**
  * Writes the plan as commits on top of the merge-base through a temporary index, so the
  * user's index and worktree are never touched, then moves refs/heads/<name> by compare-and-swap.
+ * New objects go to a quarantine inside the object store and are adopted only right before the
+ * ref moves, so a refused or failed write leaves neither refs nor objects behind.
  */
 export async function writeBranch(
   repo: string,
@@ -209,12 +239,17 @@ export async function writeBranch(
   const who = await identities(repo, diff.tip);
   const zero = "0".repeat(diff.base.length);
   const n = plan.commits.length;
-  const dir = await mkdtemp(join(tmpdir(), "follow-me-index-"));
+  const objects = await objectsDir(repo);
+  const dir = await mkdtemp(join(objects, `${QUARANTINE_PREFIX}${process.pid}-`));
   const commits: Sha[] = [];
   let head = diff.base;
   let tree = diff.baseTree;
   try {
-    const env = { GIT_INDEX_FILE: join(dir, "index") };
+    const env = {
+      GIT_INDEX_FILE: join(dir, "index"),
+      GIT_OBJECT_DIRECTORY: dir,
+      GIT_ALTERNATE_OBJECT_DIRECTORIES: objects,
+    };
     await git(repo, ["read-tree", diff.baseTree], { env });
     for (const commit of plan.commits) {
       // Deletes go first so a file can give way to a directory of the same name.
@@ -222,40 +257,41 @@ export async function writeBranch(
         ...commit.changes.filter((c) => c.op === "delete"),
         ...commit.changes.filter((c) => c.op !== "delete"),
       ];
-      const lines = await Promise.all(ordered.map((c) => indexLine(repo, c, zero)));
+      const lines = await Promise.all(ordered.map((c) => indexLine(repo, c, zero, env)));
       await git(repo, ["update-index", "-z", "--index-info"], { env, input: Buffer.concat(lines) });
       tree = toSha(await gitText(repo, ["write-tree"], { env }), "write-tree");
       const message = commit.message.endsWith("\n") ? commit.message : `${commit.message}\n`;
       head = toSha(
         await gitText(repo, ["commit-tree", "--no-gpg-sign", tree, "-p", head, "-F", "-"], {
           input: message,
-          env: identityEnv(who, n - 1 - commit.index),
+          env: { ...env, ...identityEnv(who, n - 1 - commit.index) },
         }),
         "commit-tree",
       );
       commits.push(head);
     }
+    if (tree !== diff.tipTree) {
+      throw new Error(`the last commit's tree ${tree} differs from the tip tree ${diff.tipTree}`);
+    }
+
+    const current = await resolveOptional(repo, ref);
+    if (current === head) return { kind: "unchanged", branch: opts.name, head, commits };
+    if (current !== null && !opts.force) {
+      if (opts.expectedOld === null) {
+        throw new BranchRefusedError(
+          `branch ${opts.name} already exists and follow-me did not write it; pass --force to overwrite`,
+        );
+      }
+      if (current !== opts.expectedOld) {
+        throw new BranchRefusedError(
+          `branch ${opts.name} moved since the last apply (expected ${opts.expectedOld}, found ${current}); pass --force to overwrite`,
+        );
+      }
+    }
+    await adoptObjects(dir, objects);
+    await git(repo, ["update-ref", "-m", "follow-me apply", ref, head, current ?? zero]);
+    return { kind: current === null ? "created" : "updated", branch: opts.name, head, commits };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
-  if (tree !== diff.tipTree) {
-    throw new Error(`the last commit's tree ${tree} differs from the tip tree ${diff.tipTree}`);
-  }
-
-  const current = await resolveOptional(repo, ref);
-  if (current === head) return { kind: "unchanged", branch: opts.name, head, commits };
-  if (current !== null && !opts.force) {
-    if (opts.expectedOld === null) {
-      throw new BranchRefusedError(
-        `branch ${opts.name} already exists and follow-me did not write it; pass --force to overwrite`,
-      );
-    }
-    if (current !== opts.expectedOld) {
-      throw new BranchRefusedError(
-        `branch ${opts.name} moved since the last apply (expected ${opts.expectedOld}, found ${current}); pass --force to overwrite`,
-      );
-    }
-  }
-  await git(repo, ["update-ref", "-m", "follow-me apply", ref, head, current ?? zero]);
-  return { kind: current === null ? "created" : "updated", branch: opts.name, head, commits };
 }
