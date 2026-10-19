@@ -1,104 +1,151 @@
+<p align="center"><img src="assets/logo.png" width="200" alt="A sweaty cyan blob with mismatched googly eyes and its tongue out chases a smug red blob in a party hat labelled HEAD along a git branch"></p>
+
 # follow-me
 
-Read a branch the way it was thought, not the way it was committed.
+follow-me splits a branch's net change into small commits in an order a reader can follow, proves the result equals the original, and lets you review it line by line.
 
-follow-me takes a branch's net change and splits it into fine commits ordered so a reader
-can follow the author's thought process. Individual commits need not compile. The last
-commit's tree is byte-identical to the original tip, and follow-me proves it with git's own
-tree hash. Then it serves a local page where you walk the commits one by one, comment on any
-hunk or line, and hand the comments to a coding agent for the next version.
+[![npm](https://img.shields.io/npm/v/@shiyuphan/follow-me)](https://www.npmjs.com/package/@shiyuphan/follow-me)
+[![ci](https://github.com/phanshiyu/follow-me/actions/workflows/ci.yml/badge.svg)](https://github.com/phanshiyu/follow-me/actions/workflows/ci.yml)
 
-Two people use it:
+## Why
 
-- **The author** runs extract, check, apply and review to turn a messy branch into a readable
-  stack before asking for review. Comments on the split go back to the agent, which writes
-  the next plan.
-- **The reviewer** runs `follow-me walk` on someone else's branch to watch it being written,
-  with narration spoken as each line appears, and leaves comments on the code. The result is
-  a code review for the author.
+People commit in the order things happened: wip, fix, actually fix, revert. A reviewer then reads that history or gives up and reads one big diff. Neither shows how the change was thought through.
 
-Inspired by [spark-joy](https://github.com/Dansyuqri/spark-joy)'s "split your own changes".
+The blob with its tongue out is you, on commit 31 of someone's 47-commit branch.
+
+follow-me is for two people:
+
+- **The author** commits however they like, then wants a branch that reads like a story before asking for review.
+- **The reviewer** wants to watch someone else's branch being written, one line at a time, with the author's reasoning read aloud.
 
 ## Install
 
-Requires Node 24 or newer and git. There is no build step; Node runs the TypeScript sources.
+You need Node 24 or newer and git.
 
 ```sh
-git clone https://github.com/<you>/follow-me
-cd follow-me && npm install && npm link   # puts `follow-me` on your PATH
+npm i -g @shiyuphan/follow-me
 ```
 
-## Author flow
-
-Run everything from the repo whose branch you want to split, with that branch checked out.
+follow-me ships an Agent Skill that teaches a coding agent to drive the CLI. To install it, run this from the root of the repo you work in:
 
 ```sh
-follow-me extract --base main      # anchor a session, list the units (hunks, files, modes)
-follow-me prompt                   # the planner prompt, for a coding agent to read
-# the agent writes .follow-me/<branch>/draft.json
-follow-me check                    # every problem with the draft, at once
-follow-me apply                    # write <branch>-split, prove the tree matches
-follow-me review                   # open the review page; end it to save reviews/v1.json
-follow-me feedback                 # the comments as markdown, for the agent
+follow-me install
 ```
 
-With Anthropic credentials in the environment, `follow-me plan` writes the draft itself.
-Otherwise the Claude Code skill in `skills/follow-me/` does it; link it into
-`.claude/skills/follow-me/` and ask Claude to split the branch.
-
-After a review, the agent reads the comments, writes a new draft that answers each one in
-`responses`, and runs `check` and `apply` again. Plans are versioned under
-`.follow-me/<branch>/plans/`, reviews under `reviews/`, and a comment counts as answered when
-a later plan lists it.
-
-## Reviewer flow
+`install` looks in your home directory for the config directories of Claude Code, OpenCode, Codex CLI, Cursor, Gemini CLI, and GitHub Copilot CLI. It copies the skill into the repo's skill directory for each one it finds, for example `.claude/skills/follow-me/SKILL.md`. Add `--user` to install into your home directory instead, so every repo sees it. Other flags are `--harness claude,codex`, `--all`, and `--dry-run`.
 
 ```sh
-git checkout their-branch
-follow-me walk --base main         # extract, plan, and open playback
+follow-me install --list    # each harness, where its skill goes, and its docs
+follow-me uninstall         # removes exactly the files install writes
 ```
 
-Playback walks the commits in order, speaks the narration the planner wrote, and types each
-added line out. Space pauses, `n` and `p` move between commits, and the speed and voice are
-adjustable. Pause on a line to comment on it. Finishing writes `reviews/vN.json`, and
-`follow-me feedback` renders it as a code review grouped by file.
+[Using follow-me from your coding agent](docs/harnesses.md) has the per-harness details.
 
-Narration uses the browser's built-in speech synthesis. No key, no network.
+## Split your own branch
+
+Check out the branch you want to split and run these from the repo root:
+
+```sh
+follow-me extract --base main   # snapshot the diff from main to the tip, list the units
+follow-me prompt                # instructions and every unit, for your coding agent
+                                # the agent writes .follow-me/<branch>/draft.json
+follow-me check                 # print every problem with the draft at once
+follow-me apply                 # write the commits to <branch>-split
+follow-me review                # open the review page in your browser
+follow-me feedback              # print the review as markdown for the agent
+```
+
+A unit is a text hunk (`h_…`), a whole file that cannot be split by line (`f_…`), or a mode change (`m_…`). The draft assigns every change line to exactly one commit. `h_x:0-3,7` takes change lines 0 to 3 and 7 of hunk `h_x`, so one hunk can spread across several commits.
+
+If you skip the agent, `follow-me plan` asks the Anthropic API for the draft. It needs `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` in the environment, and takes `--model <id>`.
+
+`apply` never writes your original branch, your index, or your working tree. It builds the commits in a temporary index and points `<branch>-split` at them, or the branch you name with `--name`. It refuses the branch being split and any branch checked out in a worktree, even with `--force`. `--force` only lets it move a branch follow-me did not create. Then it compares the last commit's tree hash with the original tip's and prints both:
+
+```text
+created feature-split at c90eb5350284 from plan v1 (3 commits)
+proof: feature-split^{tree} ae948488c55a3606fa2419eb1c018fff8014093d equals feature^{tree} ae948488c55a3606fa2419eb1c018fff8014093d
+```
+
+If the hashes differ, `apply` exits with code 1. The same plan always gives the same SHAs, so running `apply` again prints `unchanged`.
+
+The red blob in the party hat is your branch tip. Nothing follow-me does moves it.
+
+![The review page: the commit list on the left, commit 1 of 8 on the right with its message and two hunks](assets/screenshots/review.png)
+*The review page. Pick a commit on the left. Comment on its message, its position ("This belongs elsewhere"), a hunk, or single lines.*
+
+![One hunk split across commits: commit 3's lines are bright, the rest are dimmed and marked with the commit that takes them](assets/screenshots/split-hunk.png)
+*One hunk split across commits. Commit 3 takes 2 of 7 change lines. The others are dimmed and marked "→ commit 4" or "→ commit 5".*
+
+On the review page, `n` or `j` goes to the next commit, `p` or `k` to the previous one. **End review** saves `.follow-me/<branch>/reviews/vN.json`. An unfinished review autosaves and comes back when you open the session again.
+
+## Watch someone else's branch
+
+Check out their branch and run:
+
+```sh
+follow-me walk --base main
+```
+
+`walk` extracts the branch and plans it as a narrated story. With an Anthropic key in the environment it asks the API. Without one, it prints `follow-me prompt --walk` for your coding agent, and you run `follow-me walk` again once the agent's draft passes `follow-me check`. `walk` applies nothing and writes no branch.
+
+![Playback: lines of commit 3 type in, the narration caption reads "Import the guard and call it where inputs come from outside.", with speed and voice pickers](assets/screenshots/playback.png)
+*Playback. Each line types in while the narration for its commit or hunk is read aloud. The caption shows the narration being read.*
+
+Playback goes commit by commit. Space pauses, **Previous** and **Next** move between commits, and you can change the speed, pick a voice, or mute. Pause on any line to comment on it. Narration uses the browser's built-in speech synthesis, so it needs no key and no network.
+
+When you end the review, `follow-me feedback` prints it as a code review for the author, grouped by file. Each comment quotes its hunk as it reads in that commit, with the line number on the branch. The author's agent fixes the branch itself. A walk review never feeds the split loop below.
+
+## One server for every review
+
+The first `review` or `walk` starts a review server for your user and serves the page. Every later `review` or `walk`, from any repo or worktree, adds its session to that server, prints the URL, and exits. The server's index page lists every open session.
+
+```sh
+follow-me review --detach       # start the server in the background and return
+follow-me review --no-open      # print the URL without opening a browser
+follow-me server status         # the server, its port, and the sessions it hosts
+follow-me server stop           # stop it, autosaved reviews are kept
+```
+
+The server listens on `127.0.0.1` only. If the `--port` you ask for is taken by another program, it picks a free port and prints `port N is in use by another program, using M`. It exits on its own 30 seconds after its last session ends. It is the only one at the party who knows when to leave. Its record lives in `$FOLLOW_ME_HOME`, else `$XDG_STATE_HOME/follow-me`, else `~/.local/state/follow-me`.
+
+Each worktree has its own `.follow-me/` directory, which git ignores, and each branch has its own session in it. A lock stops two agents from applying or reviewing one session at once. `follow-me clean` removes what no live session needs: sessions of deleted branches, review drafts that a finished review replaced, and locks and temp files of dead processes. It keeps plan versions, because reviews refer to them. `clean --dry-run` lists what it would remove, and `clean --all` removes `.follow-me/` entirely unless a live process holds a session.
 
 ## How it works
 
-Every unit comes from one `git diff base..tip`, so hunks of a file never overlap in base
-coordinates. A commit's version of a file is the base lines with that commit's change lines
-swapped in. Nothing is patched, so hunks can be assigned in any order and split by line.
-See `docs/DESIGN.md`.
+Every unit comes from one `git diff base..tip`, so the hunks of a file never overlap in base coordinates. A commit's version of a file is therefore the base lines with that commit's change lines swapped in. Nothing is patched. Hunks can go in any order and split at any line, and nothing can fail to apply.
 
-The user's working tree, index and branches are never touched. Commits are built in a
-temporary index with dates derived from the tip, so the same plan always yields the same
-SHAs and re-running `apply` is a no-op.
+Two checks replace patching. While parsing, every context line and removed line must equal the base file at its position. After the last commit, every path's bytes and mode must equal the tip, and then git's own tree hash is compared once more.
 
-## Safety
+There is one limit. A commit can only contain lines that exist in the base or in the tip, so follow-me cannot invent an intermediate version of a line that the author typed and later deleted.
 
-- `apply` refuses to move a branch it did not create unless `--force`.
-- The review server binds `127.0.0.1` only and rejects cross-origin requests.
-- Everything under `.follow-me/` is ignored by git.
-- Outside the repo, follow-me writes only its state dir (`~/.local/state/follow-me`, or
-  `$XDG_STATE_HOME/follow-me`), which holds the review server's `server.json` and `server.log`.
-- One review server per user hosts every session. `follow-me server stop` signals it only after
-  it answers as follow-me on its recorded port, so a reused pid is never killed.
+[docs/DESIGN.md](docs/DESIGN.md) has the full design.
 
-Three guarantees hold across sessions. The original branch is never written. `apply` puts the
-split on `<branch>-split` or `--name`, and refuses the branch being split and any branch checked
-out in a worktree, even with `--force`. Sessions are isolated per worktree. Each worktree keeps
-its own `.follow-me/`, each branch its own directory, and a lock stops two agents from applying or
-reviewing one session at once. `follow-me clean` removes leftovers: sessions of deleted branches,
-review drafts no review can resume, and files of processes that died.
+## The agent loop
+
+Each `apply` freezes the draft as the next plan version, `.follow-me/<branch>/plans/vN.json`. Each review belongs to one version. `follow-me feedback` gives every comment an id like `c_abc234`. After a review, `follow-me prompt` includes the previous plan and the open comments, and the agent answers each comment in the next draft:
+
+```json
+"responses": [
+  { "comment": "c_abc234", "status": "addressed", "note": "Moved the guard before its first use." }
+]
+```
+
+`status` is `addressed`, `declined`, or `deferred`. A comment counts as answered once a later plan lists it. `check` warns about unanswered comments but does not block `apply`. `follow-me status` shows the plans, the reviews, how many comments are still open, and the branch `apply` writes.
 
 ## Development
 
 ```sh
-npm run check        # biome, strict tsc, node --test
-node bin/follow-me.ts <command>
+npm install
+npm run check                   # biome, strict tsc, and node --test, the same as CI
+node bin/follow-me.ts <command> # run the CLI from source
 ```
 
-Tests run against real git repositories built by `test/fixture-repo.ts`.
-Decisions are logged in `docs/decisions.tsv`.
+There is no build step for development. Node 24 runs the TypeScript sources directly, and `npm run build` exists only for publishing. Tests run real git against repositories built by `test/fixture-repo.ts`. Non-obvious decisions go in `docs/decisions.tsv` through `scripts/log-decision.sh`.
+
+To release, run `npm version patch`, `minor`, or `major`, then `git push --follow-tags`. The tag triggers the publish workflow. [docs/releasing.md](docs/releasing.md) has the details.
+
+## Credits
+
+Inspired by the "split your own changes" idea in [spark-joy](https://github.com/Dansyuqri/spark-joy). Built with [pstack](https://github.com/alexanderop/pstack).
+
+MIT licensed.
