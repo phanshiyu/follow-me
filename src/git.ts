@@ -32,6 +32,12 @@ function git(repo: string, args: readonly string[], opts: RunOptions = {}): Prom
         else resolve(stdout);
       },
     );
+    // git can exit before reading its input (a bad ref, a missing repo). On Linux the
+    // pending write then fails with EPIPE; the callback above already carries git's
+    // real error, so that write failure is noise.
+    child.stdin?.on("error", (error: NodeJS.ErrnoException) => {
+      if (error.code !== "EPIPE") reject(error);
+    });
     child.stdin?.end(opts.input ?? "");
   });
 }
