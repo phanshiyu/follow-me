@@ -28,6 +28,7 @@ import {
   spawnDetached,
   startOrAttach,
   stateDir,
+  stillHosted,
   stopServer,
 } from "./host.ts";
 import { runInstall, runUninstall, type SkillTargets } from "./install.ts";
@@ -49,6 +50,7 @@ import {
 } from "./session.ts";
 import type {
   Diff,
+  HostedSummary,
   PlanIssue,
   PlanVersion,
   PlanWarning,
@@ -66,6 +68,9 @@ class UsageError extends Error {
 const USAGE = `usage: follow-me <command> [options]
 
 Split your own branch:
+  split [--base <ref>] [--branch <name>] [--model <id>] [--no-open]
+                                            extract, draft (with an Anthropic key), apply and
+                                            open the review in one go
   extract [--base <ref>] [--branch <name>]  anchor a session and list the units
   prompt [--walk] [--branch <name>]         print the planner prompt; your coding agent
                                             writes draft.json from it
@@ -76,8 +81,9 @@ Split your own branch:
   apply [--name <branch>] [--force] [--sign|--no-sign]
                                             write the draft as commits on <branch>-split or
                                             --name; never on <branch> or a checked-out branch
-  review [--port <n>] [--detach] [--no-open]
-                                            open the plan review, commit by commit
+  review [--port <n>] [--detach] [--no-open] [--wait [--timeout <seconds>]]
+                                            open the plan review, commit by commit; --wait
+                                            returns only once the review ends
   feedback [--branch <name>]                print the latest review as markdown
   status                                    show the session's plans, reviews, lock and the
                                             branch apply writes
@@ -211,15 +217,24 @@ function describeFile(diff: Diff, units: readonly Unit[]): { status: string; wha
   return { status, what: parts.join(", ") };
 }
 
-function summarize(session: Session, cwd: string): void {
-  const { anchor, diff } = session;
+function unitsByPath(diff: Diff): Map<RepoPath, Unit[]> {
   const byPath = new Map<RepoPath, Unit[]>();
   for (const unit of diff.units.values()) {
     byPath.set(unit.path, [...(byPath.get(unit.path) ?? []), unit]);
   }
-  say(
-    `${anchor.branch} ${short(anchor.tip)} onto ${anchor.baseRef} ${short(anchor.base)}: ${plural(byPath.size, "file")}, ${plural(diff.units.size, "unit")}`,
-  );
+  return byPath;
+}
+
+function headline(session: Session): string {
+  const { anchor, diff } = session;
+  const files = unitsByPath(diff).size;
+  return `${anchor.branch} ${short(anchor.tip)} onto ${anchor.baseRef} ${short(anchor.base)}: ${plural(files, "file")}, ${plural(diff.units.size, "unit")}`;
+}
+
+function summarize(session: Session, cwd: string): void {
+  const { diff } = session;
+  const byPath = unitsByPath(diff);
+  say(headline(session));
   const width = Math.max(0, ...[...byPath.keys()].map((p) => show(p).length));
   for (const [path, units] of byPath) {
     const { status, what } = describeFile(diff, units);
@@ -357,7 +372,9 @@ function splitBranch(session: Session): string {
 
 async function apply(cwd: string, args: Args): Promise<number> {
   const session = await openSession(cwd);
-  return locked(session, "apply", () => applyLocked(session, args));
+  const code = await locked(session, "apply", () => applyLocked(session, args));
+  if (code === 0) next("follow-me review");
+  return code;
 }
 
 function signMode(args: Args): SignMode {
@@ -408,9 +425,7 @@ async function applyLocked(session: Session, args: Args): Promise<number> {
   say(
     `proof: ${result.branch}^{tree} ${tree} ${same ? "equals" : "DIFFERS FROM"} ${session.anchor.branch}^{tree} ${session.anchor.tipTree}`,
   );
-  if (!same) return 1;
-  next("follow-me review");
-  return 0;
+  return same ? 0 : 1;
 }
 
 function promptInput(session: Session, mode: ReviewMode, args: Args): PromptInput {
@@ -487,7 +502,7 @@ function announce(mode: ReviewMode, url: string, args: Args): void {
 /** Where a review went: refused before hosting, hosted by another process, or by this one. */
 type Hosted =
   | { readonly kind: "refused" }
-  | { readonly kind: "elsewhere" }
+  | { readonly kind: "elsewhere"; readonly port: number; readonly summary: HostedSummary }
   | { readonly kind: "ended" }
   | { readonly kind: "stopped" };
 
@@ -513,15 +528,10 @@ async function hostReview(
   report: (review: Review) => void,
 ): Promise<Hosted> {
   const home = stateDir();
-  const lock = session.lockState();
-  const live = await findServer(home);
-  if (live !== null && lock.kind === "held" && lock.pid === live.pid) {
-    const id = sessionIdOf(session.dir);
-    const open = (await listSessions(live.port)).find((s) => s.id === id && s.mode === mode);
-    if (open !== undefined) {
-      announce(mode, sessionUrl(live.port, open), args);
-      return { kind: "elsewhere" };
-    }
+  const open = await openOnServer(session, mode);
+  if (open !== null) {
+    announce(mode, sessionUrl(open.port, open.summary), args);
+    return { kind: "elsewhere", ...open };
   }
   return locked(session, mode === "walk" ? "walk" : "review", async (held) => {
     const prepared = await prepare();
@@ -546,7 +556,7 @@ async function hostReview(
     if (started.kind === "attached") {
       const summary = await registerWith(started.port, registration);
       announce(mode, sessionUrl(started.port, summary), args);
-      return { kind: "elsewhere" };
+      return { kind: "elsewhere", port: started.port, summary };
     }
     const { host } = started;
     const { summary, done } = await host.register(registration);
@@ -580,24 +590,174 @@ function alreadyReviewed(session: Session, version: PlanVersion, args: Args): bo
   return true;
 }
 
-async function review(cwd: string, args: Args): Promise<number> {
-  const session = await openSession(cwd);
-  const prepare = async (): Promise<Prepared | null> => {
+/** This session's review of this mode on the user's server, when that server holds its lock. */
+async function openOnServer(
+  session: Session,
+  mode: ReviewMode,
+): Promise<{ readonly port: number; readonly summary: HostedSummary } | null> {
+  const lock = session.lockState();
+  const live = await findServer(stateDir());
+  if (live === null || lock.kind !== "held" || lock.pid !== live.pid) return null;
+  const id = sessionIdOf(session.dir);
+  const summary = (await listSessions(live.port)).find((s) => s.id === id && s.mode === mode);
+  return summary === undefined ? null : { port: live.port, summary };
+}
+
+function timeoutOf(args: Args): number | undefined {
+  const raw = args.values.get("timeout");
+  if (raw === undefined) return undefined;
+  const seconds = Number(raw);
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    throw new UsageError(`--timeout ${raw} is not a number of seconds`);
+  }
+  return seconds;
+}
+
+function savedReview(session: Session, mode: ReviewMode, version: PlanVersion): Review | null {
+  const stored = session.reviews().find((r) => r.version === version && r.review.mode === mode);
+  return stored?.review ?? null;
+}
+
+/**
+ * Polls the server until it no longer hosts the session, then reads the review it saved. Null
+ * when the server stopped without one; "timeout" when the review is still open at the deadline.
+ */
+async function waitForEnd(
+  session: Session,
+  hosted: { readonly port: number; readonly summary: HostedSummary },
+  timeout: number | undefined,
+): Promise<Review | null | "timeout"> {
+  const deadline = timeout === undefined ? Number.POSITIVE_INFINITY : Date.now() + timeout * 1000;
+  while (await stillHosted(hosted.port, hosted.summary)) {
+    if (Date.now() >= deadline) return "timeout";
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return savedReview(session, hosted.summary.mode, hosted.summary.version);
+}
+
+function reportSplit(review: Review): void {
+  say(`review v${review.planVersion} saved with ${plural(review.comments.length, "comment")}`);
+  next("follow-me feedback");
+}
+
+function prepareSplit(session: Session, args: Args): () => Promise<Prepared | null> {
+  return async () => {
     const latest = latestPlan(session);
     if (latest === null || alreadyReviewed(session, latest.version, args)) return null;
     return latest;
   };
-  const report = (review: Review) => {
-    say(`review v${review.planVersion} saved with ${plural(review.comments.length, "comment")}`);
-    next("follow-me feedback");
-  };
-  const hosted = await hostReview(session, "split", args, prepare, report);
-  if (hosted.kind === "elsewhere") next("end the review on the page, then follow-me feedback");
-  return exitCode(hosted);
 }
 
-/** Opens the reviewer's session, re-extracting instead of failing when the branch moved. */
-async function openForWalk(cwd: string, args: Args): Promise<Session> {
+async function review(cwd: string, args: Args): Promise<number> {
+  const session = await openSession(cwd);
+  const timeout = timeoutOf(args);
+  if (timeout !== undefined && !args.flags.has("wait")) {
+    throw new UsageError("--timeout only applies with --wait");
+  }
+  const hosted = await hostReview(session, "split", args, prepareSplit(session, args), reportSplit);
+  if (hosted.kind !== "elsewhere") return exitCode(hosted);
+  if (!args.flags.has("wait")) {
+    next("end the review on the page, then follow-me feedback");
+    return 0;
+  }
+  const ended = await waitForEnd(session, hosted, timeout);
+  if (ended === "timeout") {
+    console.error(
+      `follow-me: the review is still open after ${timeout}s; run \`follow-me review --wait\` again to keep waiting`,
+    );
+    return 1;
+  }
+  if (ended === null) return exitCode({ kind: "stopped" });
+  reportSplit(ended);
+  return 0;
+}
+
+/** Why split needs a new draft before it can go on, or null when draft.json is ready. */
+function draftNeed(session: Session, cwd: string, args: Args): string | null | "invalid" {
+  let draft: unknown;
+  try {
+    draft = session.readDraft();
+  } catch (error) {
+    if (error instanceof MissingDraftError) return `no draft for ${session.anchor.branch} yet`;
+    throw error;
+  }
+  const verdict = validatePlan(session.diff, draft, { lastReview: session.lastReview() });
+  if (!verdict.ok) {
+    if (verdict.issues.some((issue) => issue.kind === "stale")) {
+      return `the draft for ${session.anchor.branch} was written for an older tip`;
+    }
+    for (const issue of verdict.issues) say(formatIssue(issue));
+    next(`fix ${relative(cwd, session.draftPath)}, then follow-me split${branchFlag(args)}`);
+    return "invalid";
+  }
+  const { hash } = verdict.plan;
+  const reviewed = session
+    .plans()
+    .find((p) => p.hash === hash && session.reviews().some((r) => r.version === p.version));
+  if (reviewed !== undefined) {
+    return `plan v${reviewed.version} of ${session.anchor.branch} already has a review and needs a new draft that answers it`;
+  }
+  listPlan(verdict.plan);
+  return null;
+}
+
+/** Writes the prompt for an agent and prints what to tell it and what to run after. */
+function handOff(session: Session, cwd: string, args: Args, why: string): void {
+  session.writePrompt(renderPrompt(promptInput(session, "split", args)));
+  const prompt = relative(cwd, session.promptPath);
+  say(
+    `${why}, and neither ANTHROPIC_API_KEY nor ANTHROPIC_AUTH_TOKEN is set to ask the API for one.`,
+  );
+  say(
+    `Have your coding agent follow ${prompt} and write ${relative(cwd, session.draftPath)}, then run:`,
+  );
+  say(`  follow-me check${branchFlag(args)}`);
+  say(`  follow-me split${branchFlag(args)}`);
+  next(`hand ${prompt} to your agent`);
+}
+
+/**
+ * The author's one command: extract, draft through the API when it can, apply, and open the
+ * review on the user's server. It stops with a handoff whenever an agent has to write the draft.
+ */
+async function split(cwd: string, args: Args): Promise<number> {
+  const session = await openFresh(cwd, args);
+  say(headline(session));
+  const open = await openOnServer(session, "split");
+  if (open !== null) {
+    announce("split", sessionUrl(open.port, open.summary), args);
+    next("end the review on the page, then follow-me feedback");
+    return 0;
+  }
+  const need = draftNeed(session, cwd, args);
+  if (need === "invalid") return 1;
+  if (need !== null) {
+    if (!hasApiCredentials()) {
+      handOff(session, cwd, args, need);
+      return 1;
+    }
+    say(`${need}; asking the Anthropic API for one`);
+    const drafted = await draftWithApi(session, cwd, "split", args);
+    if (drafted === null) return 1;
+    listPlan(drafted);
+  }
+  const applied = await locked(session, "apply", () => applyLocked(session, args));
+  if (applied !== 0) return applied;
+  const detached = { ...args, flags: new Set([...args.flags, "detach"]) };
+  const hosted = await hostReview(
+    session,
+    "split",
+    detached,
+    prepareSplit(session, args),
+    reportSplit,
+  );
+  if (hosted.kind !== "elsewhere") return exitCode(hosted);
+  next("end the review on the page, then follow-me feedback");
+  return 0;
+}
+
+/** Opens the session, re-extracting instead of failing when the branch moved or --base changed. */
+async function openFresh(cwd: string, args: Args): Promise<Session> {
   const opts = sessionOpts(args);
   try {
     const session = await openSession(cwd, opts);
@@ -635,7 +795,7 @@ function hasApiCredentials(): boolean {
 }
 
 async function walk(cwd: string, args: Args): Promise<number> {
-  const session = await openForWalk(cwd, args);
+  const session = await openFresh(cwd, args);
   const report = (review: Review) => {
     const saved = join(session.dir, "reviews", `v${review.planVersion}.json`);
     say(
@@ -844,11 +1004,14 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
       }
       case "plan":
         return await plan(cwd, parseArgs(rest, { values: ["model", "branch"], flags: ["walk"] }));
-      case "review":
-        return await review(
-          cwd,
-          parseArgs(rest, { values: ["port"], flags: ["no-open", "detach"] }),
-        );
+      case "split": {
+        const spec = { values: ["base", "branch", "model"], flags: ["no-open"] };
+        return await split(cwd, parseArgs(rest, spec));
+      }
+      case "review": {
+        const spec = { values: ["port", "timeout"], flags: ["no-open", "detach", "wait"] };
+        return await review(cwd, parseArgs(rest, spec));
+      }
       case "walk": {
         const spec = { values: ["base", "branch", "model", "port"], flags: ["no-open", "detach"] };
         return await walk(cwd, parseArgs(rest, spec));

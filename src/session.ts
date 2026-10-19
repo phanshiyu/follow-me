@@ -202,12 +202,15 @@ export type Session = {
   readonly anchor: SessionAnchor;
   readonly diff: Diff;
   readonly draftPath: string;
+  /** <dir>/prompt.md, the planner prompt written for an agent to read. */
+  readonly promptPath: string;
   plans(): StoredPlan[];
   reviews(): StoredReview[];
   /** The split-mode review with the highest version, or null. Walk reviews never feed the planner. */
   lastReview(): Review | null;
   readDraft(): unknown;
   writeDraft(draft: unknown): void;
+  writePrompt(text: string): void;
   /** Written once per plan version; a second write for the same version throws. */
   writeReview(review: Review): void;
   /** Writes plans/vN.json unless the latest plan has the same hash. */
@@ -228,11 +231,15 @@ export function slugOf(branch: string): string {
   return branch.replaceAll("/", "-");
 }
 
-function writeJson(path: string, value: unknown): void {
+function writeText(path: string, text: string): void {
   mkdirSync(dirname(path), { recursive: true });
   const temp = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`);
+  writeFileSync(temp, text);
   renameSync(temp, path);
+}
+
+function writeJson(path: string, value: unknown): void {
+  writeText(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
 function readJson(path: string): unknown {
@@ -359,6 +366,7 @@ function makeSession(root: string, dir: string, anchor: SessionAnchor, diff: Dif
   const plansDir = join(dir, "plans");
   const reviewsDir = join(dir, "reviews");
   const draftPath = join(dir, "draft.json");
+  const promptPath = join(dir, "prompt.md");
   const appliedPath = join(dir, "applied.json");
 
   const plans = (): StoredPlan[] =>
@@ -385,6 +393,7 @@ function makeSession(root: string, dir: string, anchor: SessionAnchor, diff: Dif
     anchor,
     diff,
     draftPath,
+    promptPath,
     plans,
     reviews,
     lastReview: () => reviews().findLast((r) => r.review.mode === "split")?.review ?? null,
@@ -394,6 +403,7 @@ function makeSession(root: string, dir: string, anchor: SessionAnchor, diff: Dif
       return draft;
     },
     writeDraft: (draft) => writeJson(draftPath, draft),
+    writePrompt: (text) => writeText(promptPath, text),
     writeReview: (review) => {
       const path = join(reviewsDir, `v${review.planVersion}.json`);
       if (existsSync(path)) throw new SessionFileError(`${path} is already written`);

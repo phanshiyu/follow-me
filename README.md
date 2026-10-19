@@ -43,7 +43,13 @@ follow-me uninstall         # removes exactly the files install writes
 
 ## Split your own branch
 
-Check out the branch you want to split and run these from the repo root:
+Check out the branch you want to split and run this from the repo root:
+
+```sh
+follow-me split --base main     # extract, draft, apply and open the review in one go
+```
+
+With an Anthropic key in the environment, `split` asks the API for the draft. Without one, it writes `.follow-me/<branch>/prompt.md` and stops: ask your coding agent to follow it, then run `follow-me check` and `follow-me split` again. Every command ends with a `next:` line naming the step after it. The steps `split` runs are also commands of their own:
 
 ```sh
 follow-me extract --base main   # snapshot the diff from main to the tip, list the units
@@ -103,6 +109,7 @@ The first `review` or `walk` starts a review server for your user and serves the
 ```sh
 follow-me review --detach       # start the server in the background and return
 follow-me review --no-open      # print the URL without opening a browser
+follow-me review --wait         # return only once the review ends, so an agent can go on to feedback
 follow-me server status         # the server, its port, and the sessions it hosts
 follow-me server stop           # stop it, autosaved reviews are kept
 ```

@@ -296,6 +296,19 @@ export function sessionUrl(port: number, summary: HostedSummary): string {
   return `http://127.0.0.1:${port}${summary.url}`;
 }
 
+/** Whether the server on this port still serves the session's state; a gone server serves none. */
+export async function stillHosted(port: number, summary: HostedSummary): Promise<boolean> {
+  try {
+    const res = await fetch(`${sessionUrl(port, summary)}api/state`, {
+      signal: AbortSignal.timeout(2_000),
+    });
+    await res.body?.cancel();
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Stops the recorded server and waits for it to exit. Only a pid that answers as our server on
  * the recorded port is signalled, so a reused pid is never killed. A stale record is removed.

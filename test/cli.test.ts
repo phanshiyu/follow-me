@@ -304,6 +304,93 @@ test("--version, --help and a directory outside any repo answer like other CLIs"
   });
 });
 
+test("split without a draft or API credentials writes the prompt and hands off", (t) => {
+  const { run } = cliIn(t);
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  const tip = repo.branch.slice(0, 12);
+  const base = repo.base.slice(0, 12);
+  assert.deepEqual(run(repo.dir, "split", "--no-open"), {
+    code: 1,
+    out: [
+      `feature ${tip} onto main ${base}: 8 files, 9 units`,
+      "no draft for feature yet, and neither ANTHROPIC_API_KEY nor ANTHROPIC_AUTH_TOKEN is set to ask the API for one.",
+      "Have your coding agent follow .follow-me/feature/prompt.md and write .follow-me/feature/draft.json, then run:",
+      "  follow-me check",
+      "  follow-me split",
+      "next: hand .follow-me/feature/prompt.md to your agent",
+      "",
+    ].join("\n"),
+    err: "",
+  });
+  const prompt = readFileSync(join(repo.dir, ".follow-me", "feature", "prompt.md"), "utf8");
+  assert.equal(prompt.split("\n")[0], "# follow-me: plan the commits");
+});
+
+test("split with a valid draft applies it and hosts the review in the background", async (t) => {
+  const { home, run } = cliIn(t);
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  assert.equal(run(repo.dir, "extract").code, 0);
+  const diff = await loadDiff(repo.dir, "main", "feature");
+  writeWholeDraft(repo.dir, repo.base, repo.branch, [...diff.units.keys()]);
+
+  const split = run(repo.dir, "split", "--no-open");
+  assert.equal(split.code, 0, split.err);
+  const head = git(repo.dir, "rev-parse", "feature-split");
+  const tree = git(repo.dir, "rev-parse", "feature^{tree}");
+  const record = serverRecord(home);
+  assert.ok(record, "split leaves a review server running");
+  const out = split.out.split("\n");
+  const [, url] = SESSION_URL.exec(split.out) ?? [];
+  assert.ok(url);
+  assert.match(out[1] ?? "", /^ok: 1 commit, plan [0-9a-f]{12}$/);
+  assert.deepEqual(out.slice(2), [
+    "  1  feat: everything  (9 units, 8 files)",
+    `created feature-split at ${head.slice(0, 12)} from plan v1 (1 commit)`,
+    "signing: off",
+    `proof: feature-split^{tree} ${tree} equals feature^{tree} ${tree}`,
+    `follow-me review: ${url}`,
+    "next: end the review on the page, then follow-me feedback",
+    "",
+  ]);
+  const state = JSON.parse(await (await fetch(new URL("api/state", url))).text());
+  assert.deepEqual([state.mode, state.version], ["split", 1]);
+  assert.equal(new URL(url).port, String(record.port));
+});
+
+test("review --wait returns once the review attached to ends", async (t) => {
+  const { run, spawnCli } = cliIn(t);
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  assert.equal(run(repo.dir, "extract").code, 0);
+  const diff = await loadDiff(repo.dir, "main", "feature");
+  writeWholeDraft(repo.dir, repo.base, repo.branch, [...diff.units.keys()]);
+  assert.equal(run(repo.dir, "apply").code, 0);
+  assert.equal(run(repo.dir, "review", "--detach", "--no-open").code, 0);
+
+  const timedOut = run(repo.dir, "review", "--wait", "--no-open", "--timeout", "0.3");
+  assert.deepEqual(
+    [timedOut.code, timedOut.err],
+    [
+      1,
+      "follow-me: the review is still open after 0.3s; run `follow-me review --wait` again to keep waiting\n",
+    ],
+  );
+  const waiting = spawnCli(repo.dir, "review", "--wait", "--no-open");
+  const url = await waiting.url;
+  const ended = await fetch(new URL("api/end", url), { method: "POST" });
+  assert.equal(ended.status, 200);
+  assert.deepEqual(await waiting.exited, [0, null]);
+  assert.deepEqual(waiting.out().split("\n"), [
+    `follow-me review: ${url}`,
+    "review v1 saved with 0 comments",
+    "next: follow-me feedback",
+    "",
+  ]);
+  assert.equal(run(repo.dir, "feedback").code, 0);
+});
+
 test("prompt --walk writes for a reviewer and names the branch in the check command", (t) => {
   const { run } = cliIn(t);
   const repo = makeFixtureRepo();
