@@ -1,5 +1,13 @@
-import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -97,6 +105,8 @@ export function makeFixtureRepo(): FixtureRepo {
 
 function buildFixture(dir: string): { base: string; branch: string } {
   git(dir, "init", "-q", "-b", "main");
+  // A user whose global config signs would otherwise sign every fixture commit with their key.
+  git(dir, "config", "commit.gpgsign", "false");
   write(dir, "src/lib.js", BASE_LIB);
   write(dir, "src/old-name.js", "export const legacy = true;\n");
   write(dir, "README.md", "# demo\n\nold intro\n");
@@ -144,4 +154,27 @@ export function addWholeFileKinds(repo: FixtureRepo): string {
   mkdirSync(join(dir, "vendor/sub"), { recursive: true });
   git(dir, "commit", "-q", "-m", "whole-file kinds");
   return git(dir, "rev-parse", "HEAD");
+}
+
+/** Why SSH signing tests cannot run here, or null when they can. */
+export function sshSigningUnavailable(): string | null {
+  const probe = spawnSync("ssh-keygen", ["-?"], { encoding: "utf8" });
+  return probe.error === undefined ? null : "ssh-keygen is not installed";
+}
+
+/**
+ * Makes the repo sign every commit with a fresh passphrase-less SSH key, and trust that key for
+ * fixture@example.com so `git verify-commit` passes. ed25519 signatures are deterministic;
+ * ecdsa ones differ on every run, like openpgp signatures.
+ */
+export function signWithSsh(repo: FixtureRepo, type: "ed25519" | "ecdsa"): void {
+  const key = join(repo.dir, ".git", `fixture-${type}`);
+  execFileSync("ssh-keygen", ["-q", "-t", type, "-N", "", "-C", "fixture", "-f", key]);
+  const pub = readFileSync(`${key}.pub`, "utf8").trim();
+  const allowed = join(repo.dir, ".git", "allowed-signers");
+  writeFileSync(allowed, `fixture@example.com ${pub}\n`);
+  git(repo.dir, "config", "gpg.format", "ssh");
+  git(repo.dir, "config", "user.signingkey", `${key}.pub`);
+  git(repo.dir, "config", "gpg.ssh.allowedSignersFile", allowed);
+  git(repo.dir, "config", "commit.gpgsign", "true");
 }

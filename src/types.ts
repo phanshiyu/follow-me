@@ -247,6 +247,10 @@ export type Applied = {
   readonly version: PlanVersion;
   readonly branch: string;
   readonly head: Sha;
+  /** planHash of the applied plan; null in records written before it was stored. */
+  readonly hash: string | null;
+  /** Whether the commits were signed; null in records written before it was stored. */
+  readonly signed: boolean | null;
 };
 
 /** Comment status is derived: the response in a later plan, else open. */

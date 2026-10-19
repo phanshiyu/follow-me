@@ -3,7 +3,17 @@ import { homedir } from "node:os";
 import { join, relative } from "node:path";
 import { PlanRequestError, requestPlan } from "./anthropic.ts";
 import { DiffParseError, formatUnitRef } from "./diff.ts";
-import { BranchRefusedError, GitError, treeOf, writeBranch } from "./git.ts";
+import {
+  BranchRefusedError,
+  branchHead,
+  GitError,
+  type Signing,
+  type SignMode,
+  signing,
+  treeOf,
+  type WriteResult,
+  writeBranch,
+} from "./git.ts";
 import {
   findServer,
   idleMs,
@@ -54,7 +64,8 @@ const USAGE = `usage: follow-me <command>
 
   extract [--base <ref>] [--branch <name>]  anchor a session and list the units
   check [path] [--branch <name>]            validate draft.json or the given plan file
-  apply [--name <branch>] [--force]         write the draft as commits on <branch>-split or
+  apply [--name <branch>] [--force] [--sign|--no-sign]
+                                            write the draft as commits on <branch>-split or
                                             --name; never on <branch> or a checked-out branch
   status                                    show the session's plans, reviews, lock and the
                                             branch apply writes
@@ -81,7 +92,9 @@ const USAGE = `usage: follow-me <command>
 review and walk share one server per user: a running one hosts the session and the command
 prints its URL; otherwise the command serves until its review ends, or with --detach starts the
 server in the background. --port taken by another program falls back to a free port.
---force lets apply move a branch follow-me did not create; it never allows <branch> itself.`;
+--force lets apply move a branch follow-me did not create; it never allows <branch> itself.
+apply signs the commits when your git config signs commits (commit.gpgsign, gpg.format);
+--sign signs them anyway and --no-sign never signs.`;
 
 type Args = {
   readonly positionals: readonly string[];
@@ -295,23 +308,49 @@ async function apply(cwd: string, args: Args): Promise<number> {
   return locked(session, "apply", () => applyLocked(session, args));
 }
 
+function signMode(args: Args): SignMode {
+  const on = args.flags.has("sign");
+  const off = args.flags.has("no-sign");
+  if (on && off) throw new UsageError("--sign and --no-sign cannot be used together");
+  return on ? "on" : off ? "off" : "config";
+}
+
+function describeSigning(s: Signing): string {
+  return s.on ? `on (${s.format})` : "off";
+}
+
 async function applyLocked(session: Session, args: Args): Promise<number> {
+  const mode = signMode(args);
   const verdict = validate(session, session.readDraft());
   if (!verdict.ok) return 1;
-  const version = session.freeze(verdict.plan);
+  const { plan } = verdict;
+  const version = session.freeze(plan);
   const name = args.values.get("name") ?? splitBranch(session);
+  const signed = await signing(session.root, mode);
   const last = session.applied();
-  const result = await writeBranch(session.root, session.diff, verdict.plan, {
-    name,
-    source: session.anchor.branch,
-    expectedOld: last?.branch === name ? last.head : null,
-    force: args.flags.has("force"),
-  });
-  session.recordApplied(version, result);
+  // Signatures can differ per run, so the record, not SHA equality, decides that nothing changed.
+  const recorded =
+    last !== null &&
+    last.branch === name &&
+    last.version === version &&
+    last.hash === plan.hash &&
+    last.signed === signed.on &&
+    (await branchHead(session.root, name)) === last.head;
+  const result: Omit<WriteResult, "commits"> = recorded
+    ? { kind: "unchanged", branch: name, head: last.head }
+    : await writeBranch(session.root, session.diff, plan, {
+        name,
+        source: session.anchor.branch,
+        expectedOld: last?.branch === name ? last.head : null,
+        force: args.flags.has("force"),
+        sign: signed.on,
+      });
+  session.recordApplied({ version, hash: plan.hash }, { ...result, signed: signed.on });
   for (const w of verdict.warnings) say(formatWarning(w));
   say(
-    `${result.kind} ${result.branch} at ${short(result.head)} from plan v${version} (${plural(result.commits.length, "commit")})`,
+    `${result.kind} ${result.branch} at ${short(result.head)} from plan v${version} (${plural(plan.commits.length, "commit")})`,
   );
+  say(`signing: ${describeSigning(signed)}`);
   const tree = await treeOf(session.root, result.head);
   const same = tree === session.anchor.tipTree;
   say(
@@ -683,6 +722,7 @@ async function status(cwd: string): Promise<number> {
       `reviews: ${reviews.map((r) => `v${r.version}`).join(", ")} (latest has ${plural(lastReview.review.comments.length, "comment")}, ${open} open)`,
     );
   }
+  say(`signing: ${describeSigning(await signing(session.root, "config"))}`);
   const applied = session.applied();
   say(
     applied === null
@@ -713,7 +753,10 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
       case "check":
         return await check(cwd, parseArgs(rest, { values: ["branch"] }));
       case "apply":
-        return await apply(cwd, parseArgs(rest, { values: ["name"], flags: ["force"] }));
+        return await apply(
+          cwd,
+          parseArgs(rest, { values: ["name"], flags: ["force", "sign", "no-sign"] }),
+        );
       case "status":
         parseArgs(rest, {});
         return await status(cwd);

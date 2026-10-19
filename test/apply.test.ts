@@ -68,6 +68,7 @@ test("apply writes the story as commits whose last tree is the tip, without touc
     source: "feature",
     expectedOld: null,
     force: false,
+    sign: false,
   });
   assert.equal(result.kind, "created");
   assert.equal(git(repo.dir, "rev-parse", "feature-split"), result.head);
@@ -107,6 +108,7 @@ test("apply writes the story as commits whose last tree is the tip, without touc
     source: "feature",
     expectedOld: result.head,
     force: false,
+    sign: false,
   });
   assert.deepEqual(
     { kind: again.kind, head: again.head },
@@ -118,6 +120,7 @@ test("apply writes the story as commits whose last tree is the tip, without touc
     source: "feature",
     expectedOld: null,
     force: false,
+    sign: false,
   });
   assert.equal(elsewhere.head, result.head, "the same plan yields the same commits");
 });
@@ -128,7 +131,13 @@ test("apply refuses to move a branch it did not write unless forced", async (t) 
   const diff = await loadDiff(repo.dir, "main", "feature");
   const verdict = validatePlan(diff, storyPlan(diff));
   assert.ok(verdict.ok);
-  const opts = { name: "main", source: "feature", expectedOld: null, force: false };
+  const opts = {
+    name: "main",
+    source: "feature",
+    expectedOld: null,
+    force: false,
+    sign: false,
+  } satisfies Parameters<typeof writeBranch>[3];
   await assert.rejects(writeBranch(repo.dir, diff, verdict.plan, opts), {
     name: BranchRefusedError.name,
     message: "branch main already exists and follow-me did not write it; pass --force to overwrite",
@@ -165,6 +174,7 @@ test("symlink, empty file, type change and gitlink units apply in reverse diff o
     source: "feature",
     expectedOld: null,
     force: false,
+    sign: false,
   });
   assert.equal(result.commits.length, 12);
   assert.equal(
@@ -193,6 +203,7 @@ test("a refused write leaves no refs and no objects behind", async (t) => {
       source: "feature",
       expectedOld: null,
       force: false,
+      sign: false,
     }),
     {
       message:
@@ -222,6 +233,7 @@ test("the branch being split and branches checked out elsewhere are never writte
       source: "feature",
       expectedOld: null,
       force,
+      sign: false,
     });
 
   for (const force of [false, true]) {

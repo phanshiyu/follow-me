@@ -22,7 +22,7 @@ import { join } from "node:path";
 import { type TestContext, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { loadDiff } from "../src/git.ts";
-import { makeFixtureRepo } from "./fixture-repo.ts";
+import { makeFixtureRepo, signWithSsh, sshSigningUnavailable } from "./fixture-repo.ts";
 
 const BIN = fileURLToPath(new URL("../bin/follow-me.ts", import.meta.url));
 
@@ -201,6 +201,7 @@ test("extract, check, apply and status drive the whole flow from the command lin
     applied.out,
     [
       `created feature-split at ${head.slice(0, 12)} from plan v1 (2 commits)`,
+      "signing: off",
       `proof: feature-split^{tree} ${tree} equals feature^{tree} ${tree}`,
       "",
     ].join("\n"),
@@ -222,6 +223,7 @@ test("extract, check, apply and status drive the whole flow from the command lin
       "draft: .follow-me/feature/draft.json",
       "plans: v1",
       "reviews: none",
+      "signing: off",
       `applied: plan v1 as feature-split at ${head.slice(0, 12)}`,
       "",
     ].join("\n"),
@@ -322,6 +324,122 @@ test("walk serves a frozen plan in walk mode and saves a code review on end", as
   assert.equal(review.mode, "walk");
   assert.equal(review.planVersion, 1);
   assert.equal(run(repo.dir, "feedback").out, "# Code review\n\nThe reviewer left no comments.\n");
+});
+
+function writeTwoCommitDraft(dir: string, base: string, tip: string, ids: readonly string[]) {
+  const [first, ...rest] = ids;
+  assert.ok(first);
+  const commits = [
+    { message: "docs: readme", units: [first] },
+    { message: "feat: everything else", units: rest },
+  ];
+  writeFileSync(
+    join(dir, ".follow-me", "feature", "draft.json"),
+    JSON.stringify({ schema: "follow-me/plan@1", base, tip, commits, responses: [] }),
+  );
+}
+
+/** %G? per split commit, oldest first: G is a good signature, N is none. */
+function signatures(dir: string, branch = "feature-split"): string {
+  return git(dir, "log", "--reverse", "--format=%G?", `main..${branch}`);
+}
+
+function verifies(dir: string, commit: string): boolean {
+  return spawnSync("git", ["verify-commit", commit], { cwd: dir }).status === 0;
+}
+
+const NO_SSH = sshSigningUnavailable() ?? false;
+
+test("apply signs the split when the repo signs commits", { skip: NO_SSH }, async (t) => {
+  const { run } = cliIn(t);
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  signWithSsh(repo, "ed25519");
+  assert.equal(run(repo.dir, "extract").code, 0);
+  const diff = await loadDiff(repo.dir, "main", "feature");
+  writeTwoCommitDraft(repo.dir, repo.base, repo.branch, [...diff.units.keys()]);
+
+  const applied = run(repo.dir, "apply");
+  assert.equal(applied.code, 0, applied.err);
+  const head = git(repo.dir, "rev-parse", "feature-split");
+  const tree = git(repo.dir, "rev-parse", "feature^{tree}");
+  assert.equal(
+    applied.out,
+    [
+      `created feature-split at ${head.slice(0, 12)} from plan v1 (2 commits)`,
+      "signing: on (ssh)",
+      `proof: feature-split^{tree} ${tree} equals feature^{tree} ${tree}`,
+      "",
+    ].join("\n"),
+  );
+  assert.equal(signatures(repo.dir), "G\nG");
+  const commits = git(repo.dir, "rev-list", "main..feature-split").split("\n");
+  assert.deepEqual(
+    commits.map((c) => verifies(repo.dir, c)),
+    [true, true],
+  );
+
+  const again = run(repo.dir, "apply");
+  assert.equal(
+    again.out.split("\n")[0],
+    `unchanged feature-split at ${head.slice(0, 12)} from plan v1 (2 commits)`,
+  );
+  assert.equal(git(repo.dir, "rev-parse", "feature-split"), head);
+  assert.match(run(repo.dir, "status").out, /^signing: on \(ssh\)$/m);
+
+  const unsigned = run(repo.dir, "apply", "--no-sign");
+  assert.equal(unsigned.code, 0, unsigned.err);
+  assert.deepEqual(unsigned.out.split("\n").slice(0, 2), [
+    `updated feature-split at ${git(repo.dir, "rev-parse", "feature-split").slice(0, 12)} from plan v1 (2 commits)`,
+    "signing: off",
+  ]);
+  assert.equal(signatures(repo.dir), "N\nN");
+  assert.equal(git(repo.dir, "rev-parse", "feature-split^{tree}"), tree);
+});
+
+test("re-applying a signed split whose signatures differ per run is a no-op", {
+  skip: NO_SSH,
+}, async (t) => {
+  const { run } = cliIn(t);
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  signWithSsh(repo, "ecdsa");
+  git(repo.dir, "config", "commit.gpgsign", "false");
+  assert.equal(run(repo.dir, "extract").code, 0);
+  const diff = await loadDiff(repo.dir, "main", "feature");
+  writeTwoCommitDraft(repo.dir, repo.base, repo.branch, [...diff.units.keys()]);
+
+  assert.equal(run(repo.dir, "apply").out.split("\n")[1], "signing: off");
+  assert.equal(signatures(repo.dir), "N\nN");
+  assert.match(run(repo.dir, "status").out, /^signing: off$/m);
+
+  const signed = run(repo.dir, "apply", "--sign");
+  assert.equal(signed.code, 0, signed.err);
+  const head = git(repo.dir, "rev-parse", "feature-split");
+  assert.deepEqual(signed.out.split("\n").slice(0, 2), [
+    `updated feature-split at ${head.slice(0, 12)} from plan v1 (2 commits)`,
+    "signing: on (ssh)",
+  ]);
+  assert.equal(signatures(repo.dir), "G\nG");
+
+  assert.equal(
+    run(repo.dir, "apply", "--sign").out.split("\n")[0],
+    `unchanged feature-split at ${head.slice(0, 12)} from plan v1 (2 commits)`,
+  );
+  assert.equal(git(repo.dir, "rev-parse", "feature-split"), head);
+
+  assert.equal(run(repo.dir, "apply", "--sign", "--name", "feature-split-2").code, 0);
+  assert.notEqual(
+    git(repo.dir, "rev-parse", "feature-split-2"),
+    head,
+    "the same plan signed twice gives different commits",
+  );
+  assert.equal(signatures(repo.dir, "feature-split-2"), "G\nG");
+  assert.deepEqual(run(repo.dir, "apply", "--sign", "--no-sign"), {
+    code: 1,
+    out: "",
+    err: "follow-me: --sign and --no-sign cannot be used together\n",
+  });
 });
 
 test("apply never writes the branch being split, even with --force", async (t) => {

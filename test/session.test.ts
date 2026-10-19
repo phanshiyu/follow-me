@@ -86,12 +86,28 @@ test("freeze writes a new version only when the plan changed", async (t) => {
       [2, "feat: all of it", true],
     ],
   );
-  session.recordApplied(latest, { branch: "feature-split", head: session.anchor.base });
+  session.recordApplied(
+    { version: latest, hash: "b".repeat(64) },
+    { branch: "feature-split", head: session.anchor.base, signed: true },
+  );
   assert.deepEqual(session.applied(), {
     schema: "follow-me/applied@1",
     version: 2,
     branch: "feature-split",
     head: repo.base,
+    hash: "b".repeat(64),
+    signed: true,
+  });
+  const path = join(session.dir, "applied.json");
+  const { hash: _hash, signed: _signed, ...older } = JSON.parse(readFileSync(path, "utf8"));
+  writeFileSync(path, JSON.stringify(older));
+  assert.deepEqual(session.applied(), {
+    schema: "follow-me/applied@1",
+    version: 2,
+    branch: "feature-split",
+    head: repo.base,
+    hash: null,
+    signed: null,
   });
 });
 

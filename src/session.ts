@@ -201,8 +201,8 @@ export type Session = {
   adoptLock(from: LockToken, command: string): HeldLock;
   lockState(): LockState;
   recordApplied(
-    version: PlanVersion,
-    result: { readonly branch: string; readonly head: Sha },
+    plan: { readonly version: PlanVersion; readonly hash: string },
+    result: { readonly branch: string; readonly head: Sha; readonly signed: boolean },
   ): void;
 };
 
@@ -255,11 +255,13 @@ function parseAnchor(v: unknown): SessionAnchor | null {
 }
 
 function parseApplied(v: unknown): Applied | null {
-  if (!isFields<"schema" | "version" | "branch" | "head">(v)) return null;
-  const { schema, version, branch, head } = v;
+  if (!isFields<"schema" | "version" | "branch" | "head" | "hash" | "signed">(v)) return null;
+  const { schema, version, branch, head, hash = null, signed = null } = v;
   if (schema !== "follow-me/applied@1" || !isPlanVersion(version)) return null;
   if (typeof branch !== "string" || typeof head !== "string" || !isSha(head)) return null;
-  return { schema, version, branch, head };
+  if (hash !== null && typeof hash !== "string") return null;
+  if (signed !== null && typeof signed !== "boolean") return null;
+  return { schema, version, branch, head, hash, signed };
 }
 
 function isCommitIndex(v: unknown): v is number {
@@ -397,12 +399,14 @@ function makeSession(root: string, dir: string, anchor: SessionAnchor, diff: Dif
       if (applied === null) throw new SessionFileError(`${appliedPath} is not an applied record`);
       return applied;
     },
-    recordApplied: (version, result) =>
+    recordApplied: (plan, result) =>
       writeJson(appliedPath, {
         schema: "follow-me/applied@1",
-        version,
+        version: plan.version,
         branch: result.branch,
         head: result.head,
+        hash: plan.hash,
+        signed: result.signed,
       } satisfies Applied),
   };
 }

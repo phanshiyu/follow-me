@@ -70,6 +70,11 @@ async function resolveOptional(repo: string, ref: string): Promise<Sha | null> {
   }
 }
 
+/** The ref refs/heads/<name> points at, or null when there is no such branch. */
+export function branchHead(repo: string, name: string): Promise<Sha | null> {
+  return resolveOptional(repo, `refs/heads/${name}`);
+}
+
 export async function treeOf(repo: string, rev: string): Promise<Sha> {
   return toSha(
     await gitText(repo, ["rev-parse", "--verify", "--end-of-options", `${rev}^{tree}`]),
@@ -104,7 +109,7 @@ export async function checkedOutBranches(repo: string): Promise<Map<string, stri
 }
 
 export async function branchExists(repo: string, name: string): Promise<boolean> {
-  return (await resolveOptional(repo, `refs/heads/${name}`)) !== null;
+  return (await branchHead(repo, name)) !== null;
 }
 
 export async function defaultBaseRef(repo: string): Promise<string> {
@@ -151,6 +156,24 @@ export async function loadDiff(repo: string, baseRef: string, tipRef: string): P
   const patchText = patch.toString("latin1");
   const blobs = await catBlobs(repo, neededBlobs(rawZ, patchText));
   return parseDiff({ base, tip, baseTree, tipTree, rawZ, patch: patchText, blobs });
+}
+
+/** "config" leaves signing to commit.gpgsign; "on" and "off" override it. */
+export type SignMode = "config" | "on" | "off";
+
+/** Whether commits written in this mode are signed, and with which gpg.format. */
+export type Signing = { readonly on: boolean; readonly format: string };
+
+export async function signing(repo: string, mode: SignMode): Promise<Signing> {
+  const configured = await gitText(repo, [
+    "config",
+    "--type=bool",
+    "--default=false",
+    "commit.gpgsign",
+  ]);
+  const format = await gitText(repo, ["config", "--default=openpgp", "gpg.format"]);
+  const on = mode === "config" ? configured === "true" : mode === "on";
+  return { on, format };
 }
 
 export type WriteResult = {
@@ -246,6 +269,7 @@ async function adoptObjects(quarantine: string, objects: string): Promise<void> 
  * user's index and worktree are never touched, then moves refs/heads/<name> by compare-and-swap.
  * New objects go to a quarantine inside the object store and are adopted only right before the
  * ref moves, so a refused or failed write leaves neither refs nor objects behind.
+ * With opts.sign, commit-tree signs with gpg.format and user.signingkey.
  */
 export async function writeBranch(
   repo: string,
@@ -257,6 +281,8 @@ export async function writeBranch(
     readonly source: string;
     readonly expectedOld: Sha | null;
     readonly force: boolean;
+    /** commit-tree is plumbing and ignores commit.gpgsign, so the caller resolves it. */
+    readonly sign: boolean;
   },
 ): Promise<WriteResult> {
   const ref = `refs/heads/${opts.name}`;
@@ -302,10 +328,14 @@ export async function writeBranch(
       tree = toSha(await gitText(repo, ["write-tree"], { env }), "write-tree");
       const message = commit.message.endsWith("\n") ? commit.message : `${commit.message}\n`;
       head = toSha(
-        await gitText(repo, ["commit-tree", "--no-gpg-sign", tree, "-p", head, "-F", "-"], {
-          input: message,
-          env: { ...env, ...identityEnv(who, n - 1 - commit.index) },
-        }),
+        await gitText(
+          repo,
+          ["commit-tree", opts.sign ? "-S" : "--no-gpg-sign", tree, "-p", head, "-F", "-"],
+          {
+            input: message,
+            env: { ...env, ...identityEnv(who, n - 1 - commit.index) },
+          },
+        ),
         "commit-tree",
       );
       commits.push(head);
@@ -314,7 +344,8 @@ export async function writeBranch(
       throw new Error(`the last commit's tree ${tree} differs from the tip tree ${diff.tipTree}`);
     }
 
-    const current = await resolveOptional(repo, ref);
+    const current = await branchHead(repo, opts.name);
+    // Unsigned commits, and deterministic signatures such as ssh ed25519, give the same SHAs.
     if (current === head) return { kind: "unchanged", branch: opts.name, head, commits };
     if (current !== null && !opts.force) {
       if (opts.expectedOld === null) {
