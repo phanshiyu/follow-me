@@ -1,4 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title">
+  <title id="title">follow-me: a sweaty commit blob chasing a smug HEAD blob wearing a party hat</title>
   <rect x="4" y="4" width="248" height="248" rx="44" fill="#fff4c2" stroke="#222" stroke-width="6"/>
   <!-- the branch -->
   <path d="M8 196 L248 196" stroke="#222" stroke-width="10" stroke-linecap="round"/>
