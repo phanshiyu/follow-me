@@ -244,6 +244,7 @@ async function apply(cwd: string, args: Args): Promise<number> {
   const last = session.applied();
   const result = await writeBranch(session.root, session.diff, verdict.plan, {
     name,
+    source: session.anchor.branch,
     expectedOld: last?.branch === name ? last.head : null,
     force: args.flags.has("force"),
   });

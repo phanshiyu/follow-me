@@ -237,3 +237,17 @@ test("walk serves a frozen plan in walk mode and saves a code review on end", as
   assert.equal(review.planVersion, 1);
   assert.equal(run(repo.dir, "feedback").out, "# Code review\n\nThe reviewer left no comments.\n");
 });
+
+test("apply never writes the branch being split, even with --force", async (t) => {
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  assert.equal(run(repo.dir, "extract").code, 0);
+  const diff = await loadDiff(repo.dir, "main", "feature");
+  writeWholeDraft(repo.dir, repo.base, repo.branch, [...diff.units.keys()]);
+  assert.deepEqual(run(repo.dir, "apply", "--name", "feature", "--force"), {
+    code: 1,
+    out: "",
+    err: "follow-me: feature is the branch being split; the split always lands on a separate branch, so pick another --name (--force does not change this)\n",
+  });
+  assert.equal(git(repo.dir, "rev-parse", "feature"), repo.branch);
+});

@@ -84,6 +84,19 @@ export async function currentBranch(repo: string): Promise<string | null> {
   }
 }
 
+/** Each branch checked out in some worktree of the repo, mapped to that worktree's path. */
+export async function checkedOutBranches(repo: string): Promise<Map<string, string>> {
+  const out = (await git(repo, ["worktree", "list", "--porcelain", "-z"])).toString("utf8");
+  const found = new Map<string, string>();
+  let path = "";
+  for (const field of out.split("\0")) {
+    if (field.startsWith("worktree ")) path = field.slice("worktree ".length);
+    if (field.startsWith("branch refs/heads/"))
+      found.set(field.slice("branch refs/heads/".length), path);
+  }
+  return found;
+}
+
 export async function defaultBaseRef(repo: string): Promise<string> {
   for (const name of ["main", "master"]) {
     if ((await resolveOptional(repo, `refs/heads/${name}`)) !== null) return name;
@@ -228,13 +241,30 @@ export async function writeBranch(
   repo: string,
   diff: Diff,
   plan: ValidPlan,
-  opts: { readonly name: string; readonly expectedOld: Sha | null; readonly force: boolean },
+  opts: {
+    readonly name: string;
+    /** The branch being split. It is never written, with or without force. */
+    readonly source: string;
+    readonly expectedOld: Sha | null;
+    readonly force: boolean;
+  },
 ): Promise<WriteResult> {
   const ref = `refs/heads/${opts.name}`;
   try {
     await git(repo, ["check-ref-format", ref]);
   } catch {
     throw new BranchRefusedError(`"${opts.name}" is not a valid branch name`);
+  }
+  if (opts.name === opts.source) {
+    throw new BranchRefusedError(
+      `${opts.name} is the branch being split; the split always lands on a separate branch, so pick another --name (--force does not change this)`,
+    );
+  }
+  const worktree = (await checkedOutBranches(repo)).get(opts.name);
+  if (worktree !== undefined) {
+    throw new BranchRefusedError(
+      `branch ${opts.name} is checked out in ${worktree}; moving it would leave that worktree out of sync, so pick another --name (--force does not change this)`,
+    );
   }
   const who = await identities(repo, diff.tip);
   const zero = "0".repeat(diff.base.length);

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { BranchRefusedError, loadDiff, writeBranch } from "../src/git.ts";
@@ -64,6 +65,7 @@ test("apply writes the story as commits whose last tree is the tip, without touc
 
   const result = await writeBranch(repo.dir, diff, verdict.plan, {
     name: "feature-split",
+    source: "feature",
     expectedOld: null,
     force: false,
   });
@@ -102,6 +104,7 @@ test("apply writes the story as commits whose last tree is the tip, without touc
 
   const again = await writeBranch(repo.dir, diff, verdict.plan, {
     name: "feature-split",
+    source: "feature",
     expectedOld: result.head,
     force: false,
   });
@@ -112,6 +115,7 @@ test("apply writes the story as commits whose last tree is the tip, without touc
 
   const elsewhere = await writeBranch(repo.dir, diff, verdict.plan, {
     name: "feature-split-2",
+    source: "feature",
     expectedOld: null,
     force: false,
   });
@@ -124,7 +128,7 @@ test("apply refuses to move a branch it did not write unless forced", async (t) 
   const diff = await loadDiff(repo.dir, "main", "feature");
   const verdict = validatePlan(diff, storyPlan(diff));
   assert.ok(verdict.ok);
-  const opts = { name: "main", expectedOld: null, force: false };
+  const opts = { name: "main", source: "feature", expectedOld: null, force: false };
   await assert.rejects(writeBranch(repo.dir, diff, verdict.plan, opts), {
     name: BranchRefusedError.name,
     message: "branch main already exists and follow-me did not write it; pass --force to overwrite",
@@ -158,6 +162,7 @@ test("symlink, empty file, type change and gitlink units apply in reverse diff o
   assert.ok(verdict.ok, JSON.stringify(verdict));
   const result = await writeBranch(repo.dir, diff, verdict.plan, {
     name: "split",
+    source: "feature",
     expectedOld: null,
     force: false,
   });
@@ -183,7 +188,12 @@ test("a refused write leaves no refs and no objects behind", async (t) => {
   assert.ok(verdict.ok);
 
   await assert.rejects(
-    writeBranch(repo.dir, diff, verdict.plan, { name: "taken", expectedOld: null, force: false }),
+    writeBranch(repo.dir, diff, verdict.plan, {
+      name: "taken",
+      source: "feature",
+      expectedOld: null,
+      force: false,
+    }),
     {
       message:
         "branch taken already exists and follow-me did not write it; pass --force to overwrite",
@@ -194,4 +204,38 @@ test("a refused write leaves no refs and no objects behind", async (t) => {
     "refs/heads/feature\nrefs/heads/main\nrefs/heads/taken",
   );
   assert.equal(objectFiles(repo.dir), objects);
+});
+
+test("the branch being split and branches checked out elsewhere are never written", async (t) => {
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  const outside = mkdtempSync(join(tmpdir(), "follow-me-worktree-"));
+  t.after(() => rmSync(outside, { recursive: true, force: true }));
+  const worktree = join(realpathSync(outside), "main");
+  git(repo.dir, "worktree", "add", "-q", worktree, "main");
+  const diff = await loadDiff(repo.dir, "main", "feature");
+  const verdict = validatePlan(diff, storyPlan(diff));
+  assert.ok(verdict.ok);
+  const write = (name: string, force: boolean) =>
+    writeBranch(repo.dir, diff, verdict.plan, {
+      name,
+      source: "feature",
+      expectedOld: null,
+      force,
+    });
+
+  for (const force of [false, true]) {
+    await assert.rejects(write("feature", force), {
+      name: BranchRefusedError.name,
+      message:
+        "feature is the branch being split; the split always lands on a separate branch, so pick another --name (--force does not change this)",
+    });
+    await assert.rejects(write("main", force), {
+      name: BranchRefusedError.name,
+      message: `branch main is checked out in ${worktree}; moving it would leave that worktree out of sync, so pick another --name (--force does not change this)`,
+    });
+  }
+  assert.equal(git(repo.dir, "rev-parse", "feature"), repo.branch);
+  assert.equal(git(repo.dir, "rev-parse", "main"), repo.base);
+  assert.equal((await write("feature-split", false)).kind, "created");
 });
