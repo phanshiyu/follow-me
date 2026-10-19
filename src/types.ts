@@ -1,0 +1,232 @@
+/**
+ * Domain types shared by every module. This file holds no logic.
+ *
+ * Module map (any flow traces through at most three files):
+ *   diff.ts     git diff semantics: parse raw git output into a Diff, project file content
+ *               for any subset of applied change lines. Pure.
+ *   plan.ts     plan semantics: parse plan JSON, resolve selections, check coverage,
+ *               project every commit, prove the last one equals the tip. Pure.
+ *   git.ts      the only module that spawns git: load a Diff, write a branch from a ValidPlan.
+ *   session.ts  the .follow-me/<slug>/ layout: session anchor, plans, reviews, draft.
+ *   prompt.ts   the planner prompt for an agent, and the Anthropic API planner.
+ *   server.ts   the local review server and its JSON API; serves ui/.
+ *   cli.ts      argv -> one call into the modules above.
+ */
+
+declare const brand: unique symbol;
+export type Brand<T, B extends string> = T & { readonly [brand]: B };
+
+/** "h_" + 12 hex of sha256(path, hunk body without line numbers), "~n" for the n-th duplicate. */
+export type HunkId = Brand<string, "HunkId">;
+/** "f_" whole-file unit (binary, symlink, gitlink, empty file, type change). */
+export type FileUnitId = Brand<string, "FileUnitId">;
+/** "m_" mode flip of a text file present on both sides. */
+export type ModeUnitId = Brand<string, "ModeUnitId">;
+export type UnitId = HunkId | FileUnitId | ModeUnitId;
+export type Sha = Brand<string, "Sha">;
+export type CommentId = Brand<string, "CommentId">;
+export type PlanVersion = Brand<number, "PlanVersion">;
+/** Repo-relative path exactly as git prints it. */
+export type RepoPath = Brand<string, "RepoPath">;
+
+export type FileMode = "100644" | "100755" | "120000" | "160000";
+export type Entry = { readonly mode: FileMode; readonly blob: Sha };
+
+/** One line including its terminator, so lines.join("") is byte-identical to the blob. */
+export type Line = string;
+
+export type HunkLine =
+  | { readonly op: " "; readonly text: Line }
+  | { readonly op: "-"; readonly text: Line; readonly change: number }
+  | { readonly op: "+"; readonly text: Line; readonly change: number };
+
+export type TextHunk = {
+  readonly kind: "hunk";
+  readonly id: HunkId;
+  readonly path: RepoPath;
+  /** 0-based index into the base file's lines where body[0] sits. */
+  readonly oldStart: number;
+  readonly body: readonly HunkLine[];
+  /** Number of +/- lines. Valid change indices are [0, changeCount). */
+  readonly changeCount: number;
+};
+
+export type FileUnit = {
+  readonly kind: "file";
+  readonly id: FileUnitId;
+  readonly path: RepoPath;
+  readonly before: Entry | null;
+  readonly after: Entry | null;
+  readonly reason: "binary" | "symlink" | "gitlink" | "empty" | "typechange";
+};
+
+export type ModeUnit = {
+  readonly kind: "mode";
+  readonly id: ModeUnitId;
+  readonly path: RepoPath;
+  readonly from: FileMode;
+  readonly to: FileMode;
+};
+
+export type Unit = TextHunk | FileUnit | ModeUnit;
+
+/**
+ * A text file touched by at least one hunk. Existence per commit is derived:
+ * present on both sides: always present. base null: present once any change line is
+ * applied. tip null: present until every change line is applied.
+ */
+export type TextFile = {
+  readonly path: RepoPath;
+  readonly base: { readonly entry: Entry; readonly lines: readonly Line[] } | null;
+  readonly tip: { readonly entry: Entry; readonly bytes: string } | null;
+  /** Sorted by oldStart and disjoint in base coordinates, which git guarantees. */
+  readonly hunks: readonly TextHunk[];
+};
+
+export type Diff = {
+  readonly base: Sha;
+  readonly tip: Sha;
+  readonly baseTree: Sha;
+  readonly tipTree: Sha;
+  /** Insertion order is git diff order, which keeps the prompt stable. */
+  readonly units: ReadonlyMap<UnitId, Unit>;
+  readonly textFiles: ReadonlyMap<RepoPath, TextFile>;
+};
+
+/** Which change lines of a unit a commit takes. "rest" means every line no other commit claimed. */
+export type Selection =
+  | { readonly kind: "rest" }
+  | { readonly kind: "lines"; readonly changes: readonly number[] };
+export type UnitRef = { readonly unit: UnitId; readonly select: Selection };
+
+export type PlannedCommit = { readonly message: string; readonly units: readonly UnitRef[] };
+export type ResponseStatus = "addressed" | "declined" | "deferred";
+export type CommentResponse = {
+  readonly comment: CommentId;
+  readonly status: ResponseStatus;
+  readonly note: string;
+};
+
+/** Wire format of plans/vN.json and draft.json. Unit refs serialize as "h_x" or "h_x:0-3,7". */
+export type PlanFile = {
+  readonly schema: "follow-me/plan@1";
+  readonly base: Sha;
+  readonly tip: Sha;
+  readonly commits: readonly PlannedCommit[];
+  readonly responses: readonly CommentResponse[];
+};
+
+export type TreeChange =
+  | {
+      readonly path: RepoPath;
+      readonly op: "write";
+      readonly mode: FileMode;
+      readonly bytes: string;
+    }
+  | { readonly path: RepoPath; readonly op: "link"; readonly entry: Entry }
+  | { readonly path: RepoPath; readonly op: "delete" };
+
+export type ProjectedCommit = {
+  readonly index: number;
+  readonly message: string;
+  /** Selections fully resolved: no "rest" left. */
+  readonly refs: readonly UnitRef[];
+  readonly changes: readonly TreeChange[];
+};
+
+export type PlanIssue =
+  | { readonly kind: "malformed"; readonly at: string; readonly reason: string }
+  | { readonly kind: "stale"; readonly planTip: string; readonly sessionTip: Sha }
+  | { readonly kind: "empty-message"; readonly commit: number }
+  | { readonly kind: "empty-commit"; readonly commit: number }
+  | { readonly kind: "unknown-unit"; readonly commit: number; readonly ref: string }
+  | {
+      readonly kind: "bad-selection";
+      readonly commit: number;
+      readonly unit: UnitId;
+      readonly reason: string;
+    }
+  | {
+      readonly kind: "duplicate";
+      readonly unit: UnitId;
+      readonly changes: readonly number[];
+      readonly commits: readonly [number, number];
+    }
+  | {
+      readonly kind: "unassigned";
+      readonly unit: UnitId;
+      readonly path: RepoPath;
+      readonly changes: readonly number[];
+    }
+  | {
+      readonly kind: "path-conflict";
+      readonly commit: number;
+      readonly file: RepoPath;
+      readonly under: RepoPath;
+    }
+  | { readonly kind: "unknown-response"; readonly comment: string }
+  | {
+      readonly kind: "final-mismatch";
+      readonly path: RepoPath;
+      readonly expected: Entry | null;
+      readonly got: string;
+    };
+
+/** Non-blocking findings the planner should still see. */
+export type PlanWarning = {
+  readonly kind: "unanswered";
+  readonly comment: CommentId;
+  readonly review: PlanVersion;
+};
+
+export type Anchor =
+  | {
+      readonly kind: "hunk";
+      readonly unit: UnitId;
+      readonly commit: number;
+      readonly changes: readonly number[] | null;
+    }
+  | { readonly kind: "message"; readonly commit: number }
+  | { readonly kind: "position"; readonly commit: number }
+  | { readonly kind: "plan" };
+
+/** Comments snapshot what they pointed at, so a later reader need not load the old plan. */
+export type Comment = {
+  readonly id: CommentId;
+  readonly anchor: Anchor;
+  readonly context: { readonly commitMessage: string; readonly path: RepoPath | null };
+  readonly body: string;
+  readonly createdAt: string;
+};
+
+/** Wire format of reviews/vN.json, written once when the review session ends. */
+export type Review = {
+  readonly schema: "follow-me/review@1";
+  readonly planVersion: PlanVersion;
+  readonly planHash: string;
+  readonly endedAt: string;
+  readonly comments: readonly Comment[];
+};
+
+/** Wire format of session.json. */
+export type SessionAnchor = {
+  readonly schema: "follow-me/session@1";
+  readonly branch: string;
+  readonly baseRef: string;
+  readonly base: Sha;
+  readonly tip: Sha;
+  readonly tipTree: Sha;
+};
+
+/** Wire format of applied.json. */
+export type Applied = {
+  readonly schema: "follow-me/applied@1";
+  readonly version: PlanVersion;
+  readonly branch: string;
+  readonly head: Sha;
+};
+
+/** Comment status is derived: the response in a later plan, else open. */
+export type CommentStatus =
+  | { readonly kind: "open" }
+  | { readonly kind: "answered"; readonly in: PlanVersion; readonly response: CommentResponse };

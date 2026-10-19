@@ -1,3 +1,6 @@
 ts	phase	decision	why	evidence	result
 2026-10-19T04:01:27Z	frame	scaffold first: npm, node>=24 running .ts directly, biome, strict tsc, node --test, ci, renovate	every later phase benefits from lint, typecheck and test gates existing before features	package.json tsconfig.json biome.json .github/workflows/ci.yml renovate.json	scaffold laid
 2026-10-19T04:01:27Z	design	ran three parallel architect runners (opus, sonnet, haiku) on the hunk-splitting data model and applier	the plan format and out-of-order hunk applier are one-way doors; want structurally distinct candidates before committing	/tmp/follow-me-arena/BRIEF.md	open
+2026-10-19T04:08:01Z	design	synthesized from opus and sonnet candidates: project file content from base plus applied change lines, no patch application at all	all hunks come from one diff so they are disjoint in base coordinates; out-of-order assignment cannot misapply, which deletes the fuzz matcher and its failure modes	docs/DESIGN.md src/types.ts	contract written
+2026-10-19T04:08:01Z	design	temporary index plus commit-tree with fixed dates instead of fast-import	same determinism, simpler to debug with ordinary git commands	docs/DESIGN.md	chosen
+2026-10-19T04:08:01Z	design	unanswered review comments are warnings, not validation errors	a human must still be able to apply a plan they are happy with	src/types.ts PlanWarning	chosen
