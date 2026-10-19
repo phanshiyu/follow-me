@@ -12,6 +12,7 @@ import {
   openSession,
   type Session,
   SessionFileError,
+  SessionLockedError,
 } from "./session.ts";
 import type {
   Diff,
@@ -235,8 +236,26 @@ async function check(cwd: string, args: Args): Promise<number> {
   return 0;
 }
 
+/** Runs one command under the session's lock, so two agents never apply or review it at once. */
+async function locked(
+  session: Session,
+  command: string,
+  run: () => Promise<number>,
+): Promise<number> {
+  const release = session.lock(command);
+  try {
+    return await run();
+  } finally {
+    release();
+  }
+}
+
 async function apply(cwd: string, args: Args): Promise<number> {
   const session = await openSession(cwd);
+  return locked(session, "apply", () => applyLocked(session, args));
+}
+
+async function applyLocked(session: Session, args: Args): Promise<number> {
   const verdict = validate(session, session.readDraft());
   if (!verdict.ok) return 1;
   const version = session.freeze(verdict.plan);
@@ -354,6 +373,10 @@ function alreadyReviewed(session: Session, version: PlanVersion, args: Args): bo
 
 async function review(cwd: string, args: Args): Promise<number> {
   const session = await openSession(cwd);
+  return locked(session, "review", () => reviewLocked(session, args));
+}
+
+async function reviewLocked(session: Session, args: Args): Promise<number> {
   const latest = latestPlan(session);
   if (latest === null) return 1;
   if (alreadyReviewed(session, latest.version, args)) return 1;
@@ -402,6 +425,10 @@ function hasApiCredentials(): boolean {
 
 async function walk(cwd: string, args: Args): Promise<number> {
   const session = await openForWalk(cwd, args);
+  return locked(session, "walk", () => walkLocked(session, cwd, args));
+}
+
+async function walkLocked(session: Session, cwd: string, args: Args): Promise<number> {
   let latest = walkablePlan(session);
   if (latest === null) {
     if (!hasApiCredentials()) {
@@ -527,6 +554,7 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
       BranchMovedError,
       BranchRefusedError,
       SessionFileError,
+      SessionLockedError,
       GitError,
       PlanRequestError,
     ];

@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import {
   existsSync,
+  linkSync,
   mkdirSync,
   readdirSync,
   readFileSync,
   renameSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -41,6 +43,78 @@ export class SessionFileError extends Error {
   override readonly name = "SessionFileError";
 }
 
+/** Another live follow-me process holds the session's lock. */
+export class SessionLockedError extends Error {
+  override readonly name = "SessionLockedError";
+}
+
+/** Who holds <session>/lock. "stale" means the holder's pid is gone. */
+export type LockState =
+  | { readonly kind: "free" }
+  | { readonly kind: "held" | "stale"; readonly pid: number; readonly command: string };
+
+export function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM: the process exists but belongs to another user.
+    return error instanceof Error && "code" in error && error.code === "EPERM";
+  }
+}
+
+export function readLock(path: string): LockState {
+  const raw = readJson(path);
+  if (raw === undefined) return { kind: "free" };
+  if (!isFields<"pid" | "command">(raw)) throw new SessionFileError(`${path} is not a lock`);
+  const { pid, command } = raw;
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) {
+    throw new SessionFileError(`${path} is not a lock`);
+  }
+  if (typeof command !== "string") throw new SessionFileError(`${path} is not a lock`);
+  return { kind: isAlive(pid) ? "held" : "stale", pid, command };
+}
+
+function isCode(error: unknown, code: string): boolean {
+  return error instanceof Error && "code" in error && error.code === code;
+}
+
+/**
+ * Takes <dir>/lock for this process and returns its release. The lock is written whole to a
+ * temp file and linked into place, which fails like open(wx) when the lock exists, so a reader
+ * never sees a half-written lock. A lock whose pid is dead is taken over.
+ */
+function acquireLock(dir: string, branch: string, command: string): () => void {
+  const path = join(dir, "lock");
+  const token = randomUUID();
+  mkdirSync(dir, { recursive: true });
+  for (let attempt = 0; ; attempt++) {
+    const temp = `${path}.${process.pid}.${token}.tmp`;
+    writeFileSync(temp, `${JSON.stringify({ pid: process.pid, command, token })}\n`);
+    try {
+      linkSync(temp, path);
+      break;
+    } catch (error) {
+      if (!isCode(error, "EEXIST")) throw error;
+    } finally {
+      rmSync(temp, { force: true });
+    }
+    const state = readLock(path);
+    if (state.kind === "held" || attempt > 0) {
+      const who = state.kind === "free" ? "another process" : `pid ${state.pid}`;
+      const what = state.kind === "free" ? "follow-me" : `follow-me ${state.command}`;
+      throw new SessionLockedError(
+        `the session for ${branch} is busy: ${who} is running ${what}; wait for it to finish or stop it`,
+      );
+    }
+    rmSync(path, { force: true });
+  }
+  return () => {
+    const raw = readJson(path);
+    if (isFields<"token">(raw) && raw.token === token) rmSync(path, { force: true });
+  };
+}
+
 export type StoredPlan = {
   readonly version: PlanVersion;
   readonly file: PlanFile;
@@ -67,6 +141,9 @@ export type Session = {
   /** Writes plans/vN.json unless the latest plan has the same hash. */
   freeze(plan: ValidPlan): PlanVersion;
   applied(): Applied | null;
+  /** Serializes apply and review on this session; throws SessionLockedError when busy. */
+  lock(command: string): () => void;
+  lockState(): LockState;
   recordApplied(
     version: PlanVersion,
     result: { readonly branch: string; readonly head: Sha },
@@ -254,6 +331,8 @@ function makeSession(root: string, dir: string, anchor: SessionAnchor, diff: Dif
       writeJson(join(plansDir, `v${version}.json`), serializePlanFile(plan.file));
       return version;
     },
+    lock: (command) => acquireLock(dir, anchor.branch, command),
+    lockState: () => readLock(join(dir, "lock")),
     applied: () => {
       const raw = readJson(appliedPath);
       if (raw === undefined) return null;

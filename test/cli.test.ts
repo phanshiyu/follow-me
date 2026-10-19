@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -298,4 +298,49 @@ test("two worktrees of one repo apply their own splits at the same time", async 
   assert.equal(git(repo.dir, "log", "-1", "--format=%s", "feature-split"), "feat: feature");
   assert.equal(git(repo.dir, "log", "-1", "--format=%s", "other-split"), "feat: other");
   assert.equal(git(repo.dir, "fsck", "--connectivity-only", "--no-dangling"), "");
+});
+
+test("a second apply or review waits its turn while a review holds the session", async (t) => {
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  assert.equal(run(repo.dir, "extract").code, 0);
+  const diff = await loadDiff(repo.dir, "main", "feature");
+  writeWholeDraft(repo.dir, repo.base, repo.branch, [...diff.units.keys()]);
+
+  const child = spawn(BIN, ["review", "--no-open", "--port", "0"], { cwd: repo.dir, env: OFFLINE });
+  t.after(() => child.kill());
+  const exited = once(child, "exit");
+  child.stdout.setEncoding("utf8");
+  const url = await new Promise<string>((resolve) => {
+    let out = "";
+    child.stdout.on("data", (chunk: string) => {
+      out += chunk;
+      const found = /follow-me review: (http:\/\/\S+)\n/.exec(out)?.[1];
+      if (found !== undefined) resolve(found);
+    });
+  });
+  const busy = `follow-me: the session for feature is busy: pid ${child.pid} is running follow-me review; wait for it to finish or stop it\n`;
+  assert.deepEqual(run(repo.dir, "apply"), { code: 1, out: "", err: busy });
+  assert.deepEqual(run(repo.dir, "review", "--no-open"), { code: 1, out: "", err: busy });
+
+  await fetch(new URL("/api/end", url), { method: "POST" });
+  assert.deepEqual(await exited, [0, null]);
+  assert.equal(run(repo.dir, "apply").code, 0);
+  assert.equal(existsSync(join(repo.dir, ".follow-me", "feature", "lock")), false);
+});
+
+test("a lock left by a dead process is taken over", async (t) => {
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  assert.equal(run(repo.dir, "extract").code, 0);
+  const diff = await loadDiff(repo.dir, "main", "feature");
+  writeWholeDraft(repo.dir, repo.base, repo.branch, [...diff.units.keys()]);
+  const dead = spawnSync("true").pid;
+  const lock = join(repo.dir, ".follow-me", "feature", "lock");
+  writeFileSync(lock, JSON.stringify({ pid: dead, command: "apply", token: "x" }));
+
+  const applied = run(repo.dir, "apply");
+  assert.equal(applied.code, 0, applied.err);
+  assert.equal(applied.out.split(" ")[0], "created");
+  assert.equal(existsSync(lock), false);
 });
