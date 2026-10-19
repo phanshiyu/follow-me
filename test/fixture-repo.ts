@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -120,4 +120,23 @@ export function makeFixtureRepo(): FixtureRepo {
     branch,
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
   };
+}
+
+/**
+ * Adds a commit on `feature` with the whole-file kinds the base fixture lacks: a new
+ * symlink, a new empty file, a regular file turned symlink, and a new gitlink.
+ * Returns the new branch SHA.
+ */
+export function addWholeFileKinds(repo: FixtureRepo): string {
+  const { dir } = repo;
+  symlinkSync("lib.js", join(dir, "src/lib-link.js"));
+  write(dir, "empty.txt", "");
+  rmSync(join(dir, "src/old-name.js"), { force: true });
+  symlinkSync("new-name.js", join(dir, "src/old-name.js"));
+  git(dir, "add", "-A");
+  git(dir, "update-index", "--add", "--cacheinfo", `160000,${repo.base},vendor/sub`);
+  // An empty directory reads as an unpopulated submodule, so the worktree stays clean.
+  mkdirSync(join(dir, "vendor/sub"), { recursive: true });
+  git(dir, "commit", "-q", "-m", "whole-file kinds");
+  return git(dir, "rev-parse", "HEAD");
 }
