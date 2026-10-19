@@ -1,6 +1,10 @@
 import { execFile } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { isSha, neededBlobs, parseDiff } from "./diff.ts";
-import type { Diff, Sha } from "./types.ts";
+import type { ValidPlan } from "./plan.ts";
+import type { Diff, Sha, TreeChange } from "./types.ts";
 
 export class GitError extends Error {
   override readonly name = "GitError";
@@ -125,4 +129,133 @@ export async function loadDiff(repo: string, baseRef: string, tipRef: string): P
   const patchText = patch.toString("latin1");
   const blobs = await catBlobs(repo, neededBlobs(rawZ, patchText));
   return parseDiff({ base, tip, baseTree, tipTree, rawZ, patch: patchText, blobs });
+}
+
+export type WriteResult = {
+  readonly kind: "created" | "updated" | "unchanged";
+  readonly branch: string;
+  readonly head: Sha;
+  readonly commits: readonly Sha[];
+};
+
+export class BranchRefusedError extends Error {
+  override readonly name = "BranchRefusedError";
+}
+
+type Identity = {
+  readonly name: string;
+  readonly email: string;
+  readonly time: number;
+  readonly tz: string;
+};
+
+async function identities(
+  repo: string,
+  commit: Sha,
+): Promise<{ author: Identity; committer: Identity }> {
+  const text = await gitText(repo, ["cat-file", "commit", commit]);
+  const find = (role: string): Identity => {
+    const m = new RegExp(`^${role} (.*) <(.*)> (\\d+) ([+-]\\d{4})$`, "m").exec(text);
+    if (m === null) throw new Error(`commit ${commit} has no readable ${role} line`);
+    return { name: m[1] ?? "", email: m[2] ?? "", time: Number(m[3]), tz: m[4] ?? "+0000" };
+  };
+  return { author: find("author"), committer: find("committer") };
+}
+
+function identityEnv(who: { author: Identity; committer: Identity }, back: number) {
+  const date = (i: Identity) => `@${i.time - back} ${i.tz}`;
+  return {
+    GIT_AUTHOR_NAME: who.author.name,
+    GIT_AUTHOR_EMAIL: who.author.email,
+    GIT_AUTHOR_DATE: date(who.author),
+    GIT_COMMITTER_NAME: who.committer.name,
+    GIT_COMMITTER_EMAIL: who.committer.email,
+    GIT_COMMITTER_DATE: date(who.committer),
+  };
+}
+
+async function indexLine(repo: string, change: TreeChange, zero: string): Promise<Buffer> {
+  const entry = async (): Promise<string> => {
+    if (change.op === "delete") return `0 ${zero}`;
+    if (change.op === "link") return `${change.entry.mode} ${change.entry.blob}`;
+    const blob = await gitText(repo, ["hash-object", "-w", "--stdin"], {
+      input: Buffer.from(change.bytes, "latin1"),
+    });
+    return `${change.mode} ${toSha(blob, change.path)}`;
+  };
+  return Buffer.concat([
+    Buffer.from(`${await entry()}\t`),
+    Buffer.from(change.path, "latin1"),
+    Buffer.from([0]),
+  ]);
+}
+
+/**
+ * Writes the plan as commits on top of the merge-base through a temporary index, so the
+ * user's index and worktree are never touched, then moves refs/heads/<name> by compare-and-swap.
+ */
+export async function writeBranch(
+  repo: string,
+  diff: Diff,
+  plan: ValidPlan,
+  opts: { readonly name: string; readonly expectedOld: Sha | null; readonly force: boolean },
+): Promise<WriteResult> {
+  const ref = `refs/heads/${opts.name}`;
+  try {
+    await git(repo, ["check-ref-format", ref]);
+  } catch {
+    throw new BranchRefusedError(`"${opts.name}" is not a valid branch name`);
+  }
+  const who = await identities(repo, diff.tip);
+  const zero = "0".repeat(diff.base.length);
+  const n = plan.commits.length;
+  const dir = await mkdtemp(join(tmpdir(), "follow-me-index-"));
+  const commits: Sha[] = [];
+  let head = diff.base;
+  let tree = diff.baseTree;
+  try {
+    const env = { GIT_INDEX_FILE: join(dir, "index") };
+    await git(repo, ["read-tree", diff.baseTree], { env });
+    for (const commit of plan.commits) {
+      // Deletes go first so a file can give way to a directory of the same name.
+      const ordered = [
+        ...commit.changes.filter((c) => c.op === "delete"),
+        ...commit.changes.filter((c) => c.op !== "delete"),
+      ];
+      const lines = await Promise.all(ordered.map((c) => indexLine(repo, c, zero)));
+      await git(repo, ["update-index", "-z", "--index-info"], { env, input: Buffer.concat(lines) });
+      tree = toSha(await gitText(repo, ["write-tree"], { env }), "write-tree");
+      const message = commit.message.endsWith("\n") ? commit.message : `${commit.message}\n`;
+      head = toSha(
+        await gitText(repo, ["commit-tree", "--no-gpg-sign", tree, "-p", head, "-F", "-"], {
+          input: message,
+          env: identityEnv(who, n - 1 - commit.index),
+        }),
+        "commit-tree",
+      );
+      commits.push(head);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+  if (tree !== diff.tipTree) {
+    throw new Error(`the last commit's tree ${tree} differs from the tip tree ${diff.tipTree}`);
+  }
+
+  const current = await resolveOptional(repo, ref);
+  if (current === head) return { kind: "unchanged", branch: opts.name, head, commits };
+  if (current !== null && !opts.force) {
+    if (opts.expectedOld === null) {
+      throw new BranchRefusedError(
+        `branch ${opts.name} already exists and follow-me did not write it; pass --force to overwrite`,
+      );
+    }
+    if (current !== opts.expectedOld) {
+      throw new BranchRefusedError(
+        `branch ${opts.name} moved since the last apply (expected ${opts.expectedOld}, found ${current}); pass --force to overwrite`,
+      );
+    }
+  }
+  await git(repo, ["update-ref", "-m", "follow-me apply", ref, head, current ?? zero]);
+  return { kind: current === null ? "created" : "updated", branch: opts.name, head, commits };
 }
