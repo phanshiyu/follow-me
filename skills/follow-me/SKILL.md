@@ -52,7 +52,7 @@ reviewer comments on the code. Nothing is applied and no branch is written.
    when the why of that hunk is not obvious from the commit's narration.
 3. `follow-me check` until green, then tell the user to run `follow-me walk` again. Do not apply.
 
-When you are the author's agent and `follow-me feedback` starts with `# Code review`, the review
+When you are the author's agent and `follow-me feedback --walk` prints a `# Code review`, the review
 came from a walk. It quotes each commented line as a diff excerpt with its line number on the
 branch. Address every item in the code on the branch itself, then tell the user what you changed
 and what you declined and why. Do not write a follow-me draft or `responses` for it; those answer

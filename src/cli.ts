@@ -84,7 +84,8 @@ Split your own branch:
   review [--port <n>] [--detach] [--no-open] [--wait [--timeout <seconds>]]
                                             open the plan review, commit by commit; --wait
                                             returns only once the review ends
-  feedback [--branch <name>]                print the latest review as markdown
+  feedback [--walk] [--branch <name>]       print the latest plan review as markdown, or with
+                                            --walk the latest code review
   status                                    show the session's plans, reviews, lock and the
                                             branch apply writes
 
@@ -582,10 +583,18 @@ function exitCode(hosted: Hosted): number {
   return hosted.kind === "refused" || hosted.kind === "stopped" ? 1 : 0;
 }
 
-function alreadyReviewed(session: Session, version: PlanVersion, args: Args): boolean {
-  if (!session.reviews().some((r) => r.version === version)) return false;
+function alreadyReviewed(
+  session: Session,
+  mode: ReviewMode,
+  version: PlanVersion,
+  args: Args,
+): boolean {
+  if (!reviewsOf(session, mode).some((r) => r.version === version)) return false;
+  const branch = branchFlag(args);
   console.error(
-    `follow-me: plan v${version} already has a review; read it with \`follow-me feedback${branchFlag(args)}\` or plan again first`,
+    mode === "walk"
+      ? `follow-me: plan v${version} already has a code review; read it with \`follow-me feedback --walk${branch}\``
+      : `follow-me: plan v${version} already has a review; read it with \`follow-me feedback${branch}\`, then run \`follow-me split${branch}\` for the next plan`,
   );
   return true;
 }
@@ -613,8 +622,13 @@ function timeoutOf(args: Args): number | undefined {
   return seconds;
 }
 
+/** The reviews in this mode's slot, oldest first. */
+function reviewsOf(session: Session, mode: ReviewMode) {
+  return mode === "walk" ? session.walkReviews() : session.reviews();
+}
+
 function savedReview(session: Session, mode: ReviewMode, version: PlanVersion): Review | null {
-  const stored = session.reviews().find((r) => r.version === version && r.review.mode === mode);
+  const stored = reviewsOf(session, mode).find((r) => r.version === version);
   return stored?.review ?? null;
 }
 
@@ -643,7 +657,7 @@ function reportSplit(review: Review): void {
 function prepareSplit(session: Session, args: Args): () => Promise<Prepared | null> {
   return async () => {
     const latest = latestPlan(session);
-    if (latest === null || alreadyReviewed(session, latest.version, args)) return null;
+    if (latest === null || alreadyReviewed(session, "split", latest.version, args)) return null;
     return latest;
   };
 }
@@ -797,11 +811,13 @@ function hasApiCredentials(): boolean {
 async function walk(cwd: string, args: Args): Promise<number> {
   const session = await openFresh(cwd, args);
   const report = (review: Review) => {
-    const saved = join(session.dir, "reviews", `v${review.planVersion}.json`);
+    const saved = join(session.reviewsDir("walk"), `v${review.planVersion}.json`);
     say(
       `code review saved to ${relative(cwd, saved)} with ${plural(review.comments.length, "comment")}`,
     );
-    next(`follow-me feedback${branchFlag(args)}, which prints it as a code review for the author`);
+    next(
+      `follow-me feedback --walk${branchFlag(args)}, which prints it as a code review for the author`,
+    );
   };
   const hosted = await hostReview(
     session,
@@ -811,7 +827,7 @@ async function walk(cwd: string, args: Args): Promise<number> {
     report,
   );
   if (hosted.kind === "elsewhere") {
-    next(`end the code review on the page, then follow-me feedback${branchFlag(args)}`);
+    next(`end the code review on the page, then follow-me feedback --walk${branchFlag(args)}`);
   }
   return exitCode(hosted);
 }
@@ -832,14 +848,23 @@ async function walkPlan(session: Session, cwd: string, args: Args): Promise<Prep
     if (drafted === null) return null;
     latest = { version: session.freeze(drafted), plan: drafted };
   }
-  return alreadyReviewed(session, latest.version, args) ? null : latest;
+  return alreadyReviewed(session, "walk", latest.version, args) ? null : latest;
 }
 
 async function feedback(cwd: string, args: Args): Promise<number> {
   const session = await openSession(cwd, sessionOpts(args));
-  const stored = session.reviews().at(-1);
+  const walk = args.flags.has("walk");
+  const walks = session.walkReviews();
+  const stored = walk ? walks.at(-1) : session.reviews().findLast((r) => r.review.mode === "split");
   if (stored === undefined) {
-    console.error("follow-me: no review yet, run `follow-me review` first");
+    const branch = branchFlag(args);
+    console.error(
+      walk
+        ? `follow-me: no code review yet, run \`follow-me walk${branch}\` first`
+        : walks.length > 0
+          ? `follow-me: no plan review yet; \`follow-me feedback --walk${branch}\` prints the code review`
+          : "follow-me: no review yet, run `follow-me review` first",
+    );
     return 1;
   }
   const plan = session.plans().find((p) => p.version === stored.version);
@@ -922,7 +947,8 @@ async function status(cwd: string): Promise<number> {
   const session = await openSession(cwd);
   const { anchor, diff } = session;
   const plans = session.plans();
-  const reviews = session.reviews();
+  const reviews = session.reviews().filter((r) => r.review.mode === "split");
+  const walks = session.walkReviews();
   say(`${anchor.branch} ${short(anchor.tip)} onto ${anchor.baseRef} ${short(anchor.base)}`);
   say(`writes to: ${splitBranch(session)}`);
   const lock = session.lockState();
@@ -950,6 +976,12 @@ async function status(cwd: string): Promise<number> {
     const open = lastReview.review.comments.filter((c) => !answered.has(c.id)).length;
     say(
       `reviews: ${reviews.map((r) => `v${r.version}`).join(", ")} (latest has ${plural(lastReview.review.comments.length, "comment")}, ${open} open)`,
+    );
+  }
+  if (walks.length > 0) {
+    const latest = walks.at(-1)?.review.comments.length ?? 0;
+    say(
+      `code reviews: ${walks.map((r) => `v${r.version}`).join(", ")} (latest has ${plural(latest, "comment")})`,
     );
   }
   say(`signing: ${describeSigning(await signing(session.root, "config"))}`);
@@ -1019,7 +1051,7 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
       case "server":
         return await serverCommand(rest);
       case "feedback":
-        return await feedback(cwd, parseArgs(rest, { values: ["branch"] }));
+        return await feedback(cwd, parseArgs(rest, { values: ["branch"], flags: ["walk"] }));
       case "clean": {
         const args = parseArgs(rest, { flags: ["all", "dry-run"] });
         const opts = { all: args.flags.has("all"), dryRun: args.flags.has("dry-run") };

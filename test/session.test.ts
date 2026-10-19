@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
+  existsSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -143,16 +144,25 @@ test("reviews round-trip through the boundary parser and are written once", asyn
   const { mode: _, ...older } = review;
   assert.deepEqual(parseReview(older), review);
   assert.equal(parseReview({ ...review, mode: "solo" }), 'mode is not "split" or "walk"');
-  const walk = parseReview({ ...review, mode: "walk", planVersion: 2 });
+  const walk = parseReview({ ...review, mode: "walk" });
   assert.ok(typeof walk !== "string", String(walk));
   session.writeReview(walk);
-  assert.deepEqual(
-    session.reviews().map((r) => [r.version, r.review.mode]),
-    [
-      [1, "split"],
-      [2, "walk"],
-    ],
+  assert.throws(() => session.writeReview(walk), SessionFileError);
+  assert.equal(existsSync(join(session.dir, "reviews", "walk", "v1.json")), true);
+  writeFileSync(
+    join(session.dir, "reviews", "v2.json"),
+    JSON.stringify({ ...review, mode: "walk", planVersion: 2 }),
   );
+  const modes = (stored: { version: number; review: { mode: string } }[]) =>
+    stored.map((r) => [r.version, r.review.mode]);
+  assert.deepEqual(modes(session.reviews()), [
+    [1, "split"],
+    [2, "walk"],
+  ]);
+  assert.deepEqual(modes(session.walkReviews()), [
+    [1, "walk"],
+    [2, "walk"],
+  ]);
   assert.deepEqual(session.lastReview(), review);
 
   writeFileSync(

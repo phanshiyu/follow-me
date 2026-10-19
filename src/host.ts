@@ -137,8 +137,11 @@ async function loadHosted(registration: Registration): Promise<Loaded> {
     if (stored === undefined || stored.hash !== hash) {
       throw new RegistrationError(`${branch} has no plan v${version} with hash ${hash}`);
     }
-    if (session.reviews().some((r) => r.version === version)) {
-      throw new RegistrationError(`plan v${version} of ${branch} already has a review`);
+    // Each mode has its own slot, so a walk can follow the author's review of the same plan.
+    const reviewed = mode === "walk" ? session.walkReviews() : session.reviews();
+    if (reviewed.some((r) => r.version === version)) {
+      const what = mode === "walk" ? "code review" : "review";
+      throw new RegistrationError(`plan v${version} of ${branch} already has a ${what}`);
     }
     const verdict = validatePlan(session.diff, serializePlanFile(stored.file), {
       lastReview: session.lastReview(),
@@ -146,7 +149,7 @@ async function loadHosted(registration: Registration): Promise<Loaded> {
     if (!verdict.ok) {
       throw new RegistrationError(`plan v${version} no longer fits ${branch}; check it again`);
     }
-    const reviewsDir = join(session.dir, "reviews");
+    const reviewsDir = session.reviewsDir(mode);
     const comments = await loadDraftComments(reviewsDir, version);
     const command = mode === "walk" ? "walk" : "review";
     const lock = lockToken === null ? session.lock(command) : session.adoptLock(lockToken, command);

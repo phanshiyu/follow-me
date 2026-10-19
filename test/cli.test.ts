@@ -462,22 +462,70 @@ test("walk serves a frozen plan in walk mode and saves a code review on end", as
   assert.equal(
     walk.out().split("\n").slice(1).join("\n"),
     [
-      "code review saved to .follow-me/feature/reviews/v1.json with 0 comments",
-      "next: follow-me feedback, which prints it as a code review for the author",
+      "code review saved to .follow-me/feature/reviews/walk/v1.json with 0 comments",
+      "next: follow-me feedback --walk, which prints it as a code review for the author",
       "the server exits in 1s unless another review starts; ctrl-c stops it now",
       "",
     ].join("\n"),
   );
   assert.equal(existsSync(join(home, "server.json")), false);
   const review = JSON.parse(
-    readFileSync(join(repo.dir, ".follow-me", "feature", "reviews", "v1.json"), "utf8"),
+    readFileSync(join(repo.dir, ".follow-me", "feature", "reviews", "walk", "v1.json"), "utf8"),
   );
   assert.equal(review.mode, "walk");
   assert.equal(review.planVersion, 1);
   assert.equal(
-    run(repo.dir, "feedback").out,
+    run(repo.dir, "feedback", "--walk").out,
     "# Code review\n\nThe reviewer left no comments.\n\nnext: hand this to the branch's author\n",
   );
+});
+
+test("a reviewer walks a plan the author already reviewed, and feedback keeps the two apart", async (t) => {
+  const { run, spawnCli } = cliIn(t);
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  assert.equal(run(repo.dir, "extract").code, 0);
+  const diff = await loadDiff(repo.dir, "main", "feature");
+  writeWholeDraft(repo.dir, repo.base, repo.branch, [...diff.units.keys()]);
+  assert.equal(run(repo.dir, "apply").code, 0);
+
+  const authored = spawnCli(repo.dir, "review", "--no-open", "--port", "0");
+  const reviewUrl = await authored.url;
+  const anchor = { kind: "message", commit: 0 };
+  const context = { commitMessage: "feat: everything", path: null };
+  const comment = (body: string) => ({
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ anchor, context, body }),
+  });
+  await fetch(new URL("api/comments", reviewUrl), comment("say what the guard is for"));
+  await fetch(new URL("api/end", reviewUrl), { method: "POST" });
+  assert.deepEqual(await authored.exited, [0, null]);
+  assert.deepEqual(run(repo.dir, "feedback", "--walk"), {
+    code: 1,
+    out: "",
+    err: "follow-me: no code review yet, run `follow-me walk` first\n",
+  });
+
+  const walked = spawnCli(repo.dir, "walk", "--no-open", "--port", "0");
+  const walkUrl = await walked.url;
+  await fetch(new URL("api/comments", walkUrl), comment("this reads well"));
+  await fetch(new URL("api/end", walkUrl), { method: "POST" });
+  assert.deepEqual(await walked.exited, [0, null]);
+
+  const plan = run(repo.dir, "feedback");
+  assert.equal(plan.code, 0, plan.err);
+  assert.equal(plan.out.includes("say what the guard is for"), true);
+  assert.equal(plan.out.includes("this reads well"), false);
+  const code = run(repo.dir, "feedback", "--walk");
+  assert.equal(code.code, 0, code.err);
+  assert.equal(code.out.split("\n")[0], "# Code review");
+  assert.equal(code.out.includes("this reads well"), true);
+  assert.equal(code.out.includes("say what the guard is for"), false);
+  assert.deepEqual(run(repo.dir, "status").out.split("\n").slice(6, 8), [
+    "reviews: v1 (latest has 1 comment, 1 open)",
+    "code reviews: v1 (latest has 1 comment)",
+  ]);
 });
 
 function writeTwoCommitDraft(dir: string, base: string, tip: string, ids: readonly string[]) {

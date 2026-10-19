@@ -100,7 +100,7 @@ follow-me walk --base main
 
 Playback goes commit by commit. Space pauses, **Previous** and **Next** move between commits, and you can change the speed, pick a voice, or mute. Pause on any line to comment on it. Narration uses the browser's built-in speech synthesis, so it needs no key and no network.
 
-When you end the review, `follow-me feedback` prints it as a code review for the author, grouped by file. Each comment quotes its hunk as it reads in that commit, with the line number on the branch. The author's agent fixes the branch itself. A walk review never feeds the split loop below.
+When you end the review, `follow-me feedback --walk` prints it as a code review for the author, grouped by file. Code reviews are saved apart from the author's plan reviews, in `.follow-me/<branch>/reviews/walk/vN.json`, so you can walk a plan the author already reviewed. Each comment quotes its hunk as it reads in that commit, with the line number on the branch. The author's agent fixes the branch itself. A walk review never feeds the split loop below.
 
 ## One server for every review
 

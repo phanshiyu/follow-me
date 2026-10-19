@@ -41,6 +41,7 @@ import type {
   PlanFile,
   PlanVersion,
   Review,
+  ReviewMode,
   SessionAnchor,
   Sha,
 } from "./types.ts";
@@ -205,13 +206,18 @@ export type Session = {
   /** <dir>/prompt.md, the planner prompt written for an agent to read. */
   readonly promptPath: string;
   plans(): StoredPlan[];
+  /** Where reviews of this mode go: reviews/ for split, reviews/walk/ for walk. */
+  reviewsDir(mode: ReviewMode): string;
+  /** Every reviews/vN.json. Files from before walk reviews had their own slot can be walk reviews. */
   reviews(): StoredReview[];
+  /** reviews/walk/vN.json, plus older walk reviews stored as reviews/vN.json. */
+  walkReviews(): StoredReview[];
   /** The split-mode review with the highest version, or null. Walk reviews never feed the planner. */
   lastReview(): Review | null;
   readDraft(): unknown;
   writeDraft(draft: unknown): void;
   writePrompt(text: string): void;
-  /** Written once per plan version; a second write for the same version throws. */
+  /** Written once per plan version and mode; a second write to the same slot throws. */
   writeReview(review: Review): void;
   /** Writes plans/vN.json unless the latest plan has the same hash. */
   freeze(plan: ValidPlan): PlanVersion;
@@ -364,7 +370,10 @@ export function parseReview(v: unknown): Review | string {
 
 function makeSession(root: string, dir: string, anchor: SessionAnchor, diff: Diff): Session {
   const plansDir = join(dir, "plans");
-  const reviewsDir = join(dir, "reviews");
+  const splitReviews = join(dir, "reviews");
+  const walkReviewsDir = join(splitReviews, "walk");
+  const reviewsDir = (mode: ReviewMode): string =>
+    mode === "walk" ? walkReviewsDir : splitReviews;
   const draftPath = join(dir, "draft.json");
   const promptPath = join(dir, "prompt.md");
   const appliedPath = join(dir, "applied.json");
@@ -380,12 +389,17 @@ function makeSession(root: string, dir: string, anchor: SessionAnchor, diff: Dif
       return { version, file, hash: planHash(file) };
     });
 
-  const reviews = (): StoredReview[] =>
-    versions(reviewsDir).map(({ version, path }) => {
+  const reviewsIn = (mode: ReviewMode): StoredReview[] =>
+    versions(reviewsDir(mode)).map(({ version, path }) => {
       const review = parseReview(readJson(path));
       if (typeof review === "string") throw new SessionFileError(`${path}: ${review}`);
       return { version, review };
     });
+  const reviews = (): StoredReview[] => reviewsIn("split");
+  const walkReviews = (): StoredReview[] =>
+    [...reviews().filter((r) => r.review.mode === "walk"), ...reviewsIn("walk")].sort(
+      (a, b) => a.version - b.version,
+    );
 
   return {
     root,
@@ -395,7 +409,9 @@ function makeSession(root: string, dir: string, anchor: SessionAnchor, diff: Dif
     draftPath,
     promptPath,
     plans,
+    reviewsDir,
     reviews,
+    walkReviews,
     lastReview: () => reviews().findLast((r) => r.review.mode === "split")?.review ?? null,
     readDraft: () => {
       const draft = readJson(draftPath);
@@ -405,7 +421,7 @@ function makeSession(root: string, dir: string, anchor: SessionAnchor, diff: Dif
     writeDraft: (draft) => writeJson(draftPath, draft),
     writePrompt: (text) => writeText(promptPath, text),
     writeReview: (review) => {
-      const path = join(reviewsDir, `v${review.planVersion}.json`);
+      const path = join(reviewsDir(review.mode), `v${review.planVersion}.json`);
       if (existsSync(path)) throw new SessionFileError(`${path} is already written`);
       writeJson(path, review);
     },
@@ -551,8 +567,7 @@ function abandonedTemps(dir: string): string[] {
 }
 
 /** Review drafts for a version at or below the latest finished review; none can be resumed. */
-function deadReviewDrafts(dir: string): string[] {
-  const reviewsDir = join(dir, "reviews");
+function deadReviewDrafts(reviewsDir: string): string[] {
   const latest = versions(reviewsDir).at(-1)?.version ?? 0;
   if (!existsSync(reviewsDir)) return [];
   return readdirSync(reviewsDir)
@@ -598,7 +613,12 @@ export async function cleanSessions(
       continue;
     }
     if (lock.kind === "stale") found.push(join(dir, "lock"));
-    found.push(...abandonedTemps(dir), ...deadReviewDrafts(dir));
+    const reviews = join(dir, "reviews");
+    found.push(
+      ...abandonedTemps(dir),
+      ...deadReviewDrafts(reviews),
+      ...deadReviewDrafts(join(reviews, "walk")),
+    );
   }
   if (opts.all && existsSync(top)) found.push(top);
   const objects = await objectsDir(root);
