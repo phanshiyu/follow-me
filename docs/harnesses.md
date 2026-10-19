@@ -26,6 +26,21 @@ Each file prints as `wrote`, `unchanged` or, with `--dry-run`, `would write`. Ru
 again is safe. Harnesses that share a directory (Codex and the generic `agents` entry) produce one
 file.
 
+## Uninstall
+
+`follow-me uninstall` takes the same flags as install, except `--list`, and removes exactly the
+files install would write: each `<directory>/follow-me/SKILL.md`, then the `follow-me` folder if
+that left it empty. It never removes a parent directory or other files in the folder. Each file
+prints as `removed`, `absent` or, with `--dry-run`, `would remove`.
+
+```sh
+follow-me uninstall                    # detected harnesses, project scope
+follow-me uninstall --all --user       # every harness, home directory
+```
+
+Without `--harness` or `--all` it only visits detected harnesses, the same ones install picks, so
+`--all` is the sure way to remove every copy at a scope.
+
 For a manual install, copy the folder yourself. The folder is `skills/follow-me` in a checkout and
 `node_modules/@shiyuphan/follow-me/skills/follow-me` in an npm install. A symlink works too.
 

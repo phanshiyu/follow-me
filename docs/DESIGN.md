@@ -56,7 +56,8 @@ before `update-ref`, so a refused or failed apply leaves no refs and no objects.
 `.follow-me/<branch-slug>/` holds `session.json` (the anchor), `draft.json`
 (planner output), `plans/vN.json` (frozen on apply, deduplicated by hash),
 `reviews/vN.json` (written once when a review ends), `reviews/vN.draft.json` (autosave of an
-unfinished review), `applied.json` and, while apply, review or walk runs, `lock`.
+unfinished review), `applied.json` and, while apply runs or the review server hosts the session,
+`lock`.
 One writer per file.
 
 Comments anchor to `(commit index, unit id, optional change lines)`, a commit
@@ -81,15 +82,55 @@ State is split so concurrent sessions share nothing they write.
   `<branch>-split` per session, so two worktrees write different refs, each by compare-and-swap.
   Objects are content-addressed and adopted with link, which never overwrites.
 - Two agents on the same session is the one real shared writer, so apply, review and walk hold
-  `<slug>/lock`. The lock is written whole to a temp file and linked into place, which fails
+  `<slug>/lock`, and the review server holds it for as long as it hosts the session. The lock is written whole to a temp file and linked into place, which fails
   like `open(wx)` when it exists. It records the pid; a lock whose pid is dead is taken over, and
   release removes it only if it still carries this process's token.
-- Review servers bind port 0 by default, so any number run at once.
+- Every session of a user shares one review server; see the next section.
 
 `follow-me clean` converges a root to what live sessions need. It removes sessions whose branch
 is gone, review drafts at or below the latest finished review, and locks, `*.<pid>.*.tmp` files
 and object quarantines whose pid is dead. Plan versions stay; reviews refer to them. `--all`
 removes `.follow-me/` and refuses while a live process holds a session.
+
+## One server, many sessions
+
+A user runs one review server, and it hosts every session they are reviewing, across repos and
+worktrees. Its record lives in a per-user state dir, `$FOLLOW_ME_HOME`, else
+`$XDG_STATE_HOME/follow-me`, else `~/.local/state/follow-me`, as `server.json`
+(`{ pid, port, startedAt }`), with `server.log` beside it for a detached server's output. The
+record is claimed like the session lock, by linking a complete temp file into place, so two
+servers starting at once cannot both own it; the loser closes and attaches to the winner. A
+record whose pid is dead or does not answer as ours is replaced.
+
+The server keeps a registry, `Map<SessionId, HostedSession>`. A `SessionId` is 12 hex of sha256
+over the session directory, so registering the same session again returns the same id and URL
+instead of a second copy; registering it with another plan version is refused until the first
+review ends. Each session is served at `/s/<id>/` with its API under `/s/<id>/api/`. `/` lists
+every session with its repo, branch, mode, version and comment count, `/api/sessions` returns
+the same list as JSON, and `/api/health` answers `{ "app": "follow-me", "pid" }` so a CLI can tell
+our server from another program on the port.
+
+`review` and `walk` prepare the plan under the session lock, then find the server: a live
+`server.json` record, or a `--port` that answers as ours. If one runs, the CLI registers the
+session with `POST /api/sessions` (session dir, mode, version, plan hash, lock token), prints the
+URL and exits. Otherwise the CLI becomes the server in the foreground and waits for its own review
+to end, or with `--detach` starts `follow-me server run` as a detached process and registers with
+it. The registration carries the CLI's lock token and the server takes the lock over by token
+before the CLI lets go, so exactly one live process owns a hosted session's lock and there is no
+gap for another to take it. Running `review` again while the server holds the session prints the
+same URL.
+
+Ending a session writes `reviews/vN.json` exactly as a single review always did, removes the draft
+and releases the lock. The server exits on its own once it has hosted no session for 30 seconds
+(`FOLLOW_ME_IDLE_MS` overrides this, for tests), so a review started right after another reuses it.
+`follow-me server stop` sends SIGTERM to the recorded pid, but only if that pid answers as our
+server on the recorded port. On SIGTERM or Ctrl-C the server releases every lock and writes no
+review; autosaved drafts come back when the session is opened again. It removes `server.json` on
+every exit.
+
+A `--port` held by our own server means attach. Held by anything else, the server listens on a
+free port and the CLI prints `port N is in use by another program, using M`. Binding never fails
+with EADDRINUSE.
 
 ## Reviewer mode and playback
 

@@ -81,6 +81,10 @@ SHAs and re-running `apply` is a no-op.
 - `apply` refuses to move a branch it did not create unless `--force`.
 - The review server binds `127.0.0.1` only and rejects cross-origin requests.
 - Everything under `.follow-me/` is ignored by git.
+- Outside the repo, follow-me writes only its state dir (`~/.local/state/follow-me`, or
+  `$XDG_STATE_HOME/follow-me`), which holds the review server's `server.json` and `server.log`.
+- One review server per user hosts every session. `follow-me server stop` signals it only after
+  it answers as follow-me on its recorded port, so a reused pid is never killed.
 
 Three guarantees hold across sessions. The original branch is never written. `apply` puts the
 split on `<branch>-split` or `--name`, and refuses the branch being split and any branch checked

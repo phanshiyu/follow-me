@@ -23,7 +23,8 @@ Run every command from the repo root. If `follow-me` is not on PATH, ask the use
    lines are real mistakes.
 5. `follow-me apply` freezes the plan as the next version and writes the branch.
 6. Tell the user to run `follow-me review`. It opens a local page where they comment on messages,
-   positions, hunks and single lines.
+   positions, hunks and single lines. If you start it yourself, use `follow-me review --detach`,
+   which prints the page URL and returns; one server hosts every session the user has open.
 
 ## After a review
 
