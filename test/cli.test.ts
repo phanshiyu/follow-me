@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -343,4 +351,40 @@ test("a lock left by a dead process is taken over", async (t) => {
   assert.equal(applied.code, 0, applied.err);
   assert.equal(applied.out.split(" ")[0], "created");
   assert.equal(existsSync(lock), false);
+});
+
+test("clean removes what no session can use and nothing else", (t) => {
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  git(repo.dir, "branch", "gone", "feature");
+  assert.equal(run(repo.dir, "extract", "--branch", "gone").code, 0);
+  git(repo.dir, "branch", "-D", "-q", "gone");
+  assert.equal(run(repo.dir, "extract").code, 0);
+  const dead = spawnSync("true").pid;
+  const session = join(repo.dir, ".follow-me", "feature");
+  mkdirSync(join(session, "reviews"));
+  for (const name of ["v1.json", "v1.draft.json", "v2.draft.json"]) {
+    writeFileSync(join(session, "reviews", name), "{}");
+  }
+  writeFileSync(join(session, "lock"), JSON.stringify({ pid: dead, command: "review" }));
+  writeFileSync(join(session, `draft.json.${dead}.0f.tmp`), "{");
+  writeFileSync(join(session, `draft.json.${process.pid}.0f.tmp`), "{");
+  mkdirSync(join(repo.dir, ".git", "objects", `follow-me-incoming-${dead}-abcdef`));
+
+  const leftovers = [
+    ".follow-me/feature/lock",
+    `.follow-me/feature/draft.json.${dead}.0f.tmp`,
+    ".follow-me/feature/reviews/v1.draft.json",
+    ".follow-me/gone",
+    `.git/objects/follow-me-incoming-${dead}-abcdef`,
+    "",
+  ].join("\n");
+  assert.deepEqual(run(repo.dir, "clean", "--dry-run"), { code: 0, out: leftovers, err: "" });
+  assert.equal(existsSync(join(repo.dir, ".follow-me", "gone")), true);
+  assert.deepEqual(run(repo.dir, "clean"), { code: 0, out: leftovers, err: "" });
+  assert.deepEqual(run(repo.dir, "clean"), { code: 0, out: "", err: "" });
+  assert.deepEqual(readdirSync(join(session, "reviews")).sort(), ["v1.json", "v2.draft.json"]);
+
+  assert.deepEqual(run(repo.dir, "clean", "--all"), { code: 0, out: ".follow-me\n", err: "" });
+  assert.equal(existsSync(join(repo.dir, ".follow-me")), false);
 });

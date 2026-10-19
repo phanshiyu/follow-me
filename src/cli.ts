@@ -8,6 +8,7 @@ import { type PromptInput, renderFeedback, renderPrompt } from "./prompt.ts";
 import { loadDraftComments, serveReview } from "./server.ts";
 import {
   BranchMovedError,
+  cleanSessions,
   extractSession,
   openSession,
   type Session,
@@ -44,6 +45,9 @@ const USAGE = `usage: follow-me <command>
                                             watch a branch being written, narrated, and
                                             review its code; nothing is applied
   feedback [--branch <name>]                print the latest review as markdown
+  clean [--all] [--dry-run]                 remove sessions of deleted branches, finished
+                                            review drafts and leftovers of dead processes;
+                                            --all removes .follow-me/ entirely
 
 --walk writes the prompt for a reviewer: a story with narration instead of a split.`;
 
@@ -540,6 +544,12 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
       }
       case "feedback":
         return await feedback(cwd, parseArgs(rest, { values: ["branch"] }));
+      case "clean": {
+        const args = parseArgs(rest, { flags: ["all", "dry-run"] });
+        const opts = { all: args.flags.has("all"), dryRun: args.flags.has("dry-run") };
+        for (const path of await cleanSessions(cwd, opts)) say(relative(cwd, path));
+        return 0;
+      }
       case undefined:
       case "help":
       case "--help":

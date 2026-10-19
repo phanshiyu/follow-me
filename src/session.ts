@@ -11,7 +11,16 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { isRepoPath, isSha, isUnitId } from "./diff.ts";
-import { currentBranch, defaultBaseRef, loadDiff, repoRoot, resolveCommit } from "./git.ts";
+import {
+  branchExists,
+  currentBranch,
+  defaultBaseRef,
+  loadDiff,
+  objectsDir,
+  QUARANTINE_PREFIX,
+  repoRoot,
+  resolveCommit,
+} from "./git.ts";
 import {
   isArray,
   isCommentId,
@@ -363,12 +372,18 @@ async function locate(repo: string, branch: string | undefined): Promise<Where> 
   return { root, branch: name, dir: join(top, slugOf(name)) };
 }
 
-function readAnchor(where: Where): SessionAnchor | null {
-  const path = join(where.dir, "session.json");
+function readAnchorIn(dir: string): SessionAnchor | null {
+  const path = join(dir, "session.json");
   const raw = readJson(path);
   if (raw === undefined) return null;
   const anchor = parseAnchor(raw);
   if (anchor === null) throw new SessionFileError(`${path} is not a session anchor`);
+  return anchor;
+}
+
+function readAnchor(where: Where): SessionAnchor | null {
+  const anchor = readAnchorIn(where.dir);
+  if (anchor === null) return null;
   if (anchor.branch !== where.branch) {
     throw new SessionFileError(
       `${where.dir} holds the session of branch ${anchor.branch}, and ${where.branch} maps to the same directory; rename one of the two branches`,
@@ -413,4 +428,77 @@ export async function openSession(
   }
   const diff = await loadDiff(where.root, anchor.base, anchor.tip);
   return makeSession(where.root, where.dir, anchor, diff);
+}
+
+/** "<name>.<pid>.<random>.tmp" as written by writeJson, the lock and the review server. */
+function abandonedTemps(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { recursive: true, encoding: "utf8" })
+    .filter((name) => {
+      const pid = Number(/\.([0-9]+)\.[0-9a-f-]+\.tmp$/.exec(name)?.[1]);
+      return Number.isInteger(pid) && pid > 0 && !isAlive(pid);
+    })
+    .sort()
+    .map((name) => join(dir, name));
+}
+
+/** Review drafts for a version at or below the latest finished review; none can be resumed. */
+function deadReviewDrafts(dir: string): string[] {
+  const reviewsDir = join(dir, "reviews");
+  const latest = versions(reviewsDir).at(-1)?.version ?? 0;
+  if (!existsSync(reviewsDir)) return [];
+  return readdirSync(reviewsDir)
+    .filter((name) => {
+      const n = Number(/^v([1-9][0-9]*)\.draft\.json$/.exec(name)?.[1]);
+      return Number.isInteger(n) && n <= latest;
+    })
+    .sort()
+    .map((name) => join(reviewsDir, name));
+}
+
+/**
+ * Finds what follow-me left behind in this worktree: sessions whose branch is gone, review drafts
+ * no review can resume, locks and temp files of dead processes, and object quarantines of dead
+ * applies. With all, the whole .follow-me/ directory. Removes them unless dryRun. Sessions held by
+ * a live process are left alone, and all refuses while one exists.
+ */
+export async function cleanSessions(
+  repo: string,
+  opts: { readonly all: boolean; readonly dryRun: boolean },
+): Promise<string[]> {
+  const root = await repoRoot(repo);
+  const top = join(root, ".follow-me");
+  const sessions = existsSync(top)
+    ? readdirSync(top, { withFileTypes: true })
+        .filter((e) => e.isDirectory())
+        .map((e) => join(top, e.name))
+        .sort()
+    : [];
+  const found: string[] = [];
+  for (const dir of sessions) {
+    const lock = readLock(join(dir, "lock"));
+    if (lock.kind === "held") {
+      if (!opts.all) continue;
+      throw new SessionLockedError(
+        `${dir} is busy: pid ${lock.pid} is running follow-me ${lock.command}; wait for it to finish or stop it`,
+      );
+    }
+    if (opts.all) continue;
+    const anchor = readAnchorIn(dir);
+    if (anchor !== null && !(await branchExists(root, anchor.branch))) {
+      found.push(dir);
+      continue;
+    }
+    if (lock.kind === "stale") found.push(join(dir, "lock"));
+    found.push(...abandonedTemps(dir), ...deadReviewDrafts(dir));
+  }
+  if (opts.all && existsSync(top)) found.push(top);
+  const objects = await objectsDir(root);
+  for (const name of readdirSync(objects).sort()) {
+    if (!name.startsWith(QUARANTINE_PREFIX)) continue;
+    const pid = Number(name.slice(QUARANTINE_PREFIX.length).split("-")[0]);
+    if (Number.isInteger(pid) && !isAlive(pid)) found.push(join(objects, name));
+  }
+  if (!opts.dryRun) for (const path of found) rmSync(path, { recursive: true, force: true });
+  return found;
 }

@@ -134,7 +134,8 @@ export async function loadDraftComments(
 }
 
 async function writeAtomic(path: string, text: string): Promise<void> {
-  const temp = `${path}.${randomBytes(4).toString("hex")}.tmp`;
+  // The pid lets `follow-me clean` tell an abandoned temp file from one being written.
+  const temp = `${path}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
   await writeFile(temp, text);
   await rename(temp, path);
 }

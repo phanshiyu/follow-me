@@ -97,6 +97,10 @@ export async function checkedOutBranches(repo: string): Promise<Map<string, stri
   return found;
 }
 
+export async function branchExists(repo: string, name: string): Promise<boolean> {
+  return (await resolveOptional(repo, `refs/heads/${name}`)) !== null;
+}
+
 export async function defaultBaseRef(repo: string): Promise<string> {
   for (const name of ["main", "master"]) {
     if ((await resolveOptional(repo, `refs/heads/${name}`)) !== null) return name;
