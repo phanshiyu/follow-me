@@ -1,8 +1,10 @@
 import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, relative } from "node:path";
 import { PlanRequestError, requestPlan } from "./anthropic.ts";
 import { DiffParseError, formatUnitRef } from "./diff.ts";
 import { BranchRefusedError, GitError, treeOf, writeBranch } from "./git.ts";
+import { runInstall } from "./install.ts";
 import { serializePlanFile, type ValidPlan, validatePlan } from "./plan.ts";
 import { type PromptInput, renderFeedback, renderPrompt } from "./prompt.ts";
 import { loadDraftComments, serveReview } from "./server.ts";
@@ -51,6 +53,9 @@ const USAGE = `usage: follow-me <command>
   clean [--all] [--dry-run]                 remove sessions of deleted branches, finished
                                             review drafts and leftovers of dead processes;
                                             --all removes .follow-me/ entirely
+  install [--harness <ids>|--all] [--user] [--dry-run]
+                                            copy the skill into coding agents' skill dirs
+  install --list                            show each harness, its skill dirs and docs
 
 --walk writes the prompt for a reviewer: a story with narration instead of a split.
 --force lets apply move a branch follow-me did not create; it never allows <branch> itself.`;
@@ -567,6 +572,20 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
         const opts = { all: args.flags.has("all"), dryRun: args.flags.has("dry-run") };
         for (const path of await cleanSessions(cwd, opts)) say(relative(cwd, path));
         return 0;
+      }
+      case "install": {
+        const args = parseArgs(rest, {
+          values: ["harness"],
+          flags: ["all", "user", "dry-run", "list"],
+        });
+        const options = {
+          harness: args.values.get("harness"),
+          all: args.flags.has("all"),
+          user: args.flags.has("user"),
+          dryRun: args.flags.has("dry-run"),
+          list: args.flags.has("list"),
+        };
+        return runInstall(options, homedir(), cwd, say);
       }
       case undefined:
       case "help":
