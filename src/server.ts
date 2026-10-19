@@ -1,20 +1,24 @@
-import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { createServer } from "node:http";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isPlanVersion } from "./plan.ts";
+import { isLockToken } from "./session.ts";
 import type {
   Anchor,
   Comment,
   CommentId,
+  HostedSummary,
+  LockToken,
   PlanVersion,
   ProjectedCommit,
   RepoPath,
   Review,
   ReviewMode,
   SessionAnchor,
+  SessionId,
   Unit,
   UnitId,
 } from "./types.ts";
@@ -30,17 +34,72 @@ export type ReviewState = {
   readonly comments: readonly Comment[];
 };
 
-export type ServeOptions = {
-  readonly reviewsDir: string;
-  readonly port?: number;
-  readonly open?: boolean;
-  /** Called once with the URL the server is listening on. */
-  readonly onListen?: (url: string) => void;
+/** Body of POST /api/sessions: which session to host and the lock its sender hands over. */
+export type Registration = {
+  readonly dir: string;
+  readonly mode: ReviewMode;
+  readonly version: PlanVersion;
+  readonly hash: string;
+  /** The lock the registering process holds, or null to take the session's lock while free. */
+  readonly lockToken: LockToken | null;
 };
+
+/** A session ready to host: what the page shows, where its reviews go, and the lock it owns. */
+export type Loaded = {
+  readonly repo: string;
+  readonly reviewsDir: string;
+  readonly state: ReviewState;
+  readonly release: () => void;
+};
+
+/** Turns a registration into a hosted session. Throws RegistrationError to refuse it. */
+export type Loader = (registration: Registration) => Promise<Loaded>;
+
+export type Registered = {
+  readonly summary: HostedSummary;
+  /** The review once the session ends, or null if the server stops first. */
+  readonly done: Promise<Review | null>;
+};
+
+export type Host = {
+  readonly port: number;
+  readonly url: string;
+  register(registration: Registration): Promise<Registered>;
+  sessions(): readonly HostedSummary[];
+  /** Releases every hosted lock without writing reviews; drafts stay autosaved. */
+  close(): Promise<void>;
+  /** Resolves when the server stopped, by close() or after idleMs without a session. */
+  readonly closed: Promise<void>;
+};
+
+export type HostOptions = {
+  /** 0 picks a free port. */
+  readonly port: number;
+  /** How long the server waits for a new session after its last one ended. */
+  readonly idleMs: number;
+  readonly load: Loader;
+};
+
+/** The requested port is taken; host.ts decides whether that is our server or a stranger. */
+export class PortInUseError extends Error {
+  override readonly name = "PortInUseError";
+  readonly port: number;
+  constructor(port: number) {
+    super(`port ${port} is in use`);
+    this.port = port;
+  }
+}
+
+/** A session the server cannot host, with the reason the CLI shows. */
+export class RegistrationError extends Error {
+  override readonly name = "RegistrationError";
+}
+
+/** GET /api/health answers with this, so a CLI can tell our server from another program. */
+export const HEALTH_APP = "follow-me";
 
 const UI_DIR = new URL("../ui/", import.meta.url);
 const STATIC_FILES = new Map([
-  ["/", { file: "index.html", type: "text/html; charset=utf-8" }],
   ["/app.js", { file: "app.js", type: "text/javascript; charset=utf-8" }],
   ["/playback.js", { file: "playback.js", type: "text/javascript; charset=utf-8" }],
   ["/style.css", { file: "style.css", type: "text/css; charset=utf-8" }],
@@ -50,6 +109,7 @@ const BASE32 = "abcdefghijklmnopqrstuvwxyz234567";
 
 const COMMENT_ID = /^c_[a-z2-7]{6}$/;
 const UNIT_ID = /^[hfm]_[0-9a-f]{12}(~\d+)?$/;
+const SESSION_ID = /^[0-9a-f]{12}$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -69,6 +129,21 @@ function isRepoPath(value: unknown): value is RepoPath {
 
 function isIndex(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+export function isSessionId(value: unknown): value is SessionId {
+  return typeof value === "string" && SESSION_ID.test(value);
+}
+
+/** Derived from the session directory, so registering one session twice yields one id. */
+export function sessionIdOf(dir: string): SessionId {
+  const id = createHash("sha256").update(dir).digest("hex").slice(0, 12);
+  if (!isSessionId(id)) throw new Error(`sha256 produced ${id}`);
+  return id;
+}
+
+export function sessionPath(id: SessionId): string {
+  return `/s/${id}/`;
 }
 
 function parseAnchor(raw: unknown): Anchor | null {
@@ -106,6 +181,17 @@ export function parseComment(raw: unknown): Comment | null {
   if (typeof createdAt !== "string") return null;
   if (path !== null && !isRepoPath(path)) return null;
   return { id, anchor, context: { commitMessage, path }, body, createdAt };
+}
+
+/** The one place untrusted JSON becomes a Registration. */
+export function parseRegistration(raw: unknown): Registration | null {
+  if (!isRecord(raw)) return null;
+  const { dir, mode, version, hash, lockToken } = raw;
+  if (typeof dir !== "string" || !isAbsolute(dir)) return null;
+  if (mode !== "split" && mode !== "walk") return null;
+  if (!isPlanVersion(version) || typeof hash !== "string" || hash === "") return null;
+  if (lockToken !== null && !isLockToken(lockToken)) return null;
+  return { dir, mode, version, hash, lockToken };
 }
 
 function draftPath(reviewsDir: string, version: PlanVersion): string {
@@ -177,21 +263,58 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
-function openBrowser(url: string): void {
-  const command = process.platform === "darwin" ? "open" : "xdg-open";
-  const child = spawn(command, [url], { stdio: "ignore", detached: true });
-  child.on("error", (error) => console.error(`could not open a browser: ${error.message}`));
-  child.unref();
+function sendHtml(res: ServerResponse, status: number, html: string): void {
+  res.writeHead(status, {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-store",
+  });
+  res.end(html);
 }
 
-export function serveReview(state: ReviewState, opts: ServeOptions): Promise<Review> {
-  const { reviewsDir } = opts;
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+}
+
+function indexPage(sessions: readonly HostedSummary[]): string {
+  const rows = sessions.map((s) => {
+    const what = s.mode === "walk" ? "code review" : `review of plan v${s.version}`;
+    const count = `${s.comments} comment${s.comments === 1 ? "" : "s"}`;
+    return `      <li><a href="${s.url}">${escapeHtml(s.branch)}</a> <span class="muted">${what} · ${count} · ${escapeHtml(s.repo)}</span></li>`;
+  });
+  const body =
+    rows.length === 0
+      ? '    <p class="muted">No sessions. Run follow-me review or follow-me walk in a repo.</p>'
+      : `    <ul class="session-index">\n${rows.join("\n")}\n    </ul>`;
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>follow-me sessions</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body class="index">
+    <h1>follow-me sessions</h1>
+${body}
+  </body>
+</html>
+`;
+}
+
+/** One hosted review: its comments, its autosave chain, and how it ends. */
+function hostSession(id: SessionId, registration: Registration, loaded: Loaded) {
+  const { state, reviewsDir } = loaded;
   const comments = new Map<string, Comment>(state.comments.map((c) => [c.id, c]));
   const unitIds = new Set<string>(state.units.map((u) => u.id));
   const draftFile = draftPath(reviewsDir, state.version);
   const reviewFile = join(reviewsDir, `v${state.version}.json`);
-  let boundPort = 0;
+  let finish: (review: Review | null) => void = () => {};
+  const done = new Promise<Review | null>((resolve) => {
+    finish = resolve;
+  });
 
+  let ending = false;
   // Writes are chained so two rapid edits never race on the same file.
   let writes: Promise<void> = Promise.resolve();
   const saveDraft = (): Promise<void> => {
@@ -223,99 +346,251 @@ export function serveReview(state: ReviewState, opts: ServeOptions): Promise<Rev
     return comment;
   };
 
-  return new Promise<Review>((resolve, reject) => {
-    const server: Server = createServer((req, res) => {
-      route(req, res).catch((error: unknown) => {
-        if (error instanceof HttpError)
-          return sendJson(res, error.status, { error: error.message });
-        console.error(error);
-        sendJson(res, 500, { error: "internal error" });
-      });
+  return {
+    id,
+    registration,
+    done,
+    summary: (): HostedSummary => ({
+      id,
+      url: sessionPath(id),
+      repo: loaded.repo,
+      branch: state.anchor.branch,
+      mode: state.mode,
+      version: state.version,
+      comments: comments.size,
+    }),
+    snapshot: () => ({ ...state, comments: [...comments.values()] }),
+    add: async (raw: unknown): Promise<CommentId> => {
+      if (!isRecord(raw)) throw new HttpError(400, "malformed comment");
+      const commentId = mintCommentId(new Set(comments.keys()));
+      const comment = accept(
+        parseComment({ ...raw, id: commentId, createdAt: new Date().toISOString() }),
+      );
+      comments.set(commentId, comment);
+      await saveDraft();
+      return commentId;
+    },
+    put: async (target: string, raw: unknown): Promise<Comment> => {
+      const comment = accept(parseComment(raw));
+      if (comment.id !== target) throw new HttpError(400, "comment id does not match the URL");
+      comments.set(comment.id, comment);
+      await saveDraft();
+      return comment;
+    },
+    remove: async (target: string): Promise<void> => {
+      if (!comments.delete(target)) throw new HttpError(404, "no such comment");
+      await saveDraft();
+    },
+    /** Writes reviews/vN.json exactly once and releases the session's lock. */
+    end: async (): Promise<{ review: Review; file: string }> => {
+      if (ending) throw new HttpError(409, "this review is already ending");
+      ending = true;
+      await writes;
+      const review: Review = {
+        schema: "follow-me/review@1",
+        mode: state.mode,
+        planVersion: state.version,
+        planHash: state.planHash,
+        endedAt: new Date().toISOString(),
+        comments: [...comments.values()],
+      };
+      await mkdir(reviewsDir, { recursive: true });
+      await writeAtomic(reviewFile, `${JSON.stringify(review, null, 2)}\n`);
+      await rm(draftFile, { force: true });
+      loaded.release();
+      return { review, file: reviewFile };
+    },
+    finish: (review: Review | null) => finish(review),
+    abandon: () => {
+      loaded.release();
+      finish(null);
+    },
+  };
+}
+
+type HostedSession = ReturnType<typeof hostSession>;
+
+function sameRegistration(a: Registration, b: Registration): boolean {
+  return a.dir === b.dir && a.mode === b.mode && a.version === b.version && a.hash === b.hash;
+}
+
+/**
+ * Starts the server that hosts every review of this user. Sessions live in a registry keyed by
+ * SessionId; each one is served at /s/<id>/ with its API under /s/<id>/api/. The server stops
+ * itself once it has had no session for idleMs.
+ */
+export function startServer(opts: HostOptions): Promise<Host> {
+  const registry = new Map<SessionId, HostedSession>();
+  const pending = new Map<SessionId, Promise<HostedSession>>();
+  let boundPort = 0;
+  let idleTimer: NodeJS.Timeout | undefined;
+  let stopped = false;
+  let markClosed: () => void = () => {};
+  const closed = new Promise<void>((resolve) => {
+    markClosed = resolve;
+  });
+
+  const server: Server = createServer((req, res) => {
+    route(req, res).catch((error: unknown) => {
+      if (error instanceof HttpError) return sendJson(res, error.status, { error: error.message });
+      if (error instanceof RegistrationError) return sendJson(res, 409, { error: error.message });
+      console.error(error);
+      sendJson(res, 500, { error: "internal error" });
     });
+  });
 
-    async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
-      const host = req.headers.host ?? "";
-      // Blocks DNS rebinding and cross-site writes: only our own origin may talk to the API.
-      if (host !== `127.0.0.1:${boundPort}` && host !== `localhost:${boundPort}`) {
-        throw new HttpError(403, "unexpected host");
+  const close = (): Promise<void> => {
+    if (!stopped) {
+      stopped = true;
+      clearTimeout(idleTimer);
+      for (const session of registry.values()) session.abandon();
+      registry.clear();
+      server.close(() => markClosed());
+      server.closeAllConnections();
+    }
+    return closed;
+  };
+
+  const settle = (): void => {
+    clearTimeout(idleTimer);
+    if (stopped || registry.size > 0 || pending.size > 0) return;
+    idleTimer = setTimeout(() => void close(), opts.idleMs);
+  };
+
+  const sessions = (): HostedSummary[] => [...registry.values()].map((s) => s.summary());
+
+  const register = async (registration: Registration): Promise<Registered> => {
+    if (stopped) throw new RegistrationError("the server is stopping");
+    const id = sessionIdOf(registration.dir);
+    const existing = registry.get(id) ?? (await pending.get(id));
+    if (existing) {
+      if (!sameRegistration(existing.registration, registration)) {
+        const { mode, version } = existing.registration;
+        throw new RegistrationError(
+          `this session is already open as a ${mode === "walk" ? "walk" : "review"} of plan v${version}; end it first`,
+        );
       }
-      const origin = req.headers.origin;
-      if (origin !== undefined && origin !== `http://${host}`)
-        throw new HttpError(403, "bad origin");
+      return { summary: existing.summary(), done: existing.done };
+    }
+    clearTimeout(idleTimer);
+    const loading = opts.load(registration).then((loaded) => hostSession(id, registration, loaded));
+    pending.set(id, loading);
+    try {
+      const session = await loading;
+      registry.set(id, session);
+      return { summary: session.summary(), done: session.done };
+    } finally {
+      pending.delete(id);
+      settle();
+    }
+  };
 
-      const method = req.method ?? "GET";
-      const path = new URL(req.url ?? "/", "http://localhost").pathname;
+  const hosted = (raw: string): HostedSession => {
+    const session = isSessionId(raw) ? registry.get(raw) : undefined;
+    if (!session) throw new HttpError(404, "no such session; it ended or never existed");
+    return session;
+  };
 
-      const asset = method === "GET" ? STATIC_FILES.get(path) : undefined;
-      if (asset) {
-        const bytes = await readFile(fileURLToPath(new URL(asset.file, UI_DIR)));
-        res.writeHead(200, { "content-type": asset.type, "cache-control": "no-store" });
-        res.end(bytes);
-        return;
-      }
+  async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const host = req.headers.host ?? "";
+    // Blocks DNS rebinding and cross-site writes: only our own origin may talk to the API.
+    if (host !== `127.0.0.1:${boundPort}` && host !== `localhost:${boundPort}`) {
+      throw new HttpError(403, "unexpected host");
+    }
+    const origin = req.headers.origin;
+    if (origin !== undefined && origin !== `http://${host}`) throw new HttpError(403, "bad origin");
 
-      if (method === "GET" && path === "/api/state") {
-        return sendJson(res, 200, { ...state, comments: [...comments.values()] });
-      }
+    const method = req.method ?? "GET";
+    const path = new URL(req.url ?? "/", "http://localhost").pathname;
 
-      if (method === "POST" && path === "/api/comments") {
-        const raw = await readJson(req);
-        if (!isRecord(raw)) throw new HttpError(400, "malformed comment");
-        const id = mintCommentId(new Set(comments.keys()));
-        const comment = accept(parseComment({ ...raw, id, createdAt: new Date().toISOString() }));
-        comments.set(id, comment);
-        await saveDraft();
-        return sendJson(res, 201, { id });
-      }
-
-      const target = /^\/api\/comments\/([^/]+)$/.exec(path)?.[1];
-      if (target !== undefined && method === "PUT") {
-        const comment = accept(parseComment(await readJson(req)));
-        if (comment.id !== target) throw new HttpError(400, "comment id does not match the URL");
-        comments.set(comment.id, comment);
-        await saveDraft();
-        return sendJson(res, 200, comment);
-      }
-      if (target !== undefined && method === "DELETE") {
-        if (!comments.delete(target)) throw new HttpError(404, "no such comment");
-        await saveDraft();
-        return sendJson(res, 200, { deleted: target });
-      }
-
-      if (method === "POST" && path === "/api/end") {
-        await writes;
-        const review: Review = {
-          schema: "follow-me/review@1",
-          mode: state.mode,
-          planVersion: state.version,
-          planHash: state.planHash,
-          endedAt: new Date().toISOString(),
-          comments: [...comments.values()],
-        };
-        await mkdir(reviewsDir, { recursive: true });
-        await writeAtomic(reviewFile, `${JSON.stringify(review, null, 2)}\n`);
-        await rm(draftFile, { force: true });
-        sendJson(res, 200, { saved: reviewFile });
-        res.on("close", () => {
-          server.close(() => resolve(review));
-          server.closeAllConnections();
-        });
-        return;
-      }
-
-      throw new HttpError(404, "not found");
+    const asset = method === "GET" ? STATIC_FILES.get(path) : undefined;
+    if (asset) {
+      const bytes = await readFile(fileURLToPath(new URL(asset.file, UI_DIR)));
+      res.writeHead(200, { "content-type": asset.type, "cache-control": "no-store" });
+      res.end(bytes);
+      return;
     }
 
-    server.on("error", reject);
-    server.listen(opts.port ?? 0, "127.0.0.1", () => {
+    if (method === "GET" && path === "/") return sendHtml(res, 200, indexPage(sessions()));
+    if (method === "GET" && path === "/api/health") {
+      return sendJson(res, 200, { app: HEALTH_APP, pid: process.pid });
+    }
+    if (method === "GET" && path === "/api/sessions") return sendJson(res, 200, sessions());
+    if (method === "POST" && path === "/api/sessions") {
+      const registration = parseRegistration(await readJson(req));
+      if (!registration) throw new HttpError(400, "malformed registration");
+      const before = registry.has(sessionIdOf(registration.dir));
+      const { summary } = await register(registration);
+      return sendJson(res, before ? 200 : 201, summary);
+    }
+
+    const match = /^\/s\/([^/]+)(\/.*)?$/.exec(path);
+    if (match === null) throw new HttpError(404, "not found");
+    const [, rawId = "", rest] = match;
+    if (rest === undefined && method === "GET") {
+      res.writeHead(308, { location: `/s/${encodeURIComponent(rawId)}/` });
+      res.end();
+      return;
+    }
+    if (method === "GET" && rest === "/") {
+      if (!isSessionId(rawId) || !registry.has(rawId)) {
+        return sendHtml(
+          res,
+          404,
+          '<!doctype html><title>follow-me</title><p>This session ended or never existed. <a href="/">All sessions</a></p>\n',
+        );
+      }
+      return sendHtml(
+        res,
+        200,
+        await readFile(fileURLToPath(new URL("index.html", UI_DIR)), "utf8"),
+      );
+    }
+
+    const session = hosted(rawId);
+    if (method === "GET" && rest === "/api/state") return sendJson(res, 200, session.snapshot());
+    if (method === "POST" && rest === "/api/comments") {
+      return sendJson(res, 201, { id: await session.add(await readJson(req)) });
+    }
+    const target = /^\/api\/comments\/([^/]+)$/.exec(rest ?? "")?.[1];
+    if (target !== undefined && method === "PUT") {
+      return sendJson(res, 200, await session.put(target, await readJson(req)));
+    }
+    if (target !== undefined && method === "DELETE") {
+      await session.remove(target);
+      return sendJson(res, 200, { deleted: target });
+    }
+    if (method === "POST" && rest === "/api/end") {
+      const { review, file } = await session.end();
+      registry.delete(session.id);
+      sendJson(res, 200, { saved: file });
+      res.on("close", () => {
+        session.finish(review);
+        settle();
+      });
+      return;
+    }
+    throw new HttpError(404, "not found");
+  }
+
+  return new Promise<Host>((resolve, reject) => {
+    server.once("error", (error) => {
+      if (isRecord(error) && error["code"] === "EADDRINUSE") reject(new PortInUseError(opts.port));
+      else reject(error);
+    });
+    server.listen(opts.port, "127.0.0.1", () => {
       const address = server.address();
       if (!address || typeof address === "string") return reject(new Error("server has no port"));
       boundPort = address.port;
-      const url = `http://127.0.0.1:${boundPort}/`;
-      const label = state.mode === "walk" ? "code review" : "review";
-      process.stdout.write(`follow-me ${label}: ${url}\n`);
-      opts.onListen?.(url);
-      if (opts.open) openBrowser(url);
+      settle();
+      resolve({
+        port: boundPort,
+        url: `http://127.0.0.1:${boundPort}/`,
+        register,
+        sessions,
+        close,
+        closed,
+      });
     });
   });
 }

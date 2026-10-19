@@ -63,6 +63,41 @@ body {
   background: var(--panel);
 }
 
+.sessions {
+  display: flex;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.sessions[hidden] {
+  display: none;
+}
+
+.sessions a {
+  color: var(--accent);
+}
+
+.sessions a[aria-current="page"] {
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+body.index {
+  display: block;
+  height: auto;
+  padding: 16px 24px;
+}
+
+.session-index {
+  padding-left: 18px;
+}
+
+.session-index a {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .status {
   margin-left: auto;
   color: var(--del-text);

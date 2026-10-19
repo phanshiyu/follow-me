@@ -3,8 +3,15 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
-import type { ReviewState } from "./server.ts";
-import { loadDraftComments, serveReview } from "./server.ts";
+import type { Host, Loader, Registration, ReviewState } from "./server.ts";
+import {
+  loadDraftComments,
+  PortInUseError,
+  parseRegistration,
+  RegistrationError,
+  sessionIdOf,
+  startServer,
+} from "./server.ts";
 import type { Review } from "./types.ts";
 
 const HUNK_A = "h_aaaaaaaaaaaa";
@@ -86,19 +93,53 @@ function twoCommitState(comments: readonly unknown[] = []): ReviewState {
 type Running = {
   readonly url: string;
   readonly dir: string;
-  readonly done: Promise<Review>;
+  readonly done: Promise<Review | null>;
+  readonly host: Host;
 };
 
-async function start(t: TestContext, state: ReviewState): Promise<Running> {
+async function tempDir(t: TestContext): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "follow-me-server-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
-  const reviewsDir = join(dir, "reviews");
-  let announce: (url: string) => void = () => {};
-  const listening = new Promise<string>((resolve) => {
-    announce = resolve;
+  return dir;
+}
+
+function registration(dir: string, version = 3): Registration {
+  const parsed = parseRegistration({
+    dir,
+    mode: "split",
+    version,
+    hash: "hash-of-v3",
+    lockToken: null,
   });
-  const done = serveReview(state, { reviewsDir, port: 0, onListen: announce });
-  return { url: await listening, dir: reviewsDir, done };
+  assert.ok(parsed, "a well-formed registration parses");
+  return parsed;
+}
+
+/** A loader over fixed states keyed by session dir; the real one reads .follow-me/ from disk. */
+function fixedLoader(states: ReadonlyMap<string, ReviewState>, released: string[] = []): Loader {
+  return async (r) => {
+    const state = states.get(r.dir);
+    if (!state) throw new RegistrationError(`${r.dir} is not a session`);
+    return {
+      repo: `/repos${r.dir}`,
+      reviewsDir: join(r.dir, "reviews"),
+      state,
+      release: () => released.push(r.dir),
+    };
+  };
+}
+
+async function serve(t: TestContext, load: Loader, idleMs = 60_000): Promise<Host> {
+  const host = await startServer({ port: 0, idleMs, load });
+  t.after(() => host.close());
+  return host;
+}
+
+async function start(t: TestContext, state: ReviewState): Promise<Running> {
+  const dir = await tempDir(t);
+  const host = await serve(t, fixedLoader(new Map([[dir, state]])));
+  const { summary, done } = await host.register(registration(dir));
+  return { url: new URL(summary.url, host.url).href, dir: join(dir, "reviews"), done, host };
 }
 
 const hunkAnchor = { kind: "hunk", unit: HUNK_A, commit: 0, changes: [1] };
@@ -124,12 +165,12 @@ async function post(url: string, path: string, body: unknown): Promise<Response>
 test("a review session autosaves a draft and ends by writing the Review", async (t) => {
   const run = await start(t, twoCommitState());
 
-  const initial = await jsonOf(await fetch(new URL("/api/state", run.url)));
+  const initial = await jsonOf(await fetch(new URL("api/state", run.url)));
   assert.equal(initial.version, 3);
   assert.deepEqual(initial.comments, []);
   assert.equal(initial.commits.length, 2);
 
-  const created = await post(run.url, "/api/comments", newComment("why drop old1?"));
+  const created = await post(run.url, "api/comments", newComment("why drop old1?"));
   assert.equal(created.status, 201);
   const { id } = await jsonOf(created);
   assert.match(id, /^c_[a-z2-7]{6}$/);
@@ -139,7 +180,7 @@ test("a review session autosaves a draft and ends by writing the Review", async 
     ...newComment("why drop old1 here?"),
     createdAt: "2026-01-01T00:00:00.000Z",
   };
-  const put = await fetch(new URL(`/api/comments/${id}`, run.url), {
+  const put = await fetch(new URL(`api/comments/${id}`, run.url), {
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(edited),
@@ -147,13 +188,13 @@ test("a review session autosaves a draft and ends by writing the Review", async 
   assert.equal(put.status, 200);
 
   const message = await jsonOf(
-    await post(run.url, "/api/comments", {
+    await post(run.url, "api/comments", {
       anchor: { kind: "message", commit: 1 },
       context: { commitMessage: "use parser", path: null },
       body: "too vague",
     }),
   );
-  const gone = await fetch(new URL(`/api/comments/${message.id}`, run.url), { method: "DELETE" });
+  const gone = await fetch(new URL(`api/comments/${message.id}`, run.url), { method: "DELETE" });
   assert.equal(gone.status, 200);
 
   const draft = JSON.parse(await readFile(join(run.dir, "v3.draft.json"), "utf8"));
@@ -163,7 +204,7 @@ test("a review session autosaves a draft and ends by writing the Review", async 
     comments: [edited],
   });
 
-  const ended = await post(run.url, "/api/end", {});
+  const ended = await post(run.url, "api/end", {});
   assert.equal(ended.status, 200);
   const review = await run.done;
 
@@ -174,33 +215,34 @@ test("a review session autosaves a draft and ends by writing the Review", async 
     mode: "split",
     planVersion: 3,
     planHash: "hash-of-v3",
-    endedAt: review.endedAt,
+    endedAt: review?.endedAt,
     comments: [edited],
   });
   await assert.rejects(stat(join(run.dir, "v3.draft.json")), { code: "ENOENT" });
-  await assert.rejects(fetch(new URL("/api/state", run.url)));
+  assert.equal((await fetch(new URL("api/state", run.url))).status, 404);
+  assert.deepEqual(run.host.sessions(), []);
 });
 
 test("a malformed comment gets 400 and leaves the draft unchanged", async (t) => {
   const run = await start(t, twoCommitState());
-  const { id } = await jsonOf(await post(run.url, "/api/comments", newComment("keep me")));
+  const { id } = await jsonOf(await post(run.url, "api/comments", newComment("keep me")));
   const draftFile = join(run.dir, "v3.draft.json");
   const before = await readFile(draftFile, "utf8");
 
   const goodPut = { id, ...newComment("x"), createdAt: "2026-01-01T00:00:00.000Z" };
   const attempts: [string, string, unknown][] = [
-    ["POST", "/api/comments", { ...newComment("x"), anchor: { kind: "hunk", unit: "nope" } }],
-    ["POST", "/api/comments", { ...newComment("x"), body: 7 }],
-    ["POST", "/api/comments", { ...newComment("x"), anchor: { ...hunkAnchor, commit: 9 } }],
+    ["POST", "api/comments", { ...newComment("x"), anchor: { kind: "hunk", unit: "nope" } }],
+    ["POST", "api/comments", { ...newComment("x"), body: 7 }],
+    ["POST", "api/comments", { ...newComment("x"), anchor: { ...hunkAnchor, commit: 9 } }],
     [
       "POST",
-      "/api/comments",
+      "api/comments",
       { ...newComment("x"), anchor: { ...hunkAnchor, unit: "h_ffffffffffff" } },
     ],
-    ["PUT", `/api/comments/${id}`, { ...goodPut, anchor: { kind: "plan", extra: 1 }, body: null }],
-    ["PUT", `/api/comments/${id}`, { ...goodPut, id: "c_zzzzzz" }],
-    ["PUT", "/api/comments/c_abcdef", { ...goodPut, id: "bad id" }],
-    ["PUT", `/api/comments/${id}`, "not an object"],
+    ["PUT", `api/comments/${id}`, { ...goodPut, anchor: { kind: "plan", extra: 1 }, body: null }],
+    ["PUT", `api/comments/${id}`, { ...goodPut, id: "c_zzzzzz" }],
+    ["PUT", "api/comments/c_abcdef", { ...goodPut, id: "bad id" }],
+    ["PUT", `api/comments/${id}`, "not an object"],
   ];
   for (const [method, path, body] of attempts) {
     const res = await fetch(new URL(path, run.url), {
@@ -210,73 +252,176 @@ test("a malformed comment gets 400 and leaves the draft unchanged", async (t) =>
     });
     assert.equal(res.status, 400, `${method} ${path} ${JSON.stringify(body)}`);
   }
-  const garbage = await fetch(new URL("/api/comments", run.url), { method: "POST", body: "{nope" });
+  const garbage = await fetch(new URL("api/comments", run.url), { method: "POST", body: "{nope" });
   assert.equal(garbage.status, 400);
 
   assert.equal(await readFile(draftFile, "utf8"), before);
-  const state = await jsonOf(await fetch(new URL("/api/state", run.url)));
+  const state = await jsonOf(await fetch(new URL("api/state", run.url)));
   assert.equal(state.comments.length, 1);
   assert.equal(state.comments[0].body, "keep me");
 
-  await post(run.url, "/api/end", {});
+  await post(run.url, "api/end", {});
   await run.done;
 });
 
 test("a draft from an unfinished session comes back through loadDraftComments", async (t) => {
   const first = await start(t, twoCommitState());
-  const { id } = await jsonOf(await post(first.url, "/api/comments", newComment("pending")));
+  const { id } = await jsonOf(await post(first.url, "api/comments", newComment("pending")));
   const restored = await loadDraftComments(first.dir, twoCommitState().version);
   assert.equal(restored.length, 1);
   assert.equal(restored[0]?.id, id);
   assert.equal(restored[0]?.body, "pending");
 
-  const state = await jsonOf(await fetch(new URL("/api/state", first.url)));
+  const state = await jsonOf(await fetch(new URL("api/state", first.url)));
   assert.equal(state.comments[0].id, id);
-  await post(first.url, "/api/end", {});
+  await post(first.url, "api/end", {});
   await first.done;
 });
 
 test("requests from a foreign origin are refused", async (t) => {
   const run = await start(t, twoCommitState());
-  const res = await fetch(new URL("/api/comments", run.url), {
+  const res = await fetch(new URL("api/comments", run.url), {
     method: "POST",
     headers: { origin: "http://evil.example", "content-type": "application/json" },
     body: JSON.stringify(newComment("x")),
   });
   assert.equal(res.status, 403);
-  await post(run.url, "/api/end", {});
+  await post(run.url, "api/end", {});
   await run.done;
 });
 
-test("the UI files are served at /, /app.js, /playback.js and /style.css", async (t) => {
+test("the UI is served under /s/<id>/ and its assets at the root", async (t) => {
   const run = await start(t, twoCommitState());
-  const page = await fetch(new URL("/", run.url));
+  const page = await fetch(run.url);
   assert.equal(page.headers.get("content-type"), "text/html; charset=utf-8");
   assert.match(await page.text(), /<title>follow-me review<\/title>/);
+  const bare = await fetch(run.url.slice(0, -1), { redirect: "manual" });
+  assert.deepEqual([bare.status, bare.headers.get("location")], [308, new URL(run.url).pathname]);
   const script = await fetch(new URL("/app.js", run.url));
   assert.equal(script.headers.get("content-type"), "text/javascript; charset=utf-8");
   const playback = await fetch(new URL("/playback.js", run.url));
   assert.match(await playback.text(), /export function buildScript\(/);
   assert.equal((await fetch(new URL("/style.css", run.url))).status, 200);
   assert.equal((await fetch(new URL("/nope.js", run.url))).status, 404);
-  await post(run.url, "/api/end", {});
+  assert.equal((await fetch(new URL("/s/000000000000/", run.url))).status, 404);
+  assert.equal((await fetch(new URL("/s/000000000000/api/state", run.url))).status, 404);
+  await post(run.url, "api/end", {});
   await run.done;
 });
 
-test("two review servers run at once on their own ports and save their own reviews", async (t) => {
-  const [one, two] = await Promise.all([start(t, twoCommitState()), start(t, twoCommitState())]);
-  assert.notEqual(new URL(one.url).port, new URL(two.url).port);
-  await post(one.url, "/api/comments", newComment("from one"));
-  await post(two.url, "/api/comments", newComment("from two"));
-  await Promise.all([post(one.url, "/api/end", {}), post(two.url, "/api/end", {})]);
-  const [first, second] = await Promise.all([one.done, two.done]);
+test("one server hosts two sessions, lists them, and saves each review in its own place", async (t) => {
+  const [one, two] = [await tempDir(t), await tempDir(t)];
+  const released: string[] = [];
+  const states = new Map([
+    [one, twoCommitState()],
+    [two, twoCommitState()],
+  ]);
+  const host = await serve(t, fixedLoader(states, released));
+  const first = await host.register(registration(one));
+  const second = await host.register(registration(two));
   assert.deepEqual(
-    [first.comments.map((c) => c.body), second.comments.map((c) => c.body)],
-    [["from one"], ["from two"]],
+    [first.summary.url, second.summary.url],
+    [`/s/${sessionIdOf(one)}/`, `/s/${sessionIdOf(two)}/`],
   );
-  const onDisk = JSON.parse(await readFile(join(two.dir, "v3.json"), "utf8"));
+  const urlOf = (r: { summary: { url: string } }) => new URL(r.summary.url, host.url).href;
+  await post(urlOf(first), "api/comments", newComment("from one"));
+  await post(urlOf(second), "api/comments", newComment("from two"));
+  await post(urlOf(second), "api/comments", newComment("also two"));
+
+  const listed = await jsonOf(await fetch(new URL("/api/sessions", host.url)));
+  assert.deepEqual(listed, [
+    {
+      id: sessionIdOf(one),
+      url: `/s/${sessionIdOf(one)}/`,
+      repo: `/repos${one}`,
+      branch: "feature",
+      mode: "split",
+      version: 3,
+      comments: 1,
+    },
+    {
+      id: sessionIdOf(two),
+      url: `/s/${sessionIdOf(two)}/`,
+      repo: `/repos${two}`,
+      branch: "feature",
+      mode: "split",
+      version: 3,
+      comments: 2,
+    },
+  ]);
+  const index = await (await fetch(host.url)).text();
+  assert.ok(index.includes(`<li><a href="/s/${sessionIdOf(two)}/">feature</a>`));
+  assert.ok(index.includes(`review of plan v3 · 2 comments · /repos${two}`));
+
+  await Promise.all([post(urlOf(first), "api/end", {}), post(urlOf(second), "api/end", {})]);
+  const [a, b] = await Promise.all([first.done, second.done]);
+  assert.deepEqual(
+    [a?.comments.map((c) => c.body), b?.comments.map((c) => c.body)],
+    [["from one"], ["from two", "also two"]],
+  );
+  const onDisk = JSON.parse(await readFile(join(two, "reviews", "v3.json"), "utf8"));
   assert.deepEqual(
     onDisk.comments.map((c: { body: string }) => c.body),
-    ["from two"],
+    ["from two", "also two"],
+  );
+  assert.deepEqual(released.sort(), [one, two].sort());
+  assert.deepEqual(await jsonOf(await fetch(new URL("/api/sessions", host.url))), []);
+});
+
+test("registering a session again returns the same URL, and a different plan is refused", async (t) => {
+  const dir = await tempDir(t);
+  const host = await serve(t, fixedLoader(new Map([[dir, twoCommitState()]])));
+  const body = registration(dir);
+  const first = await post(host.url, "/api/sessions", body);
+  const again = await post(host.url, "/api/sessions", body);
+  assert.deepEqual([first.status, again.status], [201, 200]);
+  assert.equal((await jsonOf(again)).url, `/s/${sessionIdOf(dir)}/`);
+  const other = await post(host.url, "/api/sessions", registration(dir, 4));
+  assert.deepEqual(
+    [other.status, await jsonOf(other)],
+    [409, { error: "this session is already open as a review of plan v3; end it first" }],
+  );
+  const unknown = await post(host.url, "/api/sessions", registration("/elsewhere"));
+  assert.deepEqual(
+    [unknown.status, await jsonOf(unknown)],
+    [409, { error: "/elsewhere is not a session" }],
+  );
+  const malformed = await post(host.url, "/api/sessions", { ...body, dir: "relative" });
+  assert.equal(malformed.status, 400);
+  assert.equal(host.sessions().length, 1);
+});
+
+test("the server answers health with its marker and stops once idle with no session", async (t) => {
+  const dir = await tempDir(t);
+  const host = await serve(t, fixedLoader(new Map([[dir, twoCommitState()]])), 50);
+  const health = await jsonOf(await fetch(new URL("/api/health", host.url)));
+  assert.deepEqual(health, { app: "follow-me", pid: process.pid });
+
+  const { summary, done } = await host.register(registration(dir));
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(host.sessions().length, 1, "a hosted session keeps the server up");
+  await post(new URL(summary.url, host.url).href, "api/end", {});
+  assert.equal((await done)?.planVersion, 3);
+  await host.closed;
+  await assert.rejects(fetch(new URL("/api/health", host.url)));
+});
+
+test("closing the server abandons open sessions without writing a review", async (t) => {
+  const run = await start(t, twoCommitState());
+  await post(run.url, "api/comments", newComment("kept in the draft"));
+  await run.host.close();
+  assert.equal(await run.done, null);
+  await assert.rejects(stat(join(run.dir, "v3.json")), { code: "ENOENT" });
+  assert.equal(
+    (await loadDraftComments(run.dir, twoCommitState().version))[0]?.body,
+    "kept in the draft",
+  );
+});
+
+test("a taken port is reported as PortInUseError", async (t) => {
+  const first = await serve(t, fixedLoader(new Map()));
+  await assert.rejects(
+    startServer({ port: first.port, idleMs: 0, load: fixedLoader(new Map()) }),
+    (error: unknown) => error instanceof PortInUseError && error.port === first.port,
   );
 });

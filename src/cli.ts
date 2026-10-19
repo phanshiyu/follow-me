@@ -4,14 +4,30 @@ import { join, relative } from "node:path";
 import { PlanRequestError, requestPlan } from "./anthropic.ts";
 import { DiffParseError, formatUnitRef } from "./diff.ts";
 import { BranchRefusedError, GitError, treeOf, writeBranch } from "./git.ts";
+import {
+  findServer,
+  idleMs,
+  listSessions,
+  openBrowser,
+  portFallbackMessage,
+  probeHealth,
+  registerWith,
+  type Started,
+  sessionUrl,
+  spawnDetached,
+  startOrAttach,
+  stateDir,
+  stopServer,
+} from "./host.ts";
 import { runInstall, runUninstall, type SkillTargets } from "./install.ts";
 import { serializePlanFile, type ValidPlan, validatePlan } from "./plan.ts";
 import { type PromptInput, renderFeedback, renderPrompt } from "./prompt.ts";
-import { loadDraftComments, serveReview } from "./server.ts";
+import { type Registration, RegistrationError, sessionIdOf } from "./server.ts";
 import {
   BranchMovedError,
   cleanSessions,
   extractSession,
+  type HeldLock,
   type LockState,
   openSession,
   type Session,
@@ -45,10 +61,12 @@ const USAGE = `usage: follow-me <command>
   prompt [--walk] [--branch <name>]         print the planner prompt for a coding agent
   plan [--walk] [--model <id>] [--branch <name>]
                                             ask the Anthropic API to write draft.json
-  review [--port <n>] [--no-open]           review the latest plan commit by commit
-  walk [--base <ref>] [--branch <name>] [--model <id>] [--port <n>] [--no-open]
+  review [--port <n>] [--detach] [--no-open] review the latest plan commit by commit
+  walk [--base <ref>] [--branch <name>] [--model <id>] [--port <n>] [--detach] [--no-open]
                                             watch a branch being written, narrated, and
                                             review its code; nothing is applied
+  server status                             show the review server and the sessions it hosts
+  server stop                               stop the review server; drafts are kept
   feedback [--branch <name>]                print the latest review as markdown
   clean [--all] [--dry-run]                 remove sessions of deleted branches, finished
                                             review drafts and leftovers of dead processes;
@@ -60,6 +78,9 @@ const USAGE = `usage: follow-me <command>
                                             remove the skill files install writes
 
 --walk writes the prompt for a reviewer: a story with narration instead of a split.
+review and walk share one server per user: a running one hosts the session and the command
+prints its URL; otherwise the command serves until its review ends, or with --detach starts the
+server in the background. --port taken by another program falls back to a free port.
 --force lets apply move a branch follow-me did not create; it never allows <branch> itself.`;
 
 type Args = {
@@ -208,14 +229,14 @@ function branchFlag(args: Args): string {
   return branch === undefined ? "" : ` --branch ${branch}`;
 }
 
-function portOf(args: Args): { port?: number } {
+function portOf(args: Args): number | undefined {
   const raw = args.values.get("port");
-  if (raw === undefined) return {};
+  if (raw === undefined) return undefined;
   const port = Number(raw);
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
     throw new UsageError(`--port ${raw} is not a port number`);
   }
-  return { port };
+  return port === 0 ? undefined : port;
 }
 
 function modeOf(args: Args): ReviewMode {
@@ -252,14 +273,14 @@ async function check(cwd: string, args: Args): Promise<number> {
 }
 
 /** Runs one command under the session's lock, so two agents never apply or review it at once. */
-async function locked(
+async function locked<T>(
   session: Session,
   command: string,
-  run: () => Promise<number>,
-): Promise<number> {
+  run: (held: HeldLock) => Promise<T>,
+): Promise<T> {
   const held = session.lock(command);
   try {
-    return await run();
+    return await run(held);
   } finally {
     held.release();
   }
@@ -360,26 +381,99 @@ function latestPlan(session: Session): { version: PlanVersion; plan: ValidPlan }
   return { version: session.freeze(verdict.plan), plan: verdict.plan };
 }
 
-async function serve(
+type Prepared = { readonly version: PlanVersion; readonly plan: ValidPlan };
+
+function announce(mode: ReviewMode, url: string, args: Args): void {
+  say(`follow-me ${mode === "walk" ? "code review" : "review"}: ${url}`);
+  if (!args.flags.has("no-open")) openBrowser(url);
+}
+
+/** Where a review went: refused before hosting, hosted by another process, or by this one. */
+type Hosted =
+  | { readonly kind: "refused" }
+  | { readonly kind: "elsewhere" }
+  | { readonly kind: "ended" }
+  | { readonly kind: "stopped" };
+
+/** The server that already runs for this user, or one on --port that answers as ours. */
+async function runningServer(home: string, port: number | undefined): Promise<number | null> {
+  const live = await findServer(home);
+  if (live !== null) return live.port;
+  if (port !== undefined && (await probeHealth(port)) !== null) return port;
+  return null;
+}
+
+/**
+ * Hosts the session on the user's one review server. A running server gets the session and the
+ * CLI exits; otherwise this process becomes the server, in the foreground or, with --detach, as
+ * a background process. The CLI prepares the plan under the session lock and hands the lock to
+ * whichever process hosts it. report runs when a foreground review ends.
+ */
+async function hostReview(
   session: Session,
   mode: ReviewMode,
-  latest: { version: PlanVersion; plan: ValidPlan },
   args: Args,
-): Promise<Review> {
-  const { version, plan } = latest;
-  const reviewsDir = join(session.dir, "reviews");
-  return serveReview(
-    {
+  prepare: () => Promise<Prepared | null>,
+  report: (review: Review) => void,
+): Promise<Hosted> {
+  const home = stateDir();
+  const lock = session.lockState();
+  const live = await findServer(home);
+  if (live !== null && lock.kind === "held" && lock.pid === live.pid) {
+    const id = sessionIdOf(session.dir);
+    const open = (await listSessions(live.port)).find((s) => s.id === id && s.mode === mode);
+    if (open !== undefined) {
+      announce(mode, sessionUrl(live.port, open), args);
+      return { kind: "elsewhere" };
+    }
+  }
+  return locked(session, mode === "walk" ? "walk" : "review", async (held) => {
+    const prepared = await prepare();
+    if (prepared === null) return { kind: "refused" };
+    const registration: Registration = {
+      dir: session.dir,
       mode,
-      anchor: session.anchor,
-      version,
-      planHash: plan.hash,
-      commits: plan.commits,
-      units: [...session.diff.units.values()],
-      comments: await loadDraftComments(reviewsDir, version),
-    },
-    { reviewsDir, open: !args.flags.has("no-open"), ...portOf(args) },
-  );
+      version: prepared.version,
+      hash: prepared.plan.hash,
+      lockToken: held.token,
+    };
+    const port = portOf(args);
+    let started: Started;
+    const running = await runningServer(home, port);
+    if (running !== null) started = { kind: "attached", port: running };
+    else if (args.flags.has("detach")) {
+      const server = await spawnDetached(home, port);
+      if (port !== undefined && server.port !== port) say(portFallbackMessage(port, server.port));
+      started = { kind: "attached", port: server.port };
+    } else started = await startOrAttach(home, port, say);
+
+    if (started.kind === "attached") {
+      const summary = await registerWith(started.port, registration);
+      announce(mode, sessionUrl(started.port, summary), args);
+      return { kind: "elsewhere" };
+    }
+    const { host } = started;
+    const { summary, done } = await host.register(registration);
+    announce(mode, sessionUrl(host.port, summary), args);
+    const review = await done;
+    if (review === null) return { kind: "stopped" };
+    report(review);
+    const others = host.sessions().length;
+    say(
+      others > 0
+        ? `still serving ${plural(others, "other session")} at ${host.url}; this process exits after they end`
+        : `the server exits in ${Math.ceil(idleMs() / 1000)}s unless another review starts; ctrl-c stops it now`,
+    );
+    await host.closed;
+    return { kind: "ended" };
+  });
+}
+
+function exitCode(hosted: Hosted): number {
+  if (hosted.kind === "stopped") {
+    console.error("follow-me: the server stopped before the review ended; its comments are kept");
+  }
+  return hosted.kind === "refused" || hosted.kind === "stopped" ? 1 : 0;
 }
 
 function alreadyReviewed(session: Session, version: PlanVersion, args: Args): boolean {
@@ -392,16 +486,14 @@ function alreadyReviewed(session: Session, version: PlanVersion, args: Args): bo
 
 async function review(cwd: string, args: Args): Promise<number> {
   const session = await openSession(cwd);
-  return locked(session, "review", () => reviewLocked(session, args));
-}
-
-async function reviewLocked(session: Session, args: Args): Promise<number> {
-  const latest = latestPlan(session);
-  if (latest === null) return 1;
-  if (alreadyReviewed(session, latest.version, args)) return 1;
-  const review = await serve(session, "split", latest, args);
-  say(`review v${latest.version} saved with ${plural(review.comments.length, "comment")}`);
-  return 0;
+  const prepare = async (): Promise<Prepared | null> => {
+    const latest = latestPlan(session);
+    if (latest === null || alreadyReviewed(session, latest.version, args)) return null;
+    return latest;
+  };
+  const report = (review: Review) =>
+    say(`review v${review.planVersion} saved with ${plural(review.comments.length, "comment")}`);
+  return exitCode(await hostReview(session, "split", args, prepare, report));
 }
 
 /** Opens the reviewer's session, re-extracting instead of failing when the branch moved. */
@@ -420,7 +512,7 @@ async function openForWalk(cwd: string, args: Args): Promise<Session> {
 }
 
 /** The latest frozen plan if it still fits the diff, else a valid draft frozen now. Silent. */
-function walkablePlan(session: Session): { version: PlanVersion; plan: ValidPlan } | null {
+function walkablePlan(session: Session): Prepared | null {
   const lastReview = session.lastReview();
   const stored = session.plans().at(-1);
   if (stored !== undefined) {
@@ -444,10 +536,24 @@ function hasApiCredentials(): boolean {
 
 async function walk(cwd: string, args: Args): Promise<number> {
   const session = await openForWalk(cwd, args);
-  return locked(session, "walk", () => walkLocked(session, cwd, args));
+  const report = (review: Review) => {
+    const saved = join(session.dir, "reviews", `v${review.planVersion}.json`);
+    say(
+      `code review saved to ${relative(cwd, saved)} with ${plural(review.comments.length, "comment")}`,
+    );
+    say(`\`follow-me feedback${branchFlag(args)}\` prints it as a code review for the author`);
+  };
+  const hosted = await hostReview(
+    session,
+    "walk",
+    args,
+    () => walkPlan(session, cwd, args),
+    report,
+  );
+  return exitCode(hosted);
 }
 
-async function walkLocked(session: Session, cwd: string, args: Args): Promise<number> {
+async function walkPlan(session: Session, cwd: string, args: Args): Promise<Prepared | null> {
   let latest = walkablePlan(session);
   if (latest === null) {
     if (!hasApiCredentials()) {
@@ -457,20 +563,13 @@ async function walkLocked(session: Session, cwd: string, args: Args): Promise<nu
       say("Have a coding agent follow the prompt, then walk again:");
       say(`  follow-me prompt --walk${branchFlag(args)}`);
       say(`  follow-me walk${branchFlag(args)}`);
-      return 1;
+      return null;
     }
     const drafted = await draftWithApi(session, cwd, "walk", args);
-    if (drafted === null) return 1;
+    if (drafted === null) return null;
     latest = { version: session.freeze(drafted), plan: drafted };
   }
-  if (alreadyReviewed(session, latest.version, args)) return 1;
-  const review = await serve(session, "walk", latest, args);
-  const saved = join(session.dir, "reviews", `v${latest.version}.json`);
-  say(
-    `code review saved to ${relative(cwd, saved)} with ${plural(review.comments.length, "comment")}`,
-  );
-  say(`\`follow-me feedback${branchFlag(args)}\` prints it as a code review for the author`);
-  return 0;
+  return alreadyReviewed(session, latest.version, args) ? null : latest;
 }
 
 async function feedback(cwd: string, args: Args): Promise<number> {
@@ -497,6 +596,59 @@ function describeLock(lock: LockState): string {
     : `stale, ${who} is gone; follow-me clean removes it`;
 }
 
+/** The URL of this session on the user's server, when that server is what holds its lock. */
+async function hostedPage(session: Session, holder: number): Promise<string | null> {
+  const live = await findServer(stateDir());
+  if (live === null || live.pid !== holder) return null;
+  const id = sessionIdOf(session.dir);
+  const open = (await listSessions(live.port)).find((s) => s.id === id);
+  return open === undefined ? null : sessionUrl(live.port, open);
+}
+
+async function serverCommand(argv: readonly string[]): Promise<number> {
+  const [verb, ...rest] = argv;
+  const home = stateDir();
+  switch (verb) {
+    case "status": {
+      parseArgs(rest, {});
+      const live = await findServer(home);
+      if (live === null) {
+        say("no server running");
+        return 0;
+      }
+      say(`server pid ${live.pid} at http://127.0.0.1:${live.port}/ since ${live.startedAt}`);
+      const sessions = await listSessions(live.port);
+      if (sessions.length === 0) say("  no sessions");
+      for (const s of sessions) {
+        const what = s.mode === "walk" ? "walk" : "review";
+        say(
+          `  ${sessionUrl(live.port, s)}  ${s.branch} ${what} of plan v${s.version}, ${plural(s.comments, "comment")}  ${s.repo}`,
+        );
+      }
+      return 0;
+    }
+    case "stop": {
+      parseArgs(rest, {});
+      const stopped = await stopServer(home);
+      say(stopped === null ? "no server running" : `stopped server pid ${stopped.pid}`);
+      return 0;
+    }
+    // What `--detach` runs in the background; not meant to be typed.
+    case "run": {
+      const started = await startOrAttach(home, portOf(parseArgs(rest, { values: ["port"] })), say);
+      if (started.kind === "attached") {
+        say(`a follow-me server already runs on port ${started.port}`);
+        return 0;
+      }
+      say(`follow-me server: ${started.host.url}`);
+      await started.host.closed;
+      return 0;
+    }
+    default:
+      throw new UsageError("usage: follow-me server status|stop");
+  }
+}
+
 async function status(cwd: string): Promise<number> {
   const session = await openSession(cwd);
   const { anchor, diff } = session;
@@ -504,7 +656,10 @@ async function status(cwd: string): Promise<number> {
   const reviews = session.reviews();
   say(`${anchor.branch} ${short(anchor.tip)} onto ${anchor.baseRef} ${short(anchor.base)}`);
   say(`writes to: ${splitBranch(session)}`);
-  say(`lock: ${describeLock(session.lockState())}`);
+  const lock = session.lockState();
+  say(`lock: ${describeLock(lock)}`);
+  const page = lock.kind === "held" ? await hostedPage(session, lock.pid) : null;
+  if (page !== null) say(`review page: ${page}`);
   say(`units: ${plural(diff.units.size, "unit")}`);
   let hasDraft = true;
   try {
@@ -571,11 +726,16 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
       case "plan":
         return await plan(cwd, parseArgs(rest, { values: ["model", "branch"], flags: ["walk"] }));
       case "review":
-        return await review(cwd, parseArgs(rest, { values: ["port"], flags: ["no-open"] }));
+        return await review(
+          cwd,
+          parseArgs(rest, { values: ["port"], flags: ["no-open", "detach"] }),
+        );
       case "walk": {
-        const spec = { values: ["base", "branch", "model", "port"], flags: ["no-open"] };
+        const spec = { values: ["base", "branch", "model", "port"], flags: ["no-open", "detach"] };
         return await walk(cwd, parseArgs(rest, spec));
       }
+      case "server":
+        return await serverCommand(rest);
       case "feedback":
         return await feedback(cwd, parseArgs(rest, { values: ["branch"] }));
       case "clean": {
@@ -615,6 +775,7 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
       BranchRefusedError,
       SessionFileError,
       SessionLockedError,
+      RegistrationError,
       GitError,
       PlanRequestError,
     ];

@@ -9,7 +9,8 @@
  *   git.ts      the only module that spawns git: load a Diff, write a branch from a ValidPlan.
  *   session.ts  the .follow-me/<slug>/ layout: session anchor, plans, reviews, draft.
  *   prompt.ts   the planner prompt for an agent, and the Anthropic API planner.
- *   server.ts   the local review server and its JSON API; serves ui/.
+ *   server.ts   the review server: a registry of hosted sessions, their JSON API, and ui/.
+ *   host.ts     the one server per user: its record in the state dir, attach, start, stop.
  *   cli.ts      argv -> one call into the modules above.
  */
 
@@ -255,3 +256,24 @@ export type CommentStatus =
 
 /** Proves which process holds a session's lock; a handoff names the token it takes over. */
 export type LockToken = Brand<string, "LockToken">;
+
+/** 12 hex of sha256 over the session directory, so one session always gets one URL. */
+export type SessionId = Brand<string, "SessionId">;
+
+/** Wire format of <state dir>/server.json, present while the user's review server runs. */
+export type ServerRecord = {
+  readonly pid: number;
+  readonly port: number;
+  readonly startedAt: string;
+};
+
+/** One row of GET /api/sessions and of the index page. */
+export type HostedSummary = {
+  readonly id: SessionId;
+  readonly url: string;
+  readonly repo: string;
+  readonly branch: string;
+  readonly mode: ReviewMode;
+  readonly version: PlanVersion;
+  readonly comments: number;
+};

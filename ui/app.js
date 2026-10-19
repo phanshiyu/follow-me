@@ -13,6 +13,9 @@ import {
 
 const $ = (id) => document.getElementById(id);
 
+/** "/s/<id>": this page's session on the shared server. Every session API sits under it. */
+const sessionPrefix = /^\/s\/[^/]+/.exec(location.pathname)?.[0] ?? "";
+
 /** Builds an element. Text always goes through textContent, never innerHTML. */
 function el(tag, props = {}, ...children) {
   const node = document.createElement(tag);
@@ -40,7 +43,7 @@ const openBoxes = new Set();
 const editing = new Set();
 
 async function api(method, path, body) {
-  const res = await fetch(path, {
+  const res = await fetch(`${sessionPrefix}${path}`, {
     method,
     headers: { "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -48,6 +51,27 @@ async function api(method, path, body) {
   const payload = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(payload.error ?? `${method} ${path} failed with ${res.status}`);
   return payload;
+}
+
+/** Links to every session the server hosts, so one tab can move between workstreams. */
+async function renderSwitcher() {
+  const res = await fetch("/api/sessions").catch(() => null);
+  if (!res?.ok) return;
+  const sessions = await res.json();
+  const here = `${sessionPrefix}/`;
+  const nav = $("sessions");
+  nav.hidden = sessions.length < 2;
+  nav.replaceChildren(
+    ...sessions.map((s) =>
+      el("a", {
+        href: s.url,
+        title: s.repo,
+        "aria-current": s.url === here ? "page" : undefined,
+        text: s.mode === "walk" ? `${s.branch} (walk)` : `${s.branch} v${s.version}`,
+      }),
+    ),
+    el("a", { href: "/", text: "All sessions" }),
+  );
 }
 
 function report(error) {
@@ -726,6 +750,7 @@ async function endReview() {
           el("code", { text: "follow-me feedback" }),
           " or hand the session to your agent.",
         ),
+    el("p", {}, el("a", { href: "/", text: "All sessions" })),
   );
   done.hidden = false;
 }
@@ -751,6 +776,8 @@ document.addEventListener("keydown", (event) => {
 });
 
 $("end").addEventListener("click", () => guarded(endReview));
+window.addEventListener("focus", () => renderSwitcher());
+renderSwitcher();
 
 guarded(async () => {
   state = await api("GET", "/api/state");
