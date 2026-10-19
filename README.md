@@ -63,10 +63,11 @@ If you skip the agent, `follow-me plan` asks the Anthropic API for the draft. It
 
 ```text
 created feature-split at c90eb5350284 from plan v1 (3 commits)
+signing: off
 proof: feature-split^{tree} ae948488c55a3606fa2419eb1c018fff8014093d equals feature^{tree} ae948488c55a3606fa2419eb1c018fff8014093d
 ```
 
-If the hashes differ, `apply` exits with code 1. The same plan always gives the same SHAs, so running `apply` again prints `unchanged`.
+If the hashes differ, `apply` exits with code 1. The commits are signed when your git config signs commits (`commit.gpgsign`), and `--sign` or `--no-sign` overrides that. Running `apply` again with the same plan prints `unchanged` and leaves the branch alone, signed or not.
 
 The red blob in the party hat is your branch tip. Nothing follow-me does moves it.
 

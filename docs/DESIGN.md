@@ -41,9 +41,18 @@ can construct a `ValidPlan`, so an unvalidated plan cannot reach the writer.
 
 `writeBranch` builds commits with a temporary index file and `commit-tree`,
 never touching the user's index or working tree. Author and committer come from
-the tip commit and commit `i` of `n` gets committer time `tipTime - (n - 1 - i)`,
-so the same plan yields the same SHAs and re-running is a no-op. The branch ref
-moves only if it still points where the last apply left it.
+the tip commit and commit `i` of `n` gets committer time `tipTime - (n - 1 - i)`.
+The branch ref moves only if it still points where the last apply left it.
+
+Commits are signed when `git config --type=bool commit.gpgsign` is true; `--sign` and
+`--no-sign` override it. `commit-tree` is plumbing and ignores `commit.gpgsign`, so apply
+reads it and passes `-S` or `--no-gpg-sign`; `gpg.format` and `user.signingkey` then apply
+as they do for `git commit`. SHAs are stable only when signing is off: openpgp, x509 and ecdsa
+signatures differ on every run (ssh ed25519 happens to be deterministic). So the branch record
+is what makes re-apply a no-op either way. `applied.json` stores the plan version, its hash,
+the branch, its head and whether it was signed; when all match and the branch still points at
+that head, apply writes nothing and prints `unchanged`. Otherwise `writeBranch` runs, and an
+unsigned rewrite that yields the head the branch already has is `unchanged` too.
 
 The split never lands on the branch being split, and never on a branch checked out in any
 worktree, `--force` included; `--force` only lets apply move a branch follow-me did not create.
