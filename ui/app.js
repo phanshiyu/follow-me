@@ -1,14 +1,18 @@
 import {
+  beatAt,
+  beatStart,
   buildScript,
-  commitAt,
-  commitStart,
+  commitOf,
+  hasNarration,
+  introOf,
   lineKey,
   lineStates,
   parseSpeed,
   pickVoice,
   SPEEDS,
+  schedule,
+  speechRate,
   speechTimeout,
-  stepDelay,
 } from "/playback.js";
 
 const $ = (id) => document.getElementById(id);
@@ -250,7 +254,7 @@ function describeFileUnit(unit) {
 
 function diffLine(unit, commit, line, index, pickKey) {
   const base = el("span", { class: "op", text: line.op });
-  const text = el("span", { text: line.text.replace(/\n$/, "") });
+  const text = el("span", { class: "text", text: line.text.replace(/\n$/, "") });
   const key = lineKey(unit.id, index);
   if (line.op === " ")
     return el(
@@ -458,7 +462,7 @@ function render() {
 function select(index) {
   const next = Math.max(0, Math.min(state.commits.length - 1, index));
   if (player.view === "play") {
-    seek(commitStart(script, next));
+    seek(beatStart(steps, introOf(beats, next)));
     return;
   }
   selected = next;
@@ -471,9 +475,10 @@ function isWalk() {
 }
 
 const synth = "speechSynthesis" in window ? window.speechSynthesis : null;
+const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 /**
- * view "play" hides lines the playback has not written yet; "browse" shows every line.
- * position counts performed steps of the script. generation retires a loop on every seek.
+ * view "play" shows the plan beat by beat; "browse" shows every line. position indexes the step
+ * on screen, steps.length being the end. generation retires a running loop on every move.
  */
 const player = {
   view: "browse",
@@ -484,8 +489,12 @@ const player = {
   muted: false,
   voice: null,
 };
-let script = [];
+let beats = [];
+let steps = [];
+let narrated = true;
 let voices = [];
+/** The one narration card. It moves to whatever the reviewer is looking at. */
+const card = el("blockquote", { class: "narration", "aria-live": "polite" });
 
 function stored(key) {
   try {
@@ -504,10 +513,10 @@ function store(key, value) {
 }
 
 function silent() {
-  return player.muted || synth === null;
+  return player.muted || synth === null || !narrated;
 }
 
-/** Resolves true after `ms` of playing time, or false once a seek retires this loop. */
+/** Resolves true after `ms` of playing time, or false once a move retires this loop. */
 function sleep(ms, generation) {
   return new Promise((resolve) => {
     let left = ms;
@@ -524,132 +533,197 @@ function sleep(ms, generation) {
   });
 }
 
-function speak(text) {
-  if (silent() || !text) return null;
+/**
+ * Speaks one utterance, cancelling whatever was speaking, so voice and picture never drift.
+ * Resolves when it ends, or after a bound for engines that never report the end.
+ */
+function speak(text, generation) {
+  synth.cancel();
   const utterance = new SpeechSynthesisUtterance(text);
-  utterance.rate = player.speed;
+  utterance.rate = speechRate(player.speed);
   const voice = voices.find((v) => v.name === player.voice);
   if (voice) {
     utterance.voice = voice;
     utterance.lang = voice.lang;
   }
-  synth.speak(utterance);
-  return utterance;
-}
-
-/** Some engines never fire "end", so a pause-aware timeout bounds the wait. */
-function speakAndWait(text, generation) {
-  const utterance = speak(text);
-  if (!utterance) return Promise.resolve(true);
   const ended = new Promise((resolve) => {
     utterance.addEventListener("end", () => resolve(true));
     utterance.addEventListener("error", () => resolve(true));
   });
+  synth.speak(utterance);
   return Promise.race([ended, sleep(speechTimeout(text, player.speed), generation)]);
 }
 
-function setCaption(text) {
-  $("caption").textContent = text;
+function scrollMain(top) {
+  $("main").scrollTo({
+    top: Math.max(0, top),
+    behavior: reducedMotion.matches ? "auto" : "smooth",
+  });
 }
 
+/** Brings a node to 30% from the top of the code pane. */
+function scrollToChunk(node) {
+  const main = $("main");
+  const offset = node.getBoundingClientRect().top - main.getBoundingClientRect().top;
+  scrollMain(main.scrollTop + offset - main.clientHeight * 0.3);
+}
+
+function setCard(text, kind) {
+  card.textContent = text;
+  card.className = `narration ${kind}`;
+}
+
+/** Where the card and the reader's eye go for a beat: its first line, else its unit. */
+function anchorOf(beat) {
+  const main = $("main");
+  if (beat.kind !== "chunk") return main.querySelector(".commit-head");
+  const first = beat.lines[0];
+  const line =
+    first === undefined
+      ? null
+      : (main.querySelector(`[data-ph="${lineKey(beat.unit, first)}"]`) ??
+        main.querySelector(`[data-line="${lineKey(beat.unit, first)}"]`));
+  return line ?? main.querySelector(`[data-unit="${beat.unit}"] .card`);
+}
+
+function chunkText(beat) {
+  return beat.narration ?? beat.label;
+}
+
+/** Renders the position: which lines exist yet, the placeholders, the card and the countdown. */
 function applyPlayback() {
-  const { states, current } =
-    player.view === "play"
-      ? lineStates(script, player.position, selected)
-      : { states: new Map(), current: null };
-  for (const node of $("main").querySelectorAll("[data-line]")) {
+  const main = $("main");
+  for (const node of main.querySelectorAll(".ph, .countdown")) node.remove();
+  card.remove();
+  if (player.view !== "play") {
+    for (const node of main.querySelectorAll("[data-line], .unit")) {
+      node.classList.remove("pending", "struck", "in-chunk");
+    }
+    return;
+  }
+  const { states, upcoming, current } = lineStates(beats, steps, player.position, selected);
+  const chunk = current === null ? null : beats[current];
+  const inChunk = new Set(chunk?.lines.map((line) => lineKey(chunk.unit, line)) ?? []);
+  for (const node of main.querySelectorAll("[data-line]")) {
     const key = node.dataset.line;
-    const lineState = states.get(key);
-    node.classList.toggle("pending", lineState === "hidden");
-    node.classList.toggle("gone", lineState === "gone");
-    node.classList.toggle("current", key === current);
+    const look = states.get(key);
+    node.classList.toggle("pending", look === "hidden");
+    node.classList.toggle("struck", look === "struck");
+    node.classList.toggle("in-chunk", inChunk.has(key) && look !== "hidden");
   }
-}
+  for (const node of main.querySelectorAll(".unit")) {
+    node.classList.toggle(
+      "in-chunk",
+      chunk?.unit === node.dataset.unit && chunk.lines.length === 0,
+    );
+  }
+  for (const [key, n] of upcoming) {
+    const line = main.querySelector(`[data-line="${key}"]`);
+    const ph = el("div", {
+      class: inChunk.has(key) ? "ph in-chunk" : "ph",
+      "data-ph": key,
+      text: `${n} line${n === 1 ? "" : "s"} coming${inChunk.has(key) ? "" : " next"}`,
+    });
+    line?.before(ph);
+  }
 
-async function perform(step, generation) {
-  player.position += 1;
-  if (step.kind === "commit") {
-    if (selected === step.commit) applyPlayback();
-    else {
-      selected = step.commit;
-      render();
-      $("main").scrollTop = 0;
+  const step = steps[player.position];
+  const beat = beats[beatAt(steps, player.position)];
+  if (step === undefined || beat === undefined) {
+    setCard(
+      isWalk()
+        ? "That is the whole branch. Leave any last comments, then finish the code review."
+        : "That is the whole plan.",
+      "end",
+    );
+    main.querySelector(".commit-head")?.append(card);
+    return;
+  }
+  if (beat.kind === "intro") {
+    const note = narrated ? null : "This plan has no narration. Showing commit messages.";
+    if (beat.narration !== null || (note !== null && beat.commit === 0)) {
+      setCard(beat.narration ?? note, "say");
+      main.querySelector(".commit-head .message")?.after(card);
     }
-    setCaption(step.say);
-    speak(step.say);
-  } else if (step.kind === "unit") {
-    applyPlayback();
-    $("main")
-      .querySelector(`[data-unit="${step.unit}"]`)
-      ?.scrollIntoView({ block: "start", behavior: "smooth" });
-    if (step.say) {
-      setCaption(step.say);
-      await speakAndWait(step.say, generation);
-    }
+  } else if (beat.kind === "chunk") {
+    setCard(chunkText(beat), beat.narration === null ? "label" : "say");
+    anchorOf(beat)?.before(card);
   } else {
-    applyPlayback();
-    $("main")
-      .querySelector(".dl.current")
-      ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    const countdown = el(
+      "div",
+      { class: "countdown" },
+      el("span", { text: beat.next === null ? "Last commit" : `Next: ${beat.next}` }),
+      el("span", { class: "bar", style: `animation-duration: ${step.ms}ms` }),
+    );
+    countdown.classList.toggle("paused", !player.playing);
+    main.querySelector(".commit-head")?.append(countdown);
   }
-  return sleep(stepDelay(step, player.speed), generation);
 }
 
-async function playLoop(generation) {
-  while (player.position < script.length) {
-    if (!(await sleep(0, generation))) return;
-    if (!(await perform(script[player.position], generation))) return;
-  }
-  player.playing = false;
-  setCaption(
-    isWalk()
-      ? "That is the whole branch. Leave any last comments, then finish the code review."
-      : "That is the whole plan.",
-  );
+/** Shows the step at the current position: its commit, its lines, and where the eye goes. */
+function present() {
+  const commit = commitOf(beats, beatAt(steps, player.position));
+  const beat = beats[beatAt(steps, player.position)];
+  if (commit !== selected) {
+    selected = commit;
+    render();
+    $("main").scrollTop = 0;
+  } else applyPlayback();
+  if (beat?.kind === "chunk") {
+    const anchor = card.isConnected ? card : anchorOf(beat);
+    if (anchor) scrollToChunk(anchor);
+  } else if (beat?.kind === "intro") scrollMain(0);
   updatePlayer();
 }
 
-/** Moves playback to a step and starts a fresh loop, which waits while paused. */
+/** Waits out one step. A say step lasts its reading time or until speech ends, whichever is later. */
+async function perform(step, generation) {
+  if (step.kind !== "say" || silent()) return sleep(step.ms, generation);
+  const [read, heard] = await Promise.all([
+    sleep(step.ms, generation),
+    speak(step.text, generation).then((ok) => ok && sleep(step.tail, generation)),
+  ]);
+  return read && heard && generation === player.generation;
+}
+
+async function playLoop(generation) {
+  while (player.position < steps.length) {
+    if (!(await sleep(0, generation))) return;
+    if (!(await perform(steps[player.position], generation))) return;
+    player.position += 1;
+    present();
+  }
+  player.playing = false;
+  updatePlayer();
+}
+
+/** Moves to a step and starts a fresh loop, which waits while paused. */
 function seek(position) {
   synth?.cancel();
-  player.position = position;
+  player.position = Math.max(0, Math.min(steps.length, position));
   player.generation += 1;
-  selected = script[position]?.commit ?? commitAt(script, position);
-  render();
-  $("main").scrollTop = 0;
-  setCaption("");
+  present();
   playLoop(player.generation);
 }
 
 function play() {
   if (player.view !== "play") enterPlay();
-  if (player.position >= script.length) seek(0);
+  if (player.position >= steps.length) seek(0);
   player.playing = true;
   synth?.resume();
   updatePlayer();
 }
 
-/** Pausing preselects the line just written, so the comment button is ready for it. */
 function pause() {
   player.playing = false;
   synth?.pause();
   updatePlayer();
-  const key = $("main").querySelector(".dl.current")?.dataset.line;
-  if (key === undefined) return;
-  const at = key.lastIndexOf(":");
-  const unitId = key.slice(0, at);
-  const change = unitsById.get(unitId)?.body?.[Number(key.slice(at + 1))]?.change;
-  const pickKey = `${selected}:${unitId}`;
-  if (change === undefined || (picks.get(pickKey)?.size ?? 0) > 0) return;
-  picks.set(pickKey, new Set([change]));
-  render();
 }
 
 function enterPlay() {
   player.view = "play";
   $("player").hidden = false;
-  seek(commitStart(script, selected));
-  updatePlayer();
+  seek(beatStart(steps, introOf(beats, selected)));
 }
 
 function enterBrowse() {
@@ -662,7 +736,14 @@ function enterBrowse() {
   updatePlayer();
 }
 
+function setSpeed(speed) {
+  player.speed = speed;
+  steps = schedule(beats, speed);
+  store("speed", String(speed));
+}
+
 function updatePlayer() {
+  $("main").querySelector(".countdown")?.classList.toggle("paused", !player.playing);
   $("play").textContent = player.playing ? "Pause" : "Play";
   $("view-toggle").textContent = player.view === "play" ? "Show all" : "Play";
   const mute = $("mute");
@@ -686,21 +767,21 @@ function loadVoices() {
 }
 
 function setUpPlayer() {
-  player.speed = parseSpeed(stored("speed"));
+  beats = buildScript(state.commits, state.units);
+  narrated = hasNarration(state.commits);
+  setSpeed(parseSpeed(stored("speed")));
   player.muted = stored("muted") === "true";
   const speed = $("speed");
   speed.replaceChildren(...SPEEDS.map((s) => el("option", { value: String(s), text: `${s}x` })));
   speed.value = String(player.speed);
-  speed.addEventListener("change", () => {
-    player.speed = parseSpeed(speed.value);
-    store("speed", String(player.speed));
-  });
+  speed.addEventListener("change", () => setSpeed(parseSpeed(speed.value)));
   const picker = $("voice");
   picker.disabled = synth === null;
   picker.addEventListener("change", () => {
     player.voice = picker.value || null;
     store("voice", picker.value);
   });
+  for (const id of ["voice-label", "mute"]) $(id).hidden = !narrated;
   synth?.addEventListener("voiceschanged", loadVoices);
   loadVoices();
   $("play").addEventListener("click", () => (player.playing ? pause() : play()));
@@ -782,7 +863,6 @@ renderSwitcher();
 guarded(async () => {
   state = await api("GET", "/api/state");
   indexOwnership();
-  script = buildScript(state.commits, state.units);
   const walk = isWalk();
   document.title = walk ? "follow-me code review" : "follow-me review";
   $("summary").textContent = walk
@@ -790,8 +870,6 @@ guarded(async () => {
     : `${state.anchor.branch} · Review of plan v${state.version}`;
   $("end").textContent = walk ? "Finish code review" : "End review";
   setUpPlayer();
-  if (walk) {
-    enterPlay();
-    setCaption("Press Play or space to watch this branch being written.");
-  } else render();
+  if (walk) enterPlay();
+  else render();
 });

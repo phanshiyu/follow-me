@@ -1,15 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { Commit, Step, Unit } from "../ui/playback.js";
+import type { Commit, HunkLine, Unit } from "../ui/playback.js";
 import {
+  beatAt,
+  beatStart,
   buildScript,
-  commitAt,
-  commitNarration,
-  commitStart,
+  commitOf,
+  duration,
+  hasNarration,
+  introOf,
   lineStates,
   parseSpeed,
   pickVoice,
-  stepDelay,
+  schedule,
+  speechRate,
 } from "../ui/playback.js";
 
 const units: Unit[] = [
@@ -25,7 +29,14 @@ const units: Unit[] = [
       { op: "+", text: "new2\n", change: 3 },
     ],
   },
-  { kind: "file", id: "f_cccccccccccc", path: "logo.png" },
+  {
+    kind: "file",
+    id: "f_cccccccccccc",
+    path: "logo.png",
+    reason: "binary",
+    before: null,
+    after: { mode: "100644", blob: "4".repeat(40) },
+  },
 ];
 
 const commits: Commit[] = [
@@ -49,84 +60,196 @@ const commits: Commit[] = [
   },
 ];
 
-test("the script speaks each commit, then each unit, then types that commit's own lines", () => {
+test("each commit is an intro, a chunk per run of its own lines, and an outro", () => {
   assert.deepEqual(buildScript(commits, units), [
-    { kind: "commit", commit: 0, say: "Rename the first line" },
-    { kind: "unit", commit: 0, unit: "h_aaaaaaaaaaaa", say: null },
-    { kind: "line", commit: 0, unit: "h_aaaaaaaaaaaa", line: 0, change: 0, op: "-" },
-    { kind: "line", commit: 0, unit: "h_aaaaaaaaaaaa", line: 1, change: 1, op: "+" },
-    { kind: "commit", commit: 1, say: "Now the second line." },
-    { kind: "unit", commit: 1, unit: "h_aaaaaaaaaaaa", say: "This one is subtle." },
-    { kind: "line", commit: 1, unit: "h_aaaaaaaaaaaa", line: 3, change: 2, op: "-" },
-    { kind: "line", commit: 1, unit: "h_aaaaaaaaaaaa", line: 4, change: 3, op: "+" },
-    { kind: "unit", commit: 1, unit: "f_cccccccccccc", say: null },
+    { kind: "intro", commit: 0, message: "Rename the first line\n\nbody", narration: null },
+    {
+      kind: "chunk",
+      commit: 0,
+      unit: "h_aaaaaaaaaaaa",
+      lines: [0, 1],
+      removals: [0],
+      narration: null,
+      label: "src/a.ts · adds 1 line, removes 1",
+      added: 1,
+    },
+    { kind: "outro", commit: 0, next: "Swap the second line" },
+    {
+      kind: "intro",
+      commit: 1,
+      message: "Swap the second line",
+      narration: "Now the second line.",
+    },
+    {
+      kind: "chunk",
+      commit: 1,
+      unit: "h_aaaaaaaaaaaa",
+      lines: [3, 4],
+      removals: [3],
+      narration: "This one is subtle.",
+      label: "src/a.ts · adds 1 line, removes 1",
+      added: 1,
+    },
+    {
+      kind: "chunk",
+      commit: 1,
+      unit: "f_cccccccccccc",
+      lines: [],
+      removals: [],
+      narration: null,
+      label: "logo.png · binary file added",
+      added: 0,
+    },
+    { kind: "outro", commit: 1, next: null },
   ]);
 });
 
-test("narration falls back to the commit title when it is missing or blank", () => {
-  assert.equal(commitNarration({ index: 0, message: "Add x\n\nwhy", refs: [] }), "Add x");
-  assert.equal(commitNarration({ index: 0, message: "Add x", narration: " ", refs: [] }), "Add x");
-  assert.equal(
-    commitNarration({ index: 0, message: "Add x", narration: "I add x.", refs: [] }),
-    "I add x.",
-  );
+test("the schedule waits to read, then to take in the code, and holds each finished commit", () => {
+  const beats = buildScript(commits, units);
+  const at1x = schedule(beats, 1);
+  assert.deepEqual(at1x, [
+    { kind: "say", beat: 0, text: "Rename the first line", ms: 2500, tail: 500 },
+    { kind: "show", beat: 1, ms: 2100 },
+    { kind: "rest", beat: 1, ms: 600 },
+    { kind: "hold", beat: 2, ms: 2500 },
+    { kind: "say", beat: 3, text: "Now the second line.", ms: 2200, tail: 500 },
+    { kind: "say", beat: 4, text: "This one is subtle.", ms: 2200, tail: 0 },
+    { kind: "show", beat: 4, ms: 2100 },
+    { kind: "rest", beat: 4, ms: 600 },
+    { kind: "show", beat: 5, ms: 2000 },
+    { kind: "rest", beat: 5, ms: 600 },
+    { kind: "hold", beat: 6, ms: 2500 },
+  ]);
+  assert.deepEqual(schedule(beats, 2), [
+    { kind: "say", beat: 0, text: "Rename the first line", ms: 1250, tail: 250 },
+    { kind: "show", beat: 1, ms: 1050 },
+    { kind: "rest", beat: 1, ms: 300 },
+    { kind: "hold", beat: 2, ms: 1250 },
+    { kind: "say", beat: 3, text: "Now the second line.", ms: 1100, tail: 250 },
+    { kind: "say", beat: 4, text: "This one is subtle.", ms: 1100, tail: 0 },
+    { kind: "show", beat: 4, ms: 1050 },
+    { kind: "rest", beat: 4, ms: 300 },
+    { kind: "show", beat: 5, ms: 1000 },
+    { kind: "rest", beat: 5, ms: 300 },
+    { kind: "hold", beat: 6, ms: 1250 },
+  ]);
+  assert.deepEqual([duration(at1x), duration(schedule(beats, 2))], [19900, 9950]);
+  assert.deepEqual([speechRate(0.75), speechRate(1), speechRate(2)], [0.75, 1, 1.5]);
 });
 
-test("line states follow the position: added lines appear, removed lines go", () => {
-  const script = buildScript(commits, units);
-  const at = (position: number, commit: number) => {
-    const { states, current } = lineStates(script, position, commit);
-    return { states: Object.fromEntries(states), current };
+test("code dwell grows with added lines and clamps between 2 and 9 seconds", () => {
+  const added = (n: number): HunkLine[] =>
+    Array.from({ length: n }, (_, i) => ({ op: "+", text: `x${i}\n`, change: i }));
+  const showMs = (n: number) => {
+    const hunk: Unit = { kind: "hunk", id: "h_b", path: "b", body: added(n) };
+    const changes = Array.from({ length: n }, (_, i) => i);
+    const plan: Commit[] = [
+      { index: 0, message: "m", refs: [{ unit: "h_b", select: { kind: "lines", changes } }] },
+    ];
+    return schedule(buildScript(plan, [hunk]), 1).flatMap((s) => (s.kind === "show" ? [s.ms] : []));
   };
-  assert.deepEqual(at(commitStart(script, 1), 1), {
-    states: { "h_aaaaaaaaaaaa:3": "shown", "h_aaaaaaaaaaaa:4": "hidden" },
-    current: null,
-  });
-  assert.deepEqual(at(7, 1), {
-    states: { "h_aaaaaaaaaaaa:3": "gone", "h_aaaaaaaaaaaa:4": "hidden" },
-    current: "h_aaaaaaaaaaaa:3",
-  });
-  assert.deepEqual(at(9, 1), {
-    states: { "h_aaaaaaaaaaaa:3": "gone", "h_aaaaaaaaaaaa:4": "shown" },
-    current: "h_aaaaaaaaaaaa:4",
-  });
-  assert.deepEqual(at(9, 0), {
-    states: { "h_aaaaaaaaaaaa:0": "gone", "h_aaaaaaaaaaaa:1": "shown" },
-    current: null,
-  });
+  assert.deepEqual(showMs(1), [2000]);
+  assert.deepEqual(showMs(5), [3500]);
+  assert.deepEqual(showMs(12), [6300]);
+  assert.deepEqual(showMs(25), [6300, 6300, 2000]);
 });
 
-test("seeking lands on a commit's first step and reports the commit on screen", () => {
-  const script = buildScript(commits, units);
-  assert.deepEqual(
-    [
-      commitStart(script, 0),
-      commitStart(script, 1),
-      commitStart(script, 2),
-      commitStart(script, -1),
-    ],
-    [0, 4, 9, 0],
-  );
-  assert.deepEqual(
-    [commitAt(script, 0), commitAt(script, 4), commitAt(script, 5), commitAt(script, 99)],
-    [0, 0, 1, 1],
-  );
-});
-
-test("speed scales the typing rate and snaps to the offered steps", () => {
-  const add: Step = {
-    kind: "line",
-    commit: 0,
-    unit: "h_x",
-    line: 0,
-    change: 0,
+test("chunks break at gaps over three lines, cut long runs after a closing line, and name their function", () => {
+  const tail: HunkLine[] = Array.from({ length: 14 }, (_, i) => ({
     op: "+",
-  };
-  assert.deepEqual(
-    [stepDelay(add, 1), stepDelay(add, 2), stepDelay(add, 0.5), stepDelay({ ...add, op: "-" }, 1)],
-    [250, 125, 500, 125],
+    text: i === 9 ? "}\n" : `  line${i};\n`,
+    change: 2 + i,
+  }));
+  const body: HunkLine[] = [
+    { op: " ", text: "export function mul(a, b) {\n" },
+    { op: "+", text: "  check(a);\n", change: 0 },
+    { op: " ", text: "  return a * b;\n" },
+    { op: " ", text: "}\n" },
+    { op: " ", text: "\n" },
+    { op: " ", text: "export function div(a, b) {\n" },
+    { op: "+", text: "  check(b);\n", change: 1 },
+    { op: " ", text: "  return a / b;\n" },
+    ...tail,
+  ];
+  const hunk: Unit = { kind: "hunk", id: "h_b", path: "src/b.js", body };
+  const changes = Array.from({ length: 16 }, (_, i) => i);
+  const plan: Commit[] = [
+    { index: 0, message: "m", refs: [{ unit: "h_b", select: { kind: "lines", changes } }] },
+  ];
+  const chunks = buildScript(plan, [hunk]).flatMap((b) =>
+    b.kind === "chunk" ? [{ lines: b.lines, label: b.label }] : [],
   );
-  assert.deepEqual([parseSpeed("1.5"), parseSpeed("7"), parseSpeed(null)], [1.5, 1, 1]);
+  assert.deepEqual(chunks, [
+    { lines: [1], label: "src/b.js · adds 1 line in mul" },
+    { lines: [6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17], label: "src/b.js · adds 11 lines in div" },
+    { lines: [18, 19, 20, 21], label: "src/b.js · adds 4 lines in div" },
+  ]);
+});
+
+test("line states hide a chunk until it shows, then strike its removals", () => {
+  const beats = buildScript(commits, units);
+  const steps = schedule(beats, 1);
+  const at = (position: number, commit: number) => {
+    const { states, upcoming, current } = lineStates(beats, steps, position, commit);
+    return { states: Object.fromEntries(states), upcoming: Object.fromEntries(upcoming), current };
+  };
+  assert.deepEqual(at(4, 1), {
+    states: { "h_aaaaaaaaaaaa:3": "hidden", "h_aaaaaaaaaaaa:4": "hidden" },
+    upcoming: { "h_aaaaaaaaaaaa:3": 2 },
+    current: null,
+  });
+  assert.deepEqual(at(5, 1), {
+    states: { "h_aaaaaaaaaaaa:3": "hidden", "h_aaaaaaaaaaaa:4": "hidden" },
+    upcoming: { "h_aaaaaaaaaaaa:3": 2 },
+    current: 4,
+  });
+  assert.deepEqual(at(6, 1), {
+    states: { "h_aaaaaaaaaaaa:3": "struck", "h_aaaaaaaaaaaa:4": "shown" },
+    upcoming: {},
+    current: 4,
+  });
+  assert.deepEqual(at(10, 0), {
+    states: { "h_aaaaaaaaaaaa:0": "struck", "h_aaaaaaaaaaaa:1": "shown" },
+    upcoming: {},
+    current: null,
+  });
+  assert.deepEqual(at(steps.length, 1).states, {
+    "h_aaaaaaaaaaaa:3": "struck",
+    "h_aaaaaaaaaaaa:4": "shown",
+  });
+});
+
+test("seeking moves by beat and by commit, clamped to the plan", () => {
+  const beats = buildScript(commits, units);
+  const steps = schedule(beats, 1);
+  assert.deepEqual(
+    [beatAt(steps, 0), beatAt(steps, 5), beatAt(steps, 7), beatAt(steps, steps.length)],
+    [0, 4, 4, 7],
+  );
+  assert.deepEqual(
+    [beatStart(steps, 4), beatStart(steps, 7), beatStart(steps, -1)],
+    [5, steps.length, 0],
+  );
+  assert.deepEqual([introOf(beats, 1), introOf(beats, 2), introOf(beats, -1)], [3, 7, 0]);
+  assert.deepEqual([commitOf(beats, 2), commitOf(beats, 3), commitOf(beats, 7)], [0, 1, 1]);
+});
+
+test("a plan has narration when any commit or unit carries a non-blank one", () => {
+  assert.equal(hasNarration(commits), true);
+  assert.equal(
+    hasNarration([
+      { index: 0, message: "m", narration: " ", refs: [] },
+      { index: 1, message: "n", refs: [{ unit: "f_c", select: { kind: "rest" }, narration: "" }] },
+    ]),
+    false,
+  );
+});
+
+test("speed snaps to the four offered steps", () => {
+  assert.deepEqual(
+    [parseSpeed("1.5"), parseSpeed("0.75"), parseSpeed("1.25"), parseSpeed(null)],
+    [1.5, 0.75, 1, 1],
+  );
 });
 
 test("the preselected voice is the saved one, else the default in the reader's language", () => {

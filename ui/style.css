@@ -416,51 +416,94 @@ select:disabled {
   cursor: default;
 }
 
-.caption {
-  flex: 1 1 320px;
-  margin: 0;
-  font-style: italic;
-  color: var(--text);
+.narration {
+  margin: 8px 0;
+  padding: 8px 14px;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 6px 6px 0;
+  background: var(--comment-bg);
+  font:
+    15px / 1.5 system-ui,
+    sans-serif;
+  white-space: pre-wrap;
+}
+
+.diff .narration {
+  margin: 6px 10px;
+}
+
+.narration.label {
+  border-left-color: var(--border);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .dl.pending {
   display: none;
 }
 
-.dl.gone {
-  opacity: 0;
-  max-height: 0;
-  overflow: hidden;
-  transition:
-    opacity 0.5s ease,
-    max-height 0.3s ease 0.5s;
-}
-
-.dl.current {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-  animation: type-in 0.25s steps(16, end);
-}
-
-.dl.gone.current {
-  opacity: 0.45;
-  max-height: 2em;
+.dl.struck .text {
   text-decoration: line-through;
 }
 
-@keyframes type-in {
+.dl.in-chunk,
+.unit.in-chunk .card {
+  box-shadow: inset 3px 0 0 var(--accent);
+  animation: reveal 0.2s ease-out;
+}
+
+.ph {
+  padding: 0 10px 0 calc(6ch + 6px);
+  color: var(--muted);
+  font-style: italic;
+  background: var(--panel);
+}
+
+.ph.in-chunk {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.countdown {
+  margin: 8px 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.countdown .bar {
+  display: block;
+  height: 2px;
+  margin-top: 4px;
+  background: var(--accent);
+  transform-origin: left;
+  animation: countdown linear forwards;
+}
+
+.countdown.paused .bar {
+  animation-play-state: paused;
+}
+
+@keyframes reveal {
   from {
-    clip-path: inset(0 100% 0 0);
+    opacity: 0;
   }
   to {
-    clip-path: inset(0 0 0 0);
+    opacity: 1;
+  }
+}
+
+@keyframes countdown {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .dl.current,
-  .dl.gone {
+  .dl.in-chunk,
+  .unit.in-chunk .card {
     animation: none;
-    transition: none;
   }
 }
