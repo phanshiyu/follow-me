@@ -4,7 +4,7 @@ import { PlanRequestError, requestPlan } from "./anthropic.ts";
 import { DiffParseError, formatUnitRef } from "./diff.ts";
 import { BranchRefusedError, GitError, treeOf, writeBranch } from "./git.ts";
 import { serializePlanFile, type ValidPlan, validatePlan } from "./plan.ts";
-import { renderFeedback, renderPrompt } from "./prompt.ts";
+import { type PromptInput, renderFeedback, renderPrompt } from "./prompt.ts";
 import { loadDraftComments, serveReview } from "./server.ts";
 import {
   BranchMovedError,
@@ -13,7 +13,16 @@ import {
   type Session,
   SessionFileError,
 } from "./session.ts";
-import type { Diff, PlanIssue, PlanVersion, PlanWarning, RepoPath, Unit, UnitId } from "./types.ts";
+import type {
+  Diff,
+  PlanIssue,
+  PlanVersion,
+  PlanWarning,
+  RepoPath,
+  ReviewMode,
+  Unit,
+  UnitId,
+} from "./types.ts";
 
 class UsageError extends Error {
   override readonly name = "UsageError";
@@ -224,13 +233,18 @@ async function apply(cwd: string, args: Args): Promise<number> {
   return same ? 0 : 1;
 }
 
-function promptInput(session: Session) {
-  const previous = session.plans().at(-1);
-  return {
+function promptInput(session: Session, mode: ReviewMode): PromptInput {
+  const common = {
     diff: session.diff,
-    previousPlan: previous?.file ?? null,
-    review: session.lastReview(),
     draftPath: session.draftPath,
+    checkCommand: "follow-me check",
+  };
+  if (mode === "walk") return { ...common, mode };
+  return {
+    ...common,
+    mode,
+    previousPlan: session.plans().at(-1)?.file ?? null,
+    review: session.lastReview(),
   };
 }
 
@@ -238,7 +252,7 @@ async function plan(cwd: string, args: Args): Promise<number> {
   const session = await openSession(cwd);
   const model = args.values.get("model");
   const opts = model === undefined ? {} : { model };
-  let prompt = renderPrompt(promptInput(session));
+  let prompt = renderPrompt(promptInput(session, "split"));
   for (let round = 1; round <= 2; round++) {
     const draft = await requestPlan(prompt, opts);
     session.writeDraft(draft);
@@ -311,7 +325,7 @@ async function feedback(cwd: string): Promise<number> {
     console.error(`follow-me: review v${stored.version} refers to a plan that is missing`);
     return 1;
   }
-  process.stdout.write(renderFeedback(stored.review, plan.file));
+  process.stdout.write(renderFeedback(stored.review, plan.file, session.diff.units));
   return 0;
 }
 
@@ -371,7 +385,7 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
         return await status(cwd);
       case "prompt": {
         parseArgs(rest, {});
-        process.stdout.write(renderPrompt(promptInput(await openSession(cwd))));
+        process.stdout.write(renderPrompt(promptInput(await openSession(cwd), "split")));
         return 0;
       }
       case "plan":

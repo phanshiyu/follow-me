@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { renderFeedback, renderPrompt } from "./prompt.ts";
+import { type PromptInput, renderFeedback, renderPrompt } from "./prompt.ts";
 import type { Diff, PlanFile, Review } from "./types.ts";
 
 // JSON.parse is the only brand-free way to build branded literals without a cast.
@@ -77,6 +77,7 @@ function fixtureReview(): Review {
   return JSON.parse(
     JSON.stringify({
       schema: "follow-me/review@1",
+      mode: "split",
       planVersion: 2,
       planHash: "abc",
       endedAt: "2026-01-01T00:00:00.000Z",
@@ -107,7 +108,14 @@ function fixtureReview(): Review {
   );
 }
 
-const first = { diff: fixtureDiff(), previousPlan: null, review: null, draftPath: "/d/draft.json" };
+const first = {
+  mode: "split",
+  diff: fixtureDiff(),
+  previousPlan: null,
+  review: null,
+  draftPath: "/d/draft.json",
+  checkCommand: "follow-me check",
+} satisfies PromptInput;
 
 test("the prompt dumps units grouped by path with indexed change lines", () => {
   const text = renderPrompt(first);
@@ -194,14 +202,14 @@ test("rendering the same input twice gives identical text", () => {
   const input = { ...first, previousPlan: fixturePlan(), review: fixtureReview() };
   assert.equal(renderPrompt(input), renderPrompt(input));
   assert.equal(
-    renderFeedback(fixtureReview(), fixturePlan()),
-    renderFeedback(fixtureReview(), fixturePlan()),
+    renderFeedback(fixtureReview(), fixturePlan(), fixtureDiff().units),
+    renderFeedback(fixtureReview(), fixturePlan(), fixtureDiff().units),
   );
 });
 
 test("feedback is a markdown digest grouped by plan, then commit", () => {
   assert.equal(
-    renderFeedback(fixtureReview(), fixturePlan()),
+    renderFeedback(fixtureReview(), fixturePlan(), fixtureDiff().units),
     [
       "# Review of plan v2",
       "",
@@ -221,6 +229,129 @@ test("feedback is a markdown digest grouped by plan, then commit", () => {
       "  - belongs first",
       "",
       "Answer every comment id above in `responses` of the next draft, then run `follow-me check` and `follow-me apply`.",
+      "",
+    ].join("\n"),
+  );
+});
+
+test("the walk prompt writes for a first-time reviewer and asks for narration", () => {
+  const walk = renderPrompt({
+    mode: "walk",
+    diff: fixtureDiff(),
+    draftPath: "/d/draft.json",
+    checkCommand: "follow-me check --branch pr-7",
+  });
+  assert.ok(walk.startsWith("# follow-me: tell the story of this branch\n"));
+  assert.ok(
+    walk.includes(
+      "The reader is a reviewer meeting this branch for the first time. They will watch it\nbeing written commit by commit,",
+    ),
+  );
+  assert.ok(walk.includes("Give every commit a `narration`."));
+  assert.ok(walk.includes("wherever the why of that hunk is not\nobvious"));
+  assert.ok(
+    walk.includes("keyboard: first person, present tense, two or three sentences, no markdown."),
+  );
+  assert.ok(walk.includes("Check your work with `follow-me check --branch pr-7`"));
+  assert.ok(walk.includes("[3]+ new2"));
+  assert.ok(
+    walk.includes('{ "unit": "h_ba9876543210", "narration": "The loop is boring on purpose." }'),
+  );
+  const split = renderPrompt(first);
+  assert.ok(split.startsWith("# follow-me: plan the commits\n"));
+  assert.ok(!split.includes("reviewer meeting this branch"));
+});
+
+test("a walk review renders as a code review grouped by file with quoted diff excerpts", () => {
+  const plan: PlanFile = JSON.parse(
+    JSON.stringify({
+      schema: "follow-me/plan@1",
+      base: "1".repeat(40),
+      tip: "2".repeat(40),
+      commits: [
+        {
+          message: "Rename",
+          units: [{ unit: "h_aaaaaaaaaaaa", select: { kind: "lines", changes: [0, 1] } }],
+        },
+        {
+          message: "Swap the second line",
+          units: [
+            { unit: "h_aaaaaaaaaaaa", select: { kind: "lines", changes: [2, 3] } },
+            { unit: "h_bbbbbbbbbbbb", select: { kind: "rest" } },
+          ],
+        },
+      ],
+      responses: [],
+    }),
+  );
+  const review: Review = JSON.parse(
+    JSON.stringify({
+      schema: "follow-me/review@1",
+      mode: "walk",
+      planVersion: 1,
+      planHash: "abc",
+      endedAt: "2026-01-01T00:00:00.000Z",
+      comments: [
+        {
+          id: "c_mnopqr",
+          anchor: { kind: "plan" },
+          context: { commitMessage: "", path: null },
+          body: "Nice and small overall.",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
+        {
+          id: "c_tailzz",
+          anchor: { kind: "hunk", unit: "h_bbbbbbbbbbbb", commit: 1, changes: null },
+          context: { commitMessage: "Swap the second line", path: "src/a.ts" },
+          body: "Does tail need a newline?",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
+        {
+          id: "c_abcdef",
+          anchor: { kind: "hunk", unit: "h_aaaaaaaaaaaa", commit: 1, changes: [3] },
+          context: { commitMessage: "Swap the second line", path: "src/a.ts" },
+          body: "new2 should be\nnamed for what it holds.",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    }),
+  );
+  assert.equal(
+    renderFeedback(review, plan, fixtureDiff().units),
+    [
+      "# Code review",
+      "",
+      "A reviewer watched this branch being written commit by commit and left 3 comments.",
+      "",
+      "## src/a.ts",
+      "",
+      "### c_tailzz, line 21",
+      "",
+      "```diff",
+      "+tail",
+      "```",
+      "",
+      "Does tail need a newline?",
+      "",
+      "### c_abcdef, line 3",
+      "",
+      "```diff",
+      " new1",
+      " same",
+      "-old2",
+      "+new2",
+      "```",
+      "",
+      "new2 should be",
+      "named for what it holds.",
+      "",
+      "## General",
+      "",
+      "### c_mnopqr",
+      "",
+      "Nice and small overall.",
+      "",
+      "Address each comment above in the code on this branch, then tell the reviewer what you changed and what you chose not to change and why.",
       "",
     ].join("\n"),
   );
