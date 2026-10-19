@@ -1,8 +1,11 @@
 import { readFileSync } from "node:fs";
-import { relative } from "node:path";
+import { join, relative } from "node:path";
+import { PlanRequestError, requestPlan } from "./anthropic.ts";
 import { DiffParseError, formatUnitRef } from "./diff.ts";
 import { BranchRefusedError, GitError, treeOf, writeBranch } from "./git.ts";
-import { validatePlan } from "./plan.ts";
+import { serializePlanFile, type ValidPlan, validatePlan } from "./plan.ts";
+import { renderFeedback, renderPrompt } from "./prompt.ts";
+import { loadDraftComments, serveReview } from "./server.ts";
 import {
   BranchMovedError,
   extractSession,
@@ -10,7 +13,7 @@ import {
   type Session,
   SessionFileError,
 } from "./session.ts";
-import type { Diff, PlanIssue, PlanWarning, RepoPath, Unit, UnitId } from "./types.ts";
+import type { Diff, PlanIssue, PlanVersion, PlanWarning, RepoPath, Unit, UnitId } from "./types.ts";
 
 class UsageError extends Error {
   override readonly name = "UsageError";
@@ -22,7 +25,10 @@ const USAGE = `usage: follow-me <command>
   check [path]                              validate draft.json or the given plan file
   apply [--name <branch>] [--force]         write the draft as a branch of commits
   status                                    show the session's plans, reviews and branch
-  prompt | plan | review | feedback         not wired yet`;
+  prompt                                    print the planner prompt for a coding agent
+  plan [--model <id>]                       ask the Anthropic API to write draft.json
+  review [--port <n>] [--no-open]           review the latest plan commit by commit
+  feedback                                  print the latest review as markdown`;
 
 type Args = {
   readonly positionals: readonly string[];
@@ -121,13 +127,13 @@ function formatIssue(issue: PlanIssue): string {
     case "stale":
       return `stale: the plan is for tip ${short(issue.planTip)} but the session tip is ${short(issue.sessionTip)}`;
     case "empty-message":
-      return `commit ${issue.commit}: empty message`;
+      return `$.commits[${issue.commit}]: empty message`;
     case "empty-commit":
-      return `commit ${issue.commit}: no units`;
+      return `$.commits[${issue.commit}]: no units`;
     case "unknown-unit":
-      return `commit ${issue.commit}: unknown unit ${issue.ref}`;
+      return `$.commits[${issue.commit}]: unknown unit ${issue.ref}`;
     case "bad-selection":
-      return `commit ${issue.commit}: ${issue.unit}: ${issue.reason}`;
+      return `$.commits[${issue.commit}]: ${issue.unit}: ${issue.reason}`;
     case "duplicate": {
       const [a, b] = issue.commits;
       const what = issue.changes.length > 0 ? lines(issue.unit, issue.changes) : issue.unit;
@@ -138,7 +144,7 @@ function formatIssue(issue: PlanIssue): string {
       return `${what} (${show(issue.path)}) is in no commit`;
     }
     case "path-conflict":
-      return `commit ${issue.commit}: ${show(issue.file)} is a file while ${show(issue.under)} exists`;
+      return `$.commits[${issue.commit}]: ${show(issue.file)} is a file while ${show(issue.under)} exists`;
     case "unknown-response":
       return `response to unknown comment ${issue.comment}`;
     case "final-mismatch": {
@@ -186,7 +192,7 @@ async function check(cwd: string, args: Args): Promise<number> {
   for (const c of plan.commits) {
     const subject = c.message.split("\n")[0] ?? "";
     say(
-      `  ${c.index}  ${subject}  (${plural(c.refs.length, "unit")}, ${plural(c.changes.length, "file")})`,
+      `  ${c.index + 1}  ${subject}  (${plural(c.refs.length, "unit")}, ${plural(c.changes.length, "file")})`,
     );
   }
   for (const w of verdict.warnings) say(formatWarning(w));
@@ -216,6 +222,96 @@ async function apply(cwd: string, args: Args): Promise<number> {
     `proof: ${result.branch}^{tree} ${tree} ${same ? "equals" : "DIFFERS FROM"} ${session.anchor.branch}^{tree} ${session.anchor.tipTree}`,
   );
   return same ? 0 : 1;
+}
+
+function promptInput(session: Session) {
+  const previous = session.plans().at(-1);
+  return {
+    diff: session.diff,
+    previousPlan: previous?.file ?? null,
+    review: session.lastReview(),
+    draftPath: session.draftPath,
+  };
+}
+
+async function plan(cwd: string, args: Args): Promise<number> {
+  const session = await openSession(cwd);
+  const model = args.values.get("model");
+  const opts = model === undefined ? {} : { model };
+  let prompt = renderPrompt(promptInput(session));
+  for (let round = 1; round <= 2; round++) {
+    const draft = await requestPlan(prompt, opts);
+    session.writeDraft(draft);
+    const verdict = validate(session, draft);
+    if (verdict.ok) {
+      say(
+        `wrote ${relative(cwd, session.draftPath)} (${plural(verdict.plan.commits.length, "commit")})`,
+      );
+      return 0;
+    }
+    const issues = verdict.issues.map((issue) => `- ${formatIssue(issue)}`).join("\n");
+    prompt = `${prompt}\n\n## Your previous draft had these issues, write a corrected plan\n\n${issues}\n`;
+  }
+  say(`wrote ${relative(cwd, session.draftPath)} but it still has issues, repair it and run check`);
+  return 1;
+}
+
+/** The latest frozen plan, or the draft frozen now when it validates. */
+function latestPlan(session: Session): { version: PlanVersion; plan: ValidPlan } | null {
+  const stored = session.plans().at(-1);
+  if (stored !== undefined) {
+    const verdict = validate(session, serializePlanFile(stored.file));
+    return verdict.ok ? { version: stored.version, plan: verdict.plan } : null;
+  }
+  const verdict = validate(session, session.readDraft());
+  if (!verdict.ok) return null;
+  return { version: session.freeze(verdict.plan), plan: verdict.plan };
+}
+
+async function review(cwd: string, args: Args): Promise<number> {
+  const session = await openSession(cwd);
+  const latest = latestPlan(session);
+  if (latest === null) return 1;
+  const { version, plan } = latest;
+  if (session.reviews().some((r) => r.version === version)) {
+    console.error(`follow-me: plan v${version} already has a review; apply a new plan first`);
+    return 1;
+  }
+  const reviewsDir = join(session.dir, "reviews");
+  const port = args.values.get("port");
+  const review = await serveReview(
+    {
+      anchor: session.anchor,
+      version,
+      planHash: plan.hash,
+      commits: plan.commits,
+      units: [...session.diff.units.values()],
+      comments: await loadDraftComments(reviewsDir, version),
+    },
+    {
+      reviewsDir,
+      open: !args.flags.has("no-open"),
+      ...(port === undefined ? {} : { port: Number(port) }),
+    },
+  );
+  say(`review v${version} saved with ${plural(review.comments.length, "comment")}`);
+  return 0;
+}
+
+async function feedback(cwd: string): Promise<number> {
+  const session = await openSession(cwd);
+  const stored = session.reviews().at(-1);
+  if (stored === undefined) {
+    console.error("follow-me: no review yet, run `follow-me review` first");
+    return 1;
+  }
+  const plan = session.plans().find((p) => p.version === stored.version);
+  if (plan === undefined) {
+    console.error(`follow-me: review v${stored.version} refers to a plan that is missing`);
+    return 1;
+  }
+  process.stdout.write(renderFeedback(stored.review, plan.file));
+  return 0;
 }
 
 async function status(cwd: string): Promise<number> {
@@ -272,12 +368,18 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
       case "status":
         parseArgs(rest, {});
         return await status(cwd);
-      case "prompt":
+      case "prompt": {
+        parseArgs(rest, {});
+        process.stdout.write(renderPrompt(promptInput(await openSession(cwd))));
+        return 0;
+      }
       case "plan":
+        return await plan(cwd, parseArgs(rest, { values: ["model"] }));
       case "review":
+        return await review(cwd, parseArgs(rest, { values: ["port"], flags: ["no-open"] }));
       case "feedback":
-        console.error(`follow-me ${command}: not wired yet`);
-        return 1;
+        parseArgs(rest, {});
+        return await feedback(cwd);
       case undefined:
       case "help":
       case "--help":
@@ -287,7 +389,14 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
         throw new UsageError(`unknown command "${command}"\n${USAGE}`);
     }
   } catch (error) {
-    const known = [UsageError, BranchMovedError, BranchRefusedError, SessionFileError, GitError];
+    const known = [
+      UsageError,
+      BranchMovedError,
+      BranchRefusedError,
+      SessionFileError,
+      GitError,
+      PlanRequestError,
+    ];
     if (error instanceof DiffParseError) {
       console.error(`follow-me: could not parse the diff, please report this: ${error.message}`);
     } else if (error instanceof Error && known.some((k) => error instanceof k)) {

@@ -68,8 +68,8 @@ test("extract, check, apply and status drive the whole flow from the command lin
   assert.equal(
     ok.out.split("\n").slice(1).join("\n"),
     [
-      "  0  docs: readme  (1 unit, 1 file)",
-      "  1  feat: everything else  (8 units, 7 files)",
+      "  1  docs: readme  (1 unit, 1 file)",
+      "  2  feat: everything else  (8 units, 7 files)",
       "",
     ].join("\n"),
   );
