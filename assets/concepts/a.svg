@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <rect x="4" y="4" width="248" height="248" rx="44" fill="#9fe0ff" stroke="#222" stroke-width="6"/>
+  <path d="M10 214 Q60 208 128 215 T248 212" fill="none" stroke="#222" stroke-width="5" stroke-linecap="round"/>
+  <!-- mama duck, scaled toward the right so the ducklings get room -->
+  <g transform="translate(244 212) scale(0.86) translate(-244 -212)">
+    <g stroke="#222" stroke-width="6" stroke-linejoin="round" stroke-linecap="round">
+      <path d="M150 182 L144 214 M134 214 L156 214" fill="none" stroke="#ff8c1a"/>
+      <path d="M182 182 L190 213 M180 213 L202 213" fill="none" stroke="#ff8c1a"/>
+      <path d="M108 128 L92 104 L122 120 Z" fill="#ffd23f"/>
+      <path d="M110 140 Q108 102 160 104 Q222 100 222 146 Q220 188 164 188 Q112 190 110 140 Z" fill="#ffd23f"/>
+      <path d="M140 136 Q164 160 192 134" fill="none"/>
+      <circle cx="200" cy="86" r="33" fill="#ffd23f"/>
+      <path d="M228 84 L254 98 L226 108 Z" fill="#ff8c1a"/>
+    </g>
+    <circle cx="192" cy="76" r="15" fill="#fff" stroke="#222" stroke-width="4"/>
+    <circle cx="199" cy="84" r="6" fill="#222"/>
+    <circle cx="219" cy="70" r="7" fill="#fff" stroke="#222" stroke-width="3"/>
+    <circle cx="217" cy="67" r="3" fill="#222"/>
+  </g>
+  <!-- ducklings -->
+  <g stroke="#222" stroke-width="5" stroke-linejoin="round">
+    <path d="M94 210 L92 216 M104 210 L106 216" stroke="#ff8c1a" stroke-width="3" stroke-linecap="round"/>
+    <ellipse cx="98" cy="196" rx="18" ry="14" fill="#ffe680"/>
+    <circle cx="111" cy="177" r="11" fill="#ffe680"/>
+    <path d="M120 175 L130 180 L119 184 Z" fill="#ff8c1a" stroke-width="3"/>
+    <ellipse cx="58" cy="198" rx="16" ry="13" fill="#ffe680"/>
+    <circle cx="70" cy="181" r="10" fill="#ffe680"/>
+    <path d="M78 179 L88 184 L77 187 Z" fill="#ff8c1a" stroke-width="3"/>
+    <!-- the one that fell over: legs in the air -->
+    <path d="M22 186 L18 176 M32 186 L34 176" stroke="#ff8c1a" stroke-width="3" stroke-linecap="round"/>
+    <ellipse cx="28" cy="198" rx="13" ry="10" fill="#ffe680"/>
+    <circle cx="40" cy="206" r="8" fill="#ffe680"/>
+  </g>
+  <circle cx="112" cy="175" r="4" fill="#222"/>
+  <circle cx="68" cy="179" r="5" fill="#fff" stroke="#222" stroke-width="2"/>
+  <circle cx="69" cy="180" r="2" fill="#222"/>
+  <path d="M38 204 l4 4 m0 -4 l-4 4" stroke="#222" stroke-width="2"/>
+  <g font-family="monospace" font-weight="bold" font-size="13" fill="#222" text-anchor="middle">
+    <text x="100" y="236">a1f</text>
+    <text x="60" y="236">b2e</text>
+    <text x="30" y="234">wip</text>
+  </g>
+</svg>
