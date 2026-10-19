@@ -2,3 +2,4 @@ node_modules/
 .follow-me/
 *.log
 .DS_Store
+.claude/worktrees/
