@@ -1,3 +1,16 @@
+import {
+  buildScript,
+  commitAt,
+  commitStart,
+  lineKey,
+  lineStates,
+  parseSpeed,
+  pickVoice,
+  SPEEDS,
+  speechTimeout,
+  stepDelay,
+} from "/playback.js";
+
 const $ = (id) => document.getElementById(id);
 
 /** Builds an element. Text always goes through textContent, never innerHTML. */
@@ -211,11 +224,18 @@ function describeFileUnit(unit) {
   return `${unit.reason} file ${change}`;
 }
 
-function diffLine(unit, commit, line, pickKey) {
+function diffLine(unit, commit, line, index, pickKey) {
   const base = el("span", { class: "op", text: line.op });
   const text = el("span", { text: line.text.replace(/\n$/, "") });
+  const key = lineKey(unit.id, index);
   if (line.op === " ")
-    return el("div", { class: "dl" }, el("span", { class: "gutter" }), base, text);
+    return el(
+      "div",
+      { class: "dl", "data-line": key },
+      el("span", { class: "gutter" }),
+      base,
+      text,
+    );
 
   const owner = owners.get(unit.id)?.get(line.change);
   const mine = owner === commit.index;
@@ -226,6 +246,7 @@ function diffLine(unit, commit, line, pickKey) {
     "div",
     {
       class: classes.join(" "),
+      "data-line": key,
       title: mine ? "Click to select this line for a comment" : undefined,
       onclick: mine
         ? () => {
@@ -285,14 +306,20 @@ function unitView(unit, commit) {
     content = el(
       "div",
       { class: "diff" },
-      ...unit.body.map((line) => diffLine(unit, commit, line, pickKey)),
+      ...unit.body.map((line, index) => diffLine(unit, commit, line, index, pickKey)),
     );
   } else {
     const summary =
       unit.kind === "file" ? describeFileUnit(unit) : `mode change ${unit.from} → ${unit.to}`;
     content = el("div", { class: "card", text: `${summary}: ${unit.path}` });
   }
-  return el("div", { class: "unit" }, head, content, unitComments(unit, commit));
+  return el(
+    "div",
+    { class: "unit", "data-unit": unit.id },
+    head,
+    content,
+    unitComments(unit, commit),
+  );
 }
 
 function renderList() {
@@ -319,13 +346,16 @@ function renderList() {
 
 function renderPlanNote() {
   const anchor = { kind: "plan" };
+  const walk = isWalk();
   $("plan-note").replaceChildren(
-    el("strong", { text: "Plan note" }),
+    el("strong", { text: walk ? "General comment" : "Plan note" }),
     ...commentsAt(anchor).map(commentView),
     commentBox({
       key: "box:plan",
-      label: "Add a note on the whole plan",
-      placeholder: "Anything about the plan as a whole",
+      label: walk ? "Add a general comment" : "Add a note on the whole plan",
+      placeholder: walk
+        ? "Anything about the change as a whole"
+        : "Anything about the plan as a whole",
       makeAnchor: () => anchor,
       context: { commitMessage: "", path: null },
     }),
@@ -358,24 +388,28 @@ function renderMain() {
       el("h2", { text: `Commit ${selected + 1} of ${state.commits.length}` }),
       el("div", { class: "message", text: commit.message }),
       ...commentsAt(messageAnchor).map(commentView),
-      el(
-        "div",
-        { class: "controls" },
-        commentBox({
-          key: `box:message:${commit.index}`,
-          label: "Comment on the message",
-          placeholder: "What should this message say?",
-          makeAnchor: () => messageAnchor,
-          context,
-        }),
-        commentBox({
-          key: `box:position:${commit.index}`,
-          label: "This belongs elsewhere",
-          placeholder: "Where should this go, and why?",
-          makeAnchor: () => positionAnchor,
-          context,
-        }),
-      ),
+      // A walk plan's messages and order are the planner's, not the author's, so only code is
+      // up for comment there.
+      isWalk()
+        ? null
+        : el(
+            "div",
+            { class: "controls" },
+            commentBox({
+              key: `box:message:${commit.index}`,
+              label: "Comment on the message",
+              placeholder: "What should this message say?",
+              makeAnchor: () => messageAnchor,
+              context,
+            }),
+            commentBox({
+              key: `box:position:${commit.index}`,
+              label: "This belongs elsewhere",
+              placeholder: "Where should this go, and why?",
+              makeAnchor: () => positionAnchor,
+              context,
+            }),
+          ),
       ...commentsAt(positionAnchor).map(commentView),
     ),
     ...[...groups].map(([path, units]) =>
@@ -388,6 +422,7 @@ function renderMain() {
     ),
   );
   main.scrollTop = scroll;
+  applyPlayback();
 }
 
 function render() {
@@ -397,9 +432,266 @@ function render() {
 }
 
 function select(index) {
-  selected = Math.max(0, Math.min(state.commits.length - 1, index));
+  const next = Math.max(0, Math.min(state.commits.length - 1, index));
+  if (player.view === "play") {
+    seek(commitStart(script, next));
+    return;
+  }
+  selected = next;
   render();
   $("main").scrollTop = 0;
+}
+
+function isWalk() {
+  return state?.mode === "walk";
+}
+
+const synth = "speechSynthesis" in window ? window.speechSynthesis : null;
+/**
+ * view "play" hides lines the playback has not written yet; "browse" shows every line.
+ * position counts performed steps of the script. generation retires a loop on every seek.
+ */
+const player = {
+  view: "browse",
+  playing: false,
+  position: 0,
+  generation: 0,
+  speed: 1,
+  muted: false,
+  voice: null,
+};
+let script = [];
+let voices = [];
+
+function stored(key) {
+  try {
+    return localStorage.getItem(`follow-me.${key}`);
+  } catch {
+    return null;
+  }
+}
+
+function store(key, value) {
+  try {
+    localStorage.setItem(`follow-me.${key}`, value);
+  } catch {
+    // Private windows may refuse storage; the setting then lasts for this page only.
+  }
+}
+
+function silent() {
+  return player.muted || synth === null;
+}
+
+/** Resolves true after `ms` of playing time, or false once a seek retires this loop. */
+function sleep(ms, generation) {
+  return new Promise((resolve) => {
+    let left = ms;
+    let last = performance.now();
+    const tick = () => {
+      if (generation !== player.generation) return resolve(false);
+      const now = performance.now();
+      if (player.playing) left -= now - last;
+      last = now;
+      if (left <= 0 && player.playing) return resolve(true);
+      setTimeout(tick, Math.max(16, Math.min(left, 100)));
+    };
+    tick();
+  });
+}
+
+function speak(text) {
+  if (silent() || !text) return null;
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.rate = player.speed;
+  const voice = voices.find((v) => v.name === player.voice);
+  if (voice) {
+    utterance.voice = voice;
+    utterance.lang = voice.lang;
+  }
+  synth.speak(utterance);
+  return utterance;
+}
+
+/** Some engines never fire "end", so a pause-aware timeout bounds the wait. */
+function speakAndWait(text, generation) {
+  const utterance = speak(text);
+  if (!utterance) return Promise.resolve(true);
+  const ended = new Promise((resolve) => {
+    utterance.addEventListener("end", () => resolve(true));
+    utterance.addEventListener("error", () => resolve(true));
+  });
+  return Promise.race([ended, sleep(speechTimeout(text, player.speed), generation)]);
+}
+
+function setCaption(text) {
+  $("caption").textContent = text;
+}
+
+function applyPlayback() {
+  const { states, current } =
+    player.view === "play"
+      ? lineStates(script, player.position, selected)
+      : { states: new Map(), current: null };
+  for (const node of $("main").querySelectorAll("[data-line]")) {
+    const key = node.dataset.line;
+    const lineState = states.get(key);
+    node.classList.toggle("pending", lineState === "hidden");
+    node.classList.toggle("gone", lineState === "gone");
+    node.classList.toggle("current", key === current);
+  }
+}
+
+async function perform(step, generation) {
+  player.position += 1;
+  if (step.kind === "commit") {
+    if (selected === step.commit) applyPlayback();
+    else {
+      selected = step.commit;
+      render();
+      $("main").scrollTop = 0;
+    }
+    setCaption(step.say);
+    speak(step.say);
+  } else if (step.kind === "unit") {
+    applyPlayback();
+    $("main")
+      .querySelector(`[data-unit="${step.unit}"]`)
+      ?.scrollIntoView({ block: "start", behavior: "smooth" });
+    if (step.say) {
+      setCaption(step.say);
+      await speakAndWait(step.say, generation);
+    }
+  } else {
+    applyPlayback();
+    $("main")
+      .querySelector(".dl.current")
+      ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+  return sleep(stepDelay(step, player.speed), generation);
+}
+
+async function playLoop(generation) {
+  while (player.position < script.length) {
+    if (!(await sleep(0, generation))) return;
+    if (!(await perform(script[player.position], generation))) return;
+  }
+  player.playing = false;
+  setCaption(
+    isWalk()
+      ? "That is the whole branch. Leave any last comments, then finish the code review."
+      : "That is the whole plan.",
+  );
+  updatePlayer();
+}
+
+/** Moves playback to a step and starts a fresh loop, which waits while paused. */
+function seek(position) {
+  synth?.cancel();
+  player.position = position;
+  player.generation += 1;
+  selected = script[position]?.commit ?? commitAt(script, position);
+  render();
+  $("main").scrollTop = 0;
+  setCaption("");
+  playLoop(player.generation);
+}
+
+function play() {
+  if (player.view !== "play") enterPlay();
+  if (player.position >= script.length) seek(0);
+  player.playing = true;
+  synth?.resume();
+  updatePlayer();
+}
+
+/** Pausing preselects the line just written, so the comment button is ready for it. */
+function pause() {
+  player.playing = false;
+  synth?.pause();
+  updatePlayer();
+  const key = $("main").querySelector(".dl.current")?.dataset.line;
+  if (key === undefined) return;
+  const at = key.lastIndexOf(":");
+  const unitId = key.slice(0, at);
+  const change = unitsById.get(unitId)?.body?.[Number(key.slice(at + 1))]?.change;
+  const pickKey = `${selected}:${unitId}`;
+  if (change === undefined || (picks.get(pickKey)?.size ?? 0) > 0) return;
+  picks.set(pickKey, new Set([change]));
+  render();
+}
+
+function enterPlay() {
+  player.view = "play";
+  $("player").hidden = false;
+  seek(commitStart(script, selected));
+  updatePlayer();
+}
+
+function enterBrowse() {
+  player.view = "browse";
+  player.playing = false;
+  player.generation += 1;
+  synth?.cancel();
+  $("player").hidden = true;
+  render();
+  updatePlayer();
+}
+
+function updatePlayer() {
+  $("play").textContent = player.playing ? "Pause" : "Play";
+  $("view-toggle").textContent = player.view === "play" ? "Show all" : "Play";
+  const mute = $("mute");
+  mute.disabled = synth === null;
+  mute.textContent = synth === null ? "No speech" : player.muted ? "Unmute" : "Mute";
+  mute.setAttribute("aria-pressed", String(player.muted));
+}
+
+function loadVoices() {
+  if (synth === null) return;
+  voices = synth.getVoices();
+  if (!voices.some((v) => v.name === player.voice)) {
+    player.voice = pickVoice(voices, stored("voice"), navigator.language);
+  }
+  const picker = $("voice");
+  picker.replaceChildren(
+    el("option", { value: "", text: "Browser default" }),
+    ...voices.map((v) => el("option", { value: v.name, text: `${v.name} (${v.lang})` })),
+  );
+  picker.value = player.voice ?? "";
+}
+
+function setUpPlayer() {
+  player.speed = parseSpeed(stored("speed"));
+  player.muted = stored("muted") === "true";
+  const speed = $("speed");
+  speed.replaceChildren(...SPEEDS.map((s) => el("option", { value: String(s), text: `${s}x` })));
+  speed.value = String(player.speed);
+  speed.addEventListener("change", () => {
+    player.speed = parseSpeed(speed.value);
+    store("speed", String(player.speed));
+  });
+  const picker = $("voice");
+  picker.disabled = synth === null;
+  picker.addEventListener("change", () => {
+    player.voice = picker.value || null;
+    store("voice", picker.value);
+  });
+  synth?.addEventListener("voiceschanged", loadVoices);
+  loadVoices();
+  $("play").addEventListener("click", () => (player.playing ? pause() : play()));
+  $("prev").addEventListener("click", () => select(selected - 1));
+  $("next").addEventListener("click", () => select(selected + 1));
+  $("mute").addEventListener("click", () => {
+    player.muted = !player.muted;
+    store("muted", String(player.muted));
+    if (player.muted) synth?.cancel();
+    updatePlayer();
+  });
+  $("view-toggle").addEventListener("click", () =>
+    player.view === "play" ? enterBrowse() : play(),
+  );
+  updatePlayer();
 }
 
 function hasUnsentText() {
@@ -414,25 +706,48 @@ async function endReview() {
     return;
   }
   await api("POST", "/api/end");
+  player.generation += 1;
+  synth?.cancel();
   const done = $("done");
+  const saved = `reviews/v${state.version}.json`;
   done.replaceChildren(
-    el(
-      "p",
-      {},
-      `Review saved to reviews/v${state.version}.json. Run `,
-      el("code", { text: "follow-me feedback" }),
-      " or hand the session to your agent.",
-    ),
+    isWalk()
+      ? el(
+          "p",
+          {},
+          `Code review saved to ${saved}. The author can run `,
+          el("code", { text: "follow-me feedback" }),
+          " to read it.",
+        )
+      : el(
+          "p",
+          {},
+          `Review saved to ${saved}. Run `,
+          el("code", { text: "follow-me feedback" }),
+          " or hand the session to your agent.",
+        ),
   );
   done.hidden = false;
 }
 
 document.addEventListener("keydown", (event) => {
   const target = event.target;
-  if (target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement) return;
+  if (
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLSelectElement
+  ) {
+    return;
+  }
   if (event.metaKey || event.ctrlKey || event.altKey) return;
-  if (event.key === "j") select(selected + 1);
-  if (event.key === "k") select(selected - 1);
+  // A focused button already answers space by clicking itself.
+  if (event.key === " " && !(target instanceof HTMLButtonElement)) {
+    event.preventDefault();
+    if (player.playing) pause();
+    else play();
+  }
+  if (event.key === "j" || event.key === "n") select(selected + 1);
+  if (event.key === "k" || event.key === "p") select(selected - 1);
 });
 
 $("end").addEventListener("click", () => guarded(endReview));
@@ -440,6 +755,16 @@ $("end").addEventListener("click", () => guarded(endReview));
 guarded(async () => {
   state = await api("GET", "/api/state");
   indexOwnership();
-  $("summary").textContent = `${state.anchor.branch} · plan v${state.version}`;
-  render();
+  script = buildScript(state.commits, state.units);
+  const walk = isWalk();
+  document.title = walk ? "follow-me code review" : "follow-me review";
+  $("summary").textContent = walk
+    ? `${state.anchor.branch} · Code review`
+    : `${state.anchor.branch} · Review of plan v${state.version}`;
+  $("end").textContent = walk ? "Finish code review" : "End review";
+  setUpPlayer();
+  if (walk) {
+    enterPlay();
+    setCaption("Press Play or space to watch this branch being written.");
+  } else render();
 });

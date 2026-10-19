@@ -251,7 +251,7 @@ test("requests from a foreign origin are refused", async (t) => {
   await run.done;
 });
 
-test("the UI files are served at /, /app.js and /style.css", async (t) => {
+test("the UI files are served at /, /app.js, /playback.js and /style.css", async (t) => {
   const run = await start(twoCommitState());
   t.after(() => rm(run.dir, { recursive: true, force: true }));
   const page = await fetch(new URL("/", run.url));
@@ -259,6 +259,8 @@ test("the UI files are served at /, /app.js and /style.css", async (t) => {
   assert.match(await page.text(), /<title>follow-me review<\/title>/);
   const script = await fetch(new URL("/app.js", run.url));
   assert.equal(script.headers.get("content-type"), "text/javascript; charset=utf-8");
+  const playback = await fetch(new URL("/playback.js", run.url));
+  assert.match(await playback.text(), /export function buildScript\(/);
   assert.equal((await fetch(new URL("/style.css", run.url))).status, 200);
   assert.equal((await fetch(new URL("/nope.js", run.url))).status, 404);
   await post(run.url, "/api/end", {});

@@ -42,6 +42,7 @@ const UI_DIR = new URL("../ui/", import.meta.url);
 const STATIC_FILES = new Map([
   ["/", { file: "index.html", type: "text/html; charset=utf-8" }],
   ["/app.js", { file: "app.js", type: "text/javascript; charset=utf-8" }],
+  ["/playback.js", { file: "playback.js", type: "text/javascript; charset=utf-8" }],
   ["/style.css", { file: "style.css", type: "text/css; charset=utf-8" }],
 ]);
 const MAX_BODY_BYTES = 1_000_000;

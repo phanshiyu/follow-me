@@ -12,8 +12,20 @@
       <strong>follow-me</strong>
       <span id="summary" class="muted"></span>
       <span id="status" class="status" role="status"></span>
+      <button id="view-toggle" type="button" title="Play the branch commit by commit (space)">
+        Play
+      </button>
       <button id="end" type="button" class="primary">End review</button>
     </header>
+    <section id="player" class="player" aria-label="Playback" hidden>
+      <button id="play" type="button" class="primary" title="Play or pause (space)">Play</button>
+      <button id="prev" type="button" title="Previous commit (p)">Previous</button>
+      <button id="next" type="button" title="Next commit (n)">Next</button>
+      <label>Speed <select id="speed"></select></label>
+      <label>Voice <select id="voice"></select></label>
+      <button id="mute" type="button" aria-pressed="false">Mute</button>
+      <p id="caption" class="caption" aria-live="polite"></p>
+    </section>
     <div id="app" class="layout">
       <nav class="sidebar" aria-label="Commits">
         <ol id="commits" class="commit-list"></ol>

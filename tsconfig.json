@@ -6,6 +6,8 @@
     "lib": ["es2024"],
     "types": ["node"],
     "noEmit": true,
+    "allowJs": true,
+    "checkJs": true,
     "allowImportingTsExtensions": true,
     "erasableSyntaxOnly": true,
     "verbatimModuleSyntax": true,
@@ -21,5 +23,5 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true
   },
-  "include": ["bin", "src", "test", "scripts"]
+  "include": ["bin", "src", "test", "scripts", "ui/playback.js"]
 }
