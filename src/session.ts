@@ -15,6 +15,7 @@ import {
   branchExists,
   currentBranch,
   defaultBaseRef,
+  GitError,
   loadDiff,
   objectsDir,
   QUARANTINE_PREFIX,
@@ -51,6 +52,23 @@ export class BranchMovedError extends Error {
 /** A file under .follow-me/ that exists but cannot be read as what it claims to be. */
 export class SessionFileError extends Error {
   override readonly name = "SessionFileError";
+}
+
+/** draft.json has not been written yet. */
+export class MissingDraftError extends SessionFileError {
+  readonly path: string;
+  constructor(path: string) {
+    super(`${path} does not exist yet`);
+    this.path = path;
+  }
+}
+
+/** The command ran outside any git work tree. */
+export class NotARepositoryError extends Error {
+  override readonly name = "NotARepositoryError";
+  constructor() {
+    super("not a git repository (run it inside the repo you want to split)");
+  }
 }
 
 /** Another live follow-me process holds the session's lock. */
@@ -372,7 +390,7 @@ function makeSession(root: string, dir: string, anchor: SessionAnchor, diff: Dif
     lastReview: () => reviews().findLast((r) => r.review.mode === "split")?.review ?? null,
     readDraft: () => {
       const draft = readJson(draftPath);
-      if (draft === undefined) throw new SessionFileError(`${draftPath} does not exist yet`);
+      if (draft === undefined) throw new MissingDraftError(draftPath);
       return draft;
     },
     writeDraft: (draft) => writeJson(draftPath, draft),
@@ -413,8 +431,20 @@ function makeSession(root: string, dir: string, anchor: SessionAnchor, diff: Dif
 
 type Where = { readonly root: string; readonly branch: string; readonly dir: string };
 
+/** The top level of the work tree holding cwd. */
+async function rootOf(cwd: string): Promise<string> {
+  try {
+    return await repoRoot(cwd);
+  } catch (error) {
+    if (error instanceof GitError && error.message.includes("not a git repository")) {
+      throw new NotARepositoryError();
+    }
+    throw error;
+  }
+}
+
 async function locate(repo: string, branch: string | undefined): Promise<Where> {
-  const root = await repoRoot(repo);
+  const root = await rootOf(repo);
   const name = branch ?? (await currentBranch(root));
   if (name === null) throw new Error("HEAD is detached; pass --branch <name>");
   const top = join(root, ".follow-me");
@@ -534,7 +564,7 @@ export async function cleanSessions(
   repo: string,
   opts: { readonly all: boolean; readonly dryRun: boolean },
 ): Promise<string[]> {
-  const root = await repoRoot(repo);
+  const root = await rootOf(repo);
   const top = join(root, ".follow-me");
   const sessions = existsSync(top)
     ? readdirSync(top, { withFileTypes: true })

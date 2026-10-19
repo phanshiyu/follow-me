@@ -155,6 +155,7 @@ test("extract, check, apply and status drive the whole flow from the command lin
       "  A src/new-name.js  1 hunk, 1 change line",
       "  D src/old-name.js  1 hunk, 1 change line",
       "session .follow-me/feature",
+      "next: follow-me prompt, or follow-me plan with an Anthropic key",
       "",
     ].join("\n"),
     err: "",
@@ -174,7 +175,15 @@ test("extract, check, apply and status drive the whole flow from the command lin
   draft([{ message: "docs: readme", units: [`${readme}:0-2`] }]);
   const failing = run(repo.dir, "check");
   assert.equal(failing.code, 1);
-  assert.equal(failing.out.split("\n")[0], `${readme}:3-5 (README.md) is in no commit`);
+  const failed = failing.out.split("\n");
+  assert.deepEqual(
+    [failed[0], ...failed.slice(-2)],
+    [
+      `${readme}:3-5 (README.md) is in no commit`,
+      "next: fix .follow-me/feature/draft.json, then follow-me check",
+      "",
+    ],
+  );
 
   draft([
     { message: "docs: readme", units: [readme] },
@@ -188,6 +197,7 @@ test("extract, check, apply and status drive the whole flow from the command lin
     [
       "  1  docs: readme  (1 unit, 1 file)",
       "  2  feat: everything else  (8 units, 7 files)",
+      "next: follow-me apply",
       "",
     ].join("\n"),
   );
@@ -203,6 +213,7 @@ test("extract, check, apply and status drive the whole flow from the command lin
       `created feature-split at ${head.slice(0, 12)} from plan v1 (2 commits)`,
       "signing: off",
       `proof: feature-split^{tree} ${tree} equals feature^{tree} ${tree}`,
+      "next: follow-me review",
       "",
     ].join("\n"),
   );
@@ -238,6 +249,59 @@ test("extract, check, apply and status drive the whole flow from the command lin
   assert.equal(prompt.code, 0, prompt.err);
   assert.match(prompt.out, /^# follow-me: plan the commits\n/);
   assert.match(prompt.out, /## Previous plan/);
+});
+
+test("each step of a review names the next one, ending with feedback for the agent", async (t) => {
+  const { run, spawnCli } = cliIn(t);
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  assert.equal(run(repo.dir, "extract").code, 0);
+  assert.deepEqual(run(repo.dir, "check"), {
+    code: 1,
+    out: "",
+    err: "follow-me: no draft at .follow-me/feature/draft.json yet; your coding agent writes it from `follow-me prompt`, or `follow-me plan` has the Anthropic API write it\n",
+  });
+  const diff = await loadDiff(repo.dir, "main", "feature");
+  writeWholeDraft(repo.dir, repo.base, repo.branch, [...diff.units.keys()]);
+  assert.equal(run(repo.dir, "apply").code, 0);
+
+  const served = spawnCli(repo.dir, "review", "--no-open", "--port", "0");
+  const url = await served.url;
+  await fetch(new URL("api/end", url), { method: "POST" });
+  assert.deepEqual(await served.exited, [0, null]);
+  assert.deepEqual(served.out().split("\n").slice(1, 3), [
+    "review v1 saved with 0 comments",
+    "next: follow-me feedback",
+  ]);
+  const feedback = run(repo.dir, "feedback");
+  assert.equal(feedback.code, 0, feedback.err);
+  assert.deepEqual(feedback.out.split("\n").slice(-3), [
+    "",
+    "next: hand this to your agent, then follow-me check",
+    "",
+  ]);
+});
+
+test("--version, --help and a directory outside any repo answer like other CLIs", (t) => {
+  const { run } = cliIn(t);
+  const outside = mkdtempSync(join(tmpdir(), "follow-me-outside-"));
+  t.after(() => rmSync(outside, { recursive: true, force: true }));
+  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  assert.deepEqual(run(outside, "--version"), {
+    code: 0,
+    out: `follow-me ${pkg.version}\n`,
+    err: "",
+  });
+  for (const flag of ["--help", "-h", "help"]) {
+    const help = run(outside, flag);
+    assert.deepEqual([help.code, help.err], [0, ""]);
+    assert.equal(help.out.split("\n")[0], "usage: follow-me <command> [options]");
+  }
+  assert.deepEqual(run(outside, "extract"), {
+    code: 1,
+    out: "",
+    err: "follow-me: not a git repository (run it inside the repo you want to split)\n",
+  });
 });
 
 test("prompt --walk writes for a reviewer and names the branch in the check command", (t) => {
@@ -312,7 +376,7 @@ test("walk serves a frozen plan in walk mode and saves a code review on end", as
     walk.out().split("\n").slice(1).join("\n"),
     [
       "code review saved to .follow-me/feature/reviews/v1.json with 0 comments",
-      "`follow-me feedback` prints it as a code review for the author",
+      "next: follow-me feedback, which prints it as a code review for the author",
       "the server exits in 1s unless another review starts; ctrl-c stops it now",
       "",
     ].join("\n"),
@@ -323,7 +387,10 @@ test("walk serves a frozen plan in walk mode and saves a code review on end", as
   );
   assert.equal(review.mode, "walk");
   assert.equal(review.planVersion, 1);
-  assert.equal(run(repo.dir, "feedback").out, "# Code review\n\nThe reviewer left no comments.\n");
+  assert.equal(
+    run(repo.dir, "feedback").out,
+    "# Code review\n\nThe reviewer left no comments.\n\nnext: hand this to the branch's author\n",
+  );
 });
 
 function writeTwoCommitDraft(dir: string, base: string, tip: string, ids: readonly string[]) {
@@ -369,6 +436,7 @@ test("apply signs the split when the repo signs commits", { skip: NO_SSH }, asyn
       `created feature-split at ${head.slice(0, 12)} from plan v1 (2 commits)`,
       "signing: on (ssh)",
       `proof: feature-split^{tree} ${tree} equals feature^{tree} ${tree}`,
+      "next: follow-me review",
       "",
     ].join("\n"),
   );
@@ -506,7 +574,7 @@ test("while the server hosts a review, apply waits and review prints the same pa
   assert.deepEqual(run(repo.dir, "apply"), { code: 1, out: "", err: busy });
   assert.deepEqual(run(repo.dir, "review", "--no-open"), {
     code: 0,
-    out: `follow-me review: ${url}\n`,
+    out: `follow-me review: ${url}\nnext: end the review on the page, then follow-me feedback\n`,
     err: "",
   });
   assert.deepEqual(run(repo.dir, "status").out.split("\n").slice(2, 4), [

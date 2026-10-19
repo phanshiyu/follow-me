@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import { PlanRequestError, requestPlan } from "./anthropic.ts";
 import { DiffParseError, formatUnitRef } from "./diff.ts";
 import {
@@ -39,6 +40,8 @@ import {
   extractSession,
   type HeldLock,
   type LockState,
+  MissingDraftError,
+  NotARepositoryError,
   openSession,
   type Session,
   SessionFileError,
@@ -60,33 +63,45 @@ class UsageError extends Error {
   override readonly name = "UsageError";
 }
 
-const USAGE = `usage: follow-me <command>
+const USAGE = `usage: follow-me <command> [options]
 
+Split your own branch:
   extract [--base <ref>] [--branch <name>]  anchor a session and list the units
+  prompt [--walk] [--branch <name>]         print the planner prompt; your coding agent
+                                            writes draft.json from it
+  plan [--walk] [--model <id>] [--branch <name>]
+                                            the same draft as prompt, written by the
+                                            Anthropic API
   check [path] [--branch <name>]            validate draft.json or the given plan file
   apply [--name <branch>] [--force] [--sign|--no-sign]
                                             write the draft as commits on <branch>-split or
                                             --name; never on <branch> or a checked-out branch
+  review [--port <n>] [--detach] [--no-open]
+                                            open the plan review, commit by commit
+  feedback [--branch <name>]                print the latest review as markdown
   status                                    show the session's plans, reviews, lock and the
                                             branch apply writes
-  prompt [--walk] [--branch <name>]         print the planner prompt for a coding agent
-  plan [--walk] [--model <id>] [--branch <name>]
-                                            ask the Anthropic API to write draft.json
-  review [--port <n>] [--detach] [--no-open] review the latest plan commit by commit
+
+Review someone else's branch:
   walk [--base <ref>] [--branch <name>] [--model <id>] [--port <n>] [--detach] [--no-open]
                                             watch a branch being written, narrated, and
                                             review its code; nothing is applied
+
+Review server:
   server status                             show the review server and the sessions it hosts
   server stop                               stop the review server; drafts are kept
-  feedback [--branch <name>]                print the latest review as markdown
-  clean [--all] [--dry-run]                 remove sessions of deleted branches, finished
-                                            review drafts and leftovers of dead processes;
-                                            --all removes .follow-me/ entirely
+
+Setup:
   install [--harness <ids>|--all] [--project] [--dry-run]
                                             copy the skill into coding agents' skill dirs
   install --list                            show each harness, its skill dirs and docs
   uninstall [--harness <ids>|--all] [--project] [--dry-run]
                                             remove the skill files install writes
+  clean [--all] [--dry-run]                 remove sessions of deleted branches, finished
+                                            review drafts and leftovers of dead processes;
+                                            --all removes .follow-me/ entirely
+  --version                                 print the version
+  help                                      print this
 
 --walk writes the prompt for a reviewer: a story with narration instead of a split.
 review and walk share one server per user: a running one hosts the session and the command
@@ -129,6 +144,33 @@ function parseArgs(
 
 function say(line = ""): void {
   process.stdout.write(`${line}\n`);
+}
+
+/** The step that follows; every command that moves the flow forward ends with one. */
+function next(step: string): void {
+  say(`next: ${step}`);
+}
+
+/**
+ * The version in the package.json above this module, which sits one directory up from src/ and
+ * two up from dist/src/.
+ */
+function version(): string {
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (let depth = 0; depth < 3; depth++) {
+    dir = dirname(dir);
+    let raw: unknown;
+    try {
+      raw = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+    } catch {
+      continue;
+    }
+    if (typeof raw !== "object" || raw === null) continue;
+    const name = "name" in raw ? raw.name : undefined;
+    const value = "version" in raw ? raw.version : undefined;
+    if (name === "@shiyuphan/follow-me" && typeof value === "string") return value;
+  }
+  throw new Error("cannot find the package.json of follow-me");
 }
 
 /** Paths are latin1 so bytes round-trip; show them as the UTF-8 the user typed. */
@@ -272,8 +314,20 @@ async function check(cwd: string, args: Args): Promise<number> {
   const session = await openSession(cwd, sessionOpts(args));
   const path = args.positionals[0];
   const verdict = validate(session, path === undefined ? session.readDraft() : readPlanArg(path));
-  if (!verdict.ok) return 1;
-  const { plan } = verdict;
+  if (!verdict.ok) {
+    const fix = path ?? relative(cwd, session.draftPath);
+    next(
+      `fix ${fix}, then follow-me check${path === undefined ? "" : ` ${path}`}${branchFlag(args)}`,
+    );
+    return 1;
+  }
+  listPlan(verdict.plan);
+  for (const w of verdict.warnings) say(formatWarning(w));
+  next("follow-me apply");
+  return 0;
+}
+
+function listPlan(plan: ValidPlan): void {
   say(`ok: ${plural(plan.commits.length, "commit")}, plan ${short(plan.hash)}`);
   for (const c of plan.commits) {
     const subject = c.message.split("\n")[0] ?? "";
@@ -281,8 +335,6 @@ async function check(cwd: string, args: Args): Promise<number> {
       `  ${c.index + 1}  ${subject}  (${plural(c.refs.length, "unit")}, ${plural(c.changes.length, "file")})`,
     );
   }
-  for (const w of verdict.warnings) say(formatWarning(w));
-  return 0;
 }
 
 /** Runs one command under the session's lock, so two agents never apply or review it at once. */
@@ -356,7 +408,9 @@ async function applyLocked(session: Session, args: Args): Promise<number> {
   say(
     `proof: ${result.branch}^{tree} ${tree} ${same ? "equals" : "DIFFERS FROM"} ${session.anchor.branch}^{tree} ${session.anchor.tipTree}`,
   );
-  return same ? 0 : 1;
+  if (!same) return 1;
+  next("follow-me review");
+  return 0;
 }
 
 function promptInput(session: Session, mode: ReviewMode, args: Args): PromptInput {
@@ -405,7 +459,10 @@ async function draftWithApi(
 
 async function plan(cwd: string, args: Args): Promise<number> {
   const session = await openSession(cwd, sessionOpts(args));
-  return (await draftWithApi(session, cwd, modeOf(args), args)) === null ? 1 : 0;
+  const mode = modeOf(args);
+  if ((await draftWithApi(session, cwd, mode, args)) === null) return 1;
+  next(mode === "walk" ? `follow-me walk${branchFlag(args)}` : "follow-me apply");
+  return 0;
 }
 
 /** The latest frozen plan, or the draft frozen now when it validates. */
@@ -530,9 +587,13 @@ async function review(cwd: string, args: Args): Promise<number> {
     if (latest === null || alreadyReviewed(session, latest.version, args)) return null;
     return latest;
   };
-  const report = (review: Review) =>
+  const report = (review: Review) => {
     say(`review v${review.planVersion} saved with ${plural(review.comments.length, "comment")}`);
-  return exitCode(await hostReview(session, "split", args, prepare, report));
+    next("follow-me feedback");
+  };
+  const hosted = await hostReview(session, "split", args, prepare, report);
+  if (hosted.kind === "elsewhere") next("end the review on the page, then follow-me feedback");
+  return exitCode(hosted);
 }
 
 /** Opens the reviewer's session, re-extracting instead of failing when the branch moved. */
@@ -580,7 +641,7 @@ async function walk(cwd: string, args: Args): Promise<number> {
     say(
       `code review saved to ${relative(cwd, saved)} with ${plural(review.comments.length, "comment")}`,
     );
-    say(`\`follow-me feedback${branchFlag(args)}\` prints it as a code review for the author`);
+    next(`follow-me feedback${branchFlag(args)}, which prints it as a code review for the author`);
   };
   const hosted = await hostReview(
     session,
@@ -589,6 +650,9 @@ async function walk(cwd: string, args: Args): Promise<number> {
     () => walkPlan(session, cwd, args),
     report,
   );
+  if (hosted.kind === "elsewhere") {
+    next(`end the code review on the page, then follow-me feedback${branchFlag(args)}`);
+  }
   return exitCode(hosted);
 }
 
@@ -624,6 +688,12 @@ async function feedback(cwd: string, args: Args): Promise<number> {
     return 1;
   }
   process.stdout.write(renderFeedback(stored.review, plan.file, session.diff.units));
+  say();
+  next(
+    stored.review.mode === "walk"
+      ? "hand this to the branch's author"
+      : `hand this to your agent, then follow-me check${branchFlag(args)}`,
+  );
   return 0;
 }
 
@@ -741,6 +811,10 @@ function skillTargets(args: Args): SkillTargets {
   };
 }
 
+function missingDraft(error: MissingDraftError, cwd: string): string {
+  return `no draft at ${relative(cwd, error.path)} yet; your coding agent writes it from \`follow-me prompt\`, or \`follow-me plan\` has the Anthropic API write it`;
+}
+
 export async function main(argv: readonly string[], cwd: string): Promise<number> {
   const [command, ...rest] = argv;
   try {
@@ -748,6 +822,8 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
       case "extract": {
         const args = parseArgs(rest, { values: ["base", "branch"] });
         summarize(await extractSession(cwd, sessionOpts(args)), cwd);
+        const branch = branchFlag(args);
+        next(`follow-me prompt${branch}, or follow-me plan${branch} with an Anthropic key`);
         return 0;
       }
       case "check":
@@ -805,9 +881,14 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
       }
       case undefined:
       case "help":
+      case "-h":
       case "--help":
         say(USAGE);
         return command === undefined ? 1 : 0;
+      case "-v":
+      case "--version":
+        say(`follow-me ${version()}`);
+        return 0;
       default:
         throw new UsageError(`unknown command "${command}"\n${USAGE}`);
     }
@@ -821,8 +902,11 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
       RegistrationError,
       GitError,
       PlanRequestError,
+      NotARepositoryError,
     ];
-    if (error instanceof DiffParseError) {
+    if (error instanceof MissingDraftError) {
+      console.error(`follow-me: ${missingDraft(error, cwd)}`);
+    } else if (error instanceof DiffParseError) {
       console.error(`follow-me: could not parse the diff, please report this: ${error.message}`);
     } else if (error instanceof Error && known.some((k) => error instanceof k)) {
       console.error(`follow-me: ${error.message}`);
