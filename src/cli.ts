@@ -19,6 +19,7 @@ import type {
   PlanVersion,
   PlanWarning,
   RepoPath,
+  Review,
   ReviewMode,
   Unit,
   UnitId,
@@ -31,13 +32,19 @@ class UsageError extends Error {
 const USAGE = `usage: follow-me <command>
 
   extract [--base <ref>] [--branch <name>]  anchor a session and list the units
-  check [path]                              validate draft.json or the given plan file
+  check [path] [--branch <name>]            validate draft.json or the given plan file
   apply [--name <branch>] [--force]         write the draft as a branch of commits
   status                                    show the session's plans, reviews and branch
-  prompt                                    print the planner prompt for a coding agent
-  plan [--model <id>]                       ask the Anthropic API to write draft.json
+  prompt [--walk] [--branch <name>]         print the planner prompt for a coding agent
+  plan [--walk] [--model <id>] [--branch <name>]
+                                            ask the Anthropic API to write draft.json
   review [--port <n>] [--no-open]           review the latest plan commit by commit
-  feedback                                  print the latest review as markdown`;
+  walk [--base <ref>] [--branch <name>] [--model <id>] [--port <n>] [--no-open]
+                                            watch a branch being written, narrated, and
+                                            review its code; nothing is applied
+  feedback [--branch <name>]                print the latest review as markdown
+
+--walk writes the prompt for a reviewer: a story with narration instead of a split.`;
 
 type Args = {
   readonly positionals: readonly string[];
@@ -179,6 +186,26 @@ function readPlanArg(path: string): unknown {
   }
 }
 
+/** " --branch x" when the user named a branch, so printed commands reach the same session. */
+function branchFlag(args: Args): string {
+  const branch = args.values.get("branch");
+  return branch === undefined ? "" : ` --branch ${branch}`;
+}
+
+function portOf(args: Args): { port?: number } {
+  const raw = args.values.get("port");
+  if (raw === undefined) return {};
+  const port = Number(raw);
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    throw new UsageError(`--port ${raw} is not a port number`);
+  }
+  return { port };
+}
+
+function modeOf(args: Args): ReviewMode {
+  return args.flags.has("walk") ? "walk" : "split";
+}
+
 function sessionOpts(args: Args): { branch?: string; base?: string } {
   const branch = args.values.get("branch");
   const base = args.values.get("base");
@@ -192,7 +219,7 @@ function validate(session: Session, draft: unknown) {
 }
 
 async function check(cwd: string, args: Args): Promise<number> {
-  const session = await openSession(cwd);
+  const session = await openSession(cwd, sessionOpts(args));
   const path = args.positionals[0];
   const verdict = validate(session, path === undefined ? session.readDraft() : readPlanArg(path));
   if (!verdict.ok) return 1;
@@ -233,11 +260,11 @@ async function apply(cwd: string, args: Args): Promise<number> {
   return same ? 0 : 1;
 }
 
-function promptInput(session: Session, mode: ReviewMode): PromptInput {
+function promptInput(session: Session, mode: ReviewMode, args: Args): PromptInput {
   const common = {
     diff: session.diff,
     draftPath: session.draftPath,
-    checkCommand: "follow-me check",
+    checkCommand: `follow-me check${branchFlag(args)}`,
   };
   if (mode === "walk") return { ...common, mode };
   return {
@@ -248,11 +275,16 @@ function promptInput(session: Session, mode: ReviewMode): PromptInput {
   };
 }
 
-async function plan(cwd: string, args: Args): Promise<number> {
-  const session = await openSession(cwd);
+/** Asks the API for draft.json, feeding issues back once. Returns the plan when it validates. */
+async function draftWithApi(
+  session: Session,
+  cwd: string,
+  mode: ReviewMode,
+  args: Args,
+): Promise<ValidPlan | null> {
   const model = args.values.get("model");
   const opts = model === undefined ? {} : { model };
-  let prompt = renderPrompt(promptInput(session, "split"));
+  let prompt = renderPrompt(promptInput(session, mode, args));
   for (let round = 1; round <= 2; round++) {
     const draft = await requestPlan(prompt, opts);
     session.writeDraft(draft);
@@ -261,13 +293,20 @@ async function plan(cwd: string, args: Args): Promise<number> {
       say(
         `wrote ${relative(cwd, session.draftPath)} (${plural(verdict.plan.commits.length, "commit")})`,
       );
-      return 0;
+      return verdict.plan;
     }
     const issues = verdict.issues.map((issue) => `- ${formatIssue(issue)}`).join("\n");
     prompt = `${prompt}\n\n## Your previous draft had these issues, write a corrected plan\n\n${issues}\n`;
   }
-  say(`wrote ${relative(cwd, session.draftPath)} but it still has issues, repair it and run check`);
-  return 1;
+  say(
+    `wrote ${relative(cwd, session.draftPath)} but it still has issues, repair it and run \`follow-me check${branchFlag(args)}\``,
+  );
+  return null;
+}
+
+async function plan(cwd: string, args: Args): Promise<number> {
+  const session = await openSession(cwd, sessionOpts(args));
+  return (await draftWithApi(session, cwd, modeOf(args), args)) === null ? 1 : 0;
 }
 
 /** The latest frozen plan, or the draft frozen now when it validates. */
@@ -282,20 +321,17 @@ function latestPlan(session: Session): { version: PlanVersion; plan: ValidPlan }
   return { version: session.freeze(verdict.plan), plan: verdict.plan };
 }
 
-async function review(cwd: string, args: Args): Promise<number> {
-  const session = await openSession(cwd);
-  const latest = latestPlan(session);
-  if (latest === null) return 1;
+async function serve(
+  session: Session,
+  mode: ReviewMode,
+  latest: { version: PlanVersion; plan: ValidPlan },
+  args: Args,
+): Promise<Review> {
   const { version, plan } = latest;
-  if (session.reviews().some((r) => r.version === version)) {
-    console.error(`follow-me: plan v${version} already has a review; apply a new plan first`);
-    return 1;
-  }
   const reviewsDir = join(session.dir, "reviews");
-  const port = args.values.get("port");
-  const review = await serveReview(
+  return serveReview(
     {
-      mode: "split",
+      mode,
       anchor: session.anchor,
       version,
       planHash: plan.hash,
@@ -303,18 +339,95 @@ async function review(cwd: string, args: Args): Promise<number> {
       units: [...session.diff.units.values()],
       comments: await loadDraftComments(reviewsDir, version),
     },
-    {
-      reviewsDir,
-      open: !args.flags.has("no-open"),
-      ...(port === undefined ? {} : { port: Number(port) }),
-    },
+    { reviewsDir, open: !args.flags.has("no-open"), ...portOf(args) },
   );
-  say(`review v${version} saved with ${plural(review.comments.length, "comment")}`);
+}
+
+function alreadyReviewed(session: Session, version: PlanVersion, args: Args): boolean {
+  if (!session.reviews().some((r) => r.version === version)) return false;
+  console.error(
+    `follow-me: plan v${version} already has a review; read it with \`follow-me feedback${branchFlag(args)}\` or plan again first`,
+  );
+  return true;
+}
+
+async function review(cwd: string, args: Args): Promise<number> {
+  const session = await openSession(cwd);
+  const latest = latestPlan(session);
+  if (latest === null) return 1;
+  if (alreadyReviewed(session, latest.version, args)) return 1;
+  const review = await serve(session, "split", latest, args);
+  say(`review v${latest.version} saved with ${plural(review.comments.length, "comment")}`);
   return 0;
 }
 
-async function feedback(cwd: string): Promise<number> {
-  const session = await openSession(cwd);
+/** Opens the reviewer's session, re-extracting instead of failing when the branch moved. */
+async function openForWalk(cwd: string, args: Args): Promise<Session> {
+  const opts = sessionOpts(args);
+  try {
+    const session = await openSession(cwd, opts);
+    const rebased = opts.base !== undefined && opts.base !== session.anchor.baseRef;
+    return rebased ? await extractSession(cwd, opts) : session;
+  } catch (error) {
+    if (!(error instanceof BranchMovedError)) throw error;
+    const session = await extractSession(cwd, opts);
+    say(`${session.anchor.branch} moved, re-extracted at ${short(session.anchor.tip)}`);
+    return session;
+  }
+}
+
+/** The latest frozen plan if it still fits the diff, else a valid draft frozen now. Silent. */
+function walkablePlan(session: Session): { version: PlanVersion; plan: ValidPlan } | null {
+  const lastReview = session.lastReview();
+  const stored = session.plans().at(-1);
+  if (stored !== undefined) {
+    const verdict = validatePlan(session.diff, serializePlanFile(stored.file), { lastReview });
+    if (verdict.ok) return { version: stored.version, plan: verdict.plan };
+  }
+  let draft: unknown;
+  try {
+    draft = session.readDraft();
+  } catch (error) {
+    if (error instanceof SessionFileError) return null;
+    throw error;
+  }
+  const verdict = validatePlan(session.diff, draft, { lastReview });
+  return verdict.ok ? { version: session.freeze(verdict.plan), plan: verdict.plan } : null;
+}
+
+function hasApiCredentials(): boolean {
+  return Boolean(process.env["ANTHROPIC_API_KEY"] || process.env["ANTHROPIC_AUTH_TOKEN"]);
+}
+
+async function walk(cwd: string, args: Args): Promise<number> {
+  const session = await openForWalk(cwd, args);
+  let latest = walkablePlan(session);
+  if (latest === null) {
+    if (!hasApiCredentials()) {
+      say(
+        `no plan for ${session.anchor.branch} yet, and neither ANTHROPIC_API_KEY nor ANTHROPIC_AUTH_TOKEN is set to ask the API for one.`,
+      );
+      say("Have a coding agent follow the prompt, then walk again:");
+      say(`  follow-me prompt --walk${branchFlag(args)}`);
+      say(`  follow-me walk${branchFlag(args)}`);
+      return 1;
+    }
+    const drafted = await draftWithApi(session, cwd, "walk", args);
+    if (drafted === null) return 1;
+    latest = { version: session.freeze(drafted), plan: drafted };
+  }
+  if (alreadyReviewed(session, latest.version, args)) return 1;
+  const review = await serve(session, "walk", latest, args);
+  const saved = join(session.dir, "reviews", `v${latest.version}.json`);
+  say(
+    `code review saved to ${relative(cwd, saved)} with ${plural(review.comments.length, "comment")}`,
+  );
+  say(`\`follow-me feedback${branchFlag(args)}\` prints it as a code review for the author`);
+  return 0;
+}
+
+async function feedback(cwd: string, args: Args): Promise<number> {
+  const session = await openSession(cwd, sessionOpts(args));
   const stored = session.reviews().at(-1);
   if (stored === undefined) {
     console.error("follow-me: no review yet, run `follow-me review` first");
@@ -377,24 +490,28 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
         return 0;
       }
       case "check":
-        return await check(cwd, parseArgs(rest, {}));
+        return await check(cwd, parseArgs(rest, { values: ["branch"] }));
       case "apply":
         return await apply(cwd, parseArgs(rest, { values: ["name"], flags: ["force"] }));
       case "status":
         parseArgs(rest, {});
         return await status(cwd);
       case "prompt": {
-        parseArgs(rest, {});
-        process.stdout.write(renderPrompt(promptInput(await openSession(cwd), "split")));
+        const args = parseArgs(rest, { values: ["branch"], flags: ["walk"] });
+        const session = await openSession(cwd, sessionOpts(args));
+        process.stdout.write(renderPrompt(promptInput(session, modeOf(args), args)));
         return 0;
       }
       case "plan":
-        return await plan(cwd, parseArgs(rest, { values: ["model"] }));
+        return await plan(cwd, parseArgs(rest, { values: ["model", "branch"], flags: ["walk"] }));
       case "review":
         return await review(cwd, parseArgs(rest, { values: ["port"], flags: ["no-open"] }));
+      case "walk": {
+        const spec = { values: ["base", "branch", "model", "port"], flags: ["no-open"] };
+        return await walk(cwd, parseArgs(rest, spec));
+      }
       case "feedback":
-        parseArgs(rest, {});
-        return await feedback(cwd);
+        return await feedback(cwd, parseArgs(rest, { values: ["branch"] }));
       case undefined:
       case "help":
       case "--help":

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
+import { readFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -9,9 +11,33 @@ import { makeFixtureRepo } from "./fixture-repo.ts";
 
 const BIN = fileURLToPath(new URL("../bin/follow-me.ts", import.meta.url));
 
+/** Without API credentials, so no test can reach the Anthropic API. */
+const OFFLINE = Object.fromEntries(
+  Object.entries(process.env).filter(([k]) => !k.startsWith("ANTHROPIC_")),
+);
+
 function run(dir: string, ...args: string[]) {
-  const r = spawnSync(BIN, args, { cwd: dir, encoding: "utf8" });
+  const r = spawnSync(BIN, args, { cwd: dir, encoding: "utf8", env: OFFLINE });
   return { code: r.status, out: r.stdout, err: r.stderr };
+}
+
+async function freePort(): Promise<number> {
+  const server = createServer();
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  server.close();
+  await once(server, "close");
+  assert.ok(address !== null && typeof address !== "string");
+  return address.port;
+}
+
+function writeWholeDraft(dir: string, base: string, tip: string, units: readonly string[]) {
+  const commits = [{ message: "feat: everything", narration: "I write it all at once.", units }];
+  writeFileSync(
+    join(dir, ".follow-me", "feature", "draft.json"),
+    JSON.stringify({ schema: "follow-me/plan@1", base, tip, commits, responses: [] }),
+  );
 }
 
 function git(dir: string, ...args: string[]): string {
@@ -116,4 +142,98 @@ test("extract, check, apply and status drive the whole flow from the command lin
   assert.equal(prompt.code, 0, prompt.err);
   assert.match(prompt.out, /^# follow-me: plan the commits\n/);
   assert.match(prompt.out, /## Previous plan/);
+});
+
+test("prompt --walk writes for a reviewer and names the branch in the check command", (t) => {
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  git(repo.dir, "checkout", "-q", "main");
+  const prompt = run(repo.dir, "prompt", "--walk", "--branch", "feature");
+  assert.equal(prompt.code, 0, prompt.err);
+  assert.match(prompt.out, /^# follow-me: tell the story of this branch\n/);
+  assert.ok(
+    prompt.out.includes("The reader is a reviewer meeting this branch for the first time."),
+  );
+  assert.ok(prompt.out.includes("Check your work with `follow-me check --branch feature`"));
+});
+
+test("walk without a plan or API credentials prints the two commands to run instead", (t) => {
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  assert.deepEqual(run(repo.dir, "walk", "--no-open"), {
+    code: 1,
+    out: [
+      "no plan for feature yet, and neither ANTHROPIC_API_KEY nor ANTHROPIC_AUTH_TOKEN is set to ask the API for one.",
+      "Have a coding agent follow the prompt, then walk again:",
+      "  follow-me prompt --walk",
+      "  follow-me walk",
+      "",
+    ].join("\n"),
+    err: "",
+  });
+
+  writeFileSync(join(repo.dir, "notes.txt"), "moved\n");
+  git(repo.dir, "commit", "-qam", "move");
+  const moved = run(repo.dir, "walk", "--no-open", "--branch", "feature");
+  assert.equal(moved.code, 1);
+  const lines = moved.out.split("\n");
+  assert.equal(
+    lines[0],
+    `feature moved, re-extracted at ${git(repo.dir, "rev-parse", "--short=12", "HEAD")}`,
+  );
+  assert.deepEqual(lines.slice(-3), [
+    "  follow-me prompt --walk --branch feature",
+    "  follow-me walk --branch feature",
+    "",
+  ]);
+});
+
+test("walk serves a frozen plan in walk mode and saves a code review on end", async (t) => {
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  assert.equal(run(repo.dir, "extract").code, 0);
+  const diff = await loadDiff(repo.dir, "main", "feature");
+  writeWholeDraft(repo.dir, repo.base, repo.branch, [...diff.units.keys()]);
+  assert.equal(run(repo.dir, "apply").code, 0);
+
+  const port = await freePort();
+  const child = spawn(BIN, ["walk", "--no-open", "--port", String(port)], {
+    cwd: repo.dir,
+    env: OFFLINE,
+  });
+  t.after(() => child.kill());
+  const exited = once(child, "exit");
+  let out = "";
+  child.stdout.setEncoding("utf8");
+  const url = await new Promise<string>((resolve, reject) => {
+    child.stdout.on("data", (chunk: string) => {
+      out += chunk;
+      const found = /follow-me code review: (http:\/\/\S+)\n/.exec(out)?.[1];
+      if (found !== undefined) resolve(found);
+    });
+    child.on("exit", (code) => reject(new Error(`walk exited ${code} before listening: ${out}`)));
+  });
+  assert.equal(url, `http://127.0.0.1:${port}/`);
+
+  const state = JSON.parse(await (await fetch(new URL("/api/state", url))).text());
+  assert.equal(state.mode, "walk");
+  assert.equal(state.commits[0].narration, "I write it all at once.");
+  const ended = await fetch(new URL("/api/end", url), { method: "POST" });
+  assert.equal(ended.status, 200);
+  const [code] = await exited;
+  assert.equal(code, 0);
+  assert.equal(
+    out.split("\n").slice(1).join("\n"),
+    [
+      "code review saved to .follow-me/feature/reviews/v1.json with 0 comments",
+      "`follow-me feedback` prints it as a code review for the author",
+      "",
+    ].join("\n"),
+  );
+  const review = JSON.parse(
+    readFileSync(join(repo.dir, ".follow-me", "feature", "reviews", "v1.json"), "utf8"),
+  );
+  assert.equal(review.mode, "walk");
+  assert.equal(review.planVersion, 1);
+  assert.equal(run(repo.dir, "feedback").out, "# Code review\n\nThe reviewer left no comments.\n");
 });
