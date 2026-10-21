@@ -1301,3 +1301,31 @@ body.index {
 .kind select {
   margin-left: auto;
 }
+
+.done-card.wide {
+  width: min(820px, 100%);
+}
+
+.report-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.report-head button {
+  margin-left: auto;
+}
+
+.report {
+  margin: 0;
+  max-height: 38vh;
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  font: 12.5px / 1.5 var(--font-mono);
+  text-align: left;
+  white-space: pre-wrap;
+}

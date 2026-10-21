@@ -50,6 +50,7 @@ import {
   kindCounts,
   statusLine,
 } from "/questions.js";
+import { endSummary, reportPath } from "/summary.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -1862,19 +1863,31 @@ function hasUnsentText() {
   return [...drafts.values()].some((text) => text.trim() !== "");
 }
 
-/** "2 comments on 2 commits and 1 on the whole plan", or "No comments". */
+/** What the review holds, in words: comments, questions, kept concerns, unread answers. */
 function commentSummary() {
-  const onCommits = state.comments.filter((c) => c.anchor.kind !== "plan");
-  const general = state.comments.length - onCommits.length;
-  const commits = new Set(onCommits.map((c) => c.anchor.commit)).size;
-  const parts = [];
-  if (onCommits.length > 0) {
-    parts.push(
-      `${onCommits.length} comment${onCommits.length === 1 ? "" : "s"} on ${commits} commit${commits === 1 ? "" : "s"}`,
-    );
-  }
-  if (general > 0) parts.push(`${general} on the whole ${isWalk() ? "branch" : "plan"}`);
-  return parts.length === 0 ? "No comments" : parts.join(" and ");
+  const kept = allConcerns(state.commits).filter(
+    (c) => state.decisions[c.id]?.decision === "kept",
+  ).length;
+  const unresolved = cards.filter((c) => c.status === "answered" && !c.resolved).length;
+  return endSummary({ comments: state.comments, kept, unresolved, walk: isWalk() });
+}
+
+/** The consolidated report as markdown, or null from a server that has none. */
+async function fetchReport() {
+  const res = await fetch(`${sessionPrefix}/api/report`).catch(() => null);
+  return res?.ok ? res.text() : null;
+}
+
+function copyButton(label, text) {
+  const button = el("button", {
+    type: "button",
+    text: label,
+    onclick: async () => {
+      await navigator.clipboard?.writeText(text).catch(() => {});
+      button.textContent = "Copied";
+    },
+  });
+  return button;
 }
 
 /**
@@ -1910,32 +1923,49 @@ async function endReview() {
       state.decisions = { ...state.decisions, [concern.id]: { concern: concern.id, decision } };
     }
   }
-  const { saved } = await api("POST", "/api/end");
+  // The session is gone once it ends, so the report is read first. Nothing changes in between.
+  const markdown = await fetchReport();
+  const summary = commentSummary();
+  ending = true;
+  const { saved } = await api("POST", "/api/end").catch((error) => {
+    ending = false;
+    throw error;
+  });
   player.generation += 1;
   synth?.cancel();
   const at = saved.indexOf(".follow-me/");
+  const shortPath = (path) => (at === -1 ? path : path.slice(at));
   const command = "follow-me feedback";
-  const copy = el("button", {
-    type: "button",
-    text: "Copy",
-    onclick: async () => {
-      await navigator.clipboard?.writeText(command).catch(() => {});
-      copy.textContent = "Copied";
-    },
-  });
   $("done").replaceChildren(
     el(
       "section",
-      { class: "done-card", "aria-labelledby": "done-title" },
+      {
+        class: markdown === null ? "done-card" : "done-card wide",
+        "aria-labelledby": "done-title",
+      },
       el("h1", { id: "done-title", text: isWalk() ? "Code review saved" : "Review saved" }),
-      el("p", { class: "muted", text: `${commentSummary()}.` }),
+      el("p", { class: "muted", text: `${summary}.` }),
       el("p", {}, el("code", { class: "path", text: at === -1 ? saved : saved.slice(at) })),
+      markdown === null
+        ? null
+        : el(
+            "section",
+            { class: "report-box", "aria-label": "Report" },
+            el(
+              "div",
+              { class: "report-head" },
+              el("strong", { text: "Report" }),
+              el("code", { text: shortPath(reportPath(saved)) }),
+              copyButton("Copy markdown", markdown),
+            ),
+            el("pre", { class: "report", tabindex: "0", text: markdown }),
+          ),
       el(
         "p",
         { class: "next" },
         isWalk() ? "The author reads it with " : "Next, run ",
         el("code", { text: command }),
-        copy,
+        copyButton("Copy", command),
       ),
       isWalk() ? null : el("p", { class: "muted", text: "or hand the session to your agent." }),
       el("p", {}, el("a", { href: "/", text: "All sessions" })),
@@ -2051,8 +2081,10 @@ async function swapVersion() {
   else render();
 }
 
+let ending = false;
+
 function showEnded() {
-  if (!$("done").hidden) return;
+  if (ending || !$("done").hidden) return;
   player.generation += 1;
   synth?.cancel();
   $("done").replaceChildren(
