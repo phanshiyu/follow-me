@@ -88,7 +88,7 @@ Everything goes to `.follow-me-verify/<run-id>/<feature>/` under the repo root. 
 - Review JSON at `$A/.follow-me/feature/reviews/v1.json`, and the `"$FM" feedback` output.
 - API responses with the HTTP status, for example `curl -s -w ' [%{http_code}]\n' ... | tee -a "$EV/<feature>/api.txt"`.
 
-Proof standards. Exercise the real path, the CLI or the page API, never a test-only setter or a hand-edited session file. Capture the action and the state after it. Verify side effects (refs, files, the lock, the server record) beside the visible output. `--dry-run` and `--no-open` skip what their names say, and you confirm that by looking, for example that `install --dry-run` leaves no file. Nothing here mocks git or the network. `plan` calls the Anthropic API, so this skill never runs it. Write the draft by hand, as `drive.sh` does.
+Proof standards. Exercise the real path, the CLI or the page API, never a test-only setter or a hand-edited session file. Capture the action and the state after it. Verify side effects (refs, files, the lock, the server record) beside the visible output. `--dry-run` and `--no-open` skip what their names say, and you confirm that by looking, for example that `install --dry-run` leaves no file. Nothing here mocks git or the network. `plan` without `--naive` is not a planner, so this skill never relies on it. Write the draft by hand, as `drive.sh` does.
 
 ## Cleanup
 
