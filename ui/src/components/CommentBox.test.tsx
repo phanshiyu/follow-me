@@ -70,3 +70,24 @@ test("a failed save keeps the text and says why; Escape then closes the box", as
     .element(guards().getByRole("option", { name: /^Added 4/ }))
     .toHaveAttribute("aria-selected", "false");
 });
+
+test("when the server goes away the page says so, keeps the draft, and carries on once it answers", async () => {
+  const { server } = await renderReview(aState());
+  await pickRowFour();
+  await userEvent.keyboard("a");
+  await userEvent.keyboard("Why check a first?");
+
+  server.setDown(true);
+  server.drop();
+  await expect.element(page.getByText(/Reconnecting/)).toBeVisible();
+  await expect
+    .element(page.getByRole("textbox", { name: "Ask about line 4" }))
+    .toHaveValue("Why check a first?");
+
+  server.setDown(false);
+  await expect.element(page.getByText(/Reconnecting/)).not.toBeInTheDocument();
+  await expect
+    .element(page.getByRole("textbox", { name: "Ask about line 4" }))
+    .toHaveValue("Why check a first?");
+  expect(page.getByText("This review has ended").elements()).toHaveLength(0);
+});

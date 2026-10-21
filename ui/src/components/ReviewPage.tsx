@@ -97,7 +97,7 @@ function usePageKeys(openStack: () => void, openSheet: () => void, openSubmit: (
 }
 
 function Page() {
-  const { state, error, ended, arrived, dismissArrived } = useReview();
+  const { state, error, ended, arrived, dismissArrived, reconnecting } = useReview();
   const [stackOpen, setStackOpen] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [submitOpen, setSubmitOpen] = useState(false);
@@ -127,6 +127,11 @@ function Page() {
             <PageOptions />
           </div>
         </div>
+        {reconnecting ? (
+          <div className="border-b bg-amber-500/10 px-6 py-1 text-center text-amber-900 text-sm dark:text-amber-100">
+            Reconnecting… your drafts are kept.
+          </div>
+        ) : null}
         {arrived === null ? null : (
           <div
             role="status"

@@ -14,6 +14,10 @@ export type FakeServer = {
   on(method: string, path: string | RegExp, handler: Handler): void;
   /** Delivers one event to every open stream, as the server would after a write. */
   push(event: EventBody): void;
+  /** While down, every request fails as it does when nothing is listening. */
+  setDown(down: boolean): void;
+  /** Closes every open stream the way a dying server does. */
+  drop(): void;
   restore(): void;
 };
 
@@ -39,6 +43,7 @@ export function fakeServer(state: State): FakeServer {
   const calls: Call[] = [];
   const routes: { method: string; path: string | RegExp; handler: Handler }[] = [];
   let seq = state.seq;
+  let down = false;
   const realFetch = globalThis.fetch;
   const realEventSource = globalThis.EventSource;
   const server: FakeServer = {
@@ -49,6 +54,15 @@ export function fakeServer(state: State): FakeServer {
       const data = JSON.stringify({ ...event, seq });
       for (const source of FakeEventSource.open) {
         source.onmessage?.(new MessageEvent("message", { data }));
+      }
+    },
+    setDown: (value) => {
+      down = value;
+    },
+    drop: () => {
+      for (const source of FakeEventSource.open) {
+        source.readyState = FakeEventSource.CLOSED;
+        source.onerror?.();
       }
     },
     restore: () => {
@@ -63,6 +77,7 @@ export function fakeServer(state: State): FakeServer {
   };
   server.on("GET", "/api/state", () => state);
   globalThis.fetch = async (input, init) => {
+    if (down) throw new TypeError("Failed to fetch");
     const url = new URL(String(input), location.href);
     const path = `${url.pathname.replace(/^\/s\/[^/]+/, "")}${url.search}`;
     const method = init?.method ?? "GET";

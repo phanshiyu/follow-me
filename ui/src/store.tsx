@@ -10,7 +10,7 @@ import {
   useState,
 } from "react";
 import { type AnswerCard, answerCards } from "./lib/answers.ts";
-import { api, sessionPrefix } from "./lib/api.ts";
+import { ApiError, api, sessionPrefix } from "./lib/api.ts";
 import { arrival, type Placement, placeCarried } from "./lib/carried.ts";
 import { titleOf } from "./lib/commit.ts";
 import { applyEvent } from "./lib/live.ts";
@@ -22,6 +22,8 @@ type Store = {
   readonly state: State;
   readonly ended: boolean;
   readonly error: string | null;
+  /** The server stopped answering; the page keeps its drafts and retries the same URL. */
+  readonly reconnecting: boolean;
   /** Runs one API call, shows its failure, and says whether it went through. */
   run(action: () => Promise<unknown>): Promise<boolean>;
   refresh(): Promise<void>;
@@ -75,6 +77,7 @@ export function ReviewProvider({ initial, children }: { initial: State; children
   const [state, setState] = useState(initial);
   const [ended, setEnded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [reconnecting, setReconnecting] = useState(false);
   const [arrived, setArrived] = useState<string | null>(null);
   const [events, setEvents] = useState<readonly ServerEvent[]>([]);
   const [seen, setSeen] = useState<ReadonlySet<string>>(new Set());
@@ -106,14 +109,26 @@ export function ReviewProvider({ initial, children }: { initial: State; children
         }
         if (event.type === "ended") setEnded(true);
       };
+      source.onopen = () => setReconnecting(false);
       source.onerror = () => {
-        // A closed stream means the server restarted or the review ended; read state afresh.
-        if (source?.readyState !== EventSource.CLOSED || stopped) return;
-        retry = setTimeout(() => {
+        if (stopped) return;
+        setReconnecting(true);
+        // The browser retries a dropped stream itself; a closed one needs us. Either way the
+        // server may have restarted, so read state afresh once it answers on this URL again.
+        if (source?.readyState !== EventSource.CLOSED) return;
+        const attempt = () => {
           refresh()
-            .then(connect)
-            .catch(() => setEnded(true));
-        }, RECONNECT_MS);
+            .then(() => {
+              setReconnecting(false);
+              connect();
+            })
+            .catch((failure: unknown) => {
+              // The session is gone for good; a server that is merely down is waited for.
+              if (failure instanceof ApiError && failure.status === 404) setEnded(true);
+              else retry = setTimeout(attempt, RECONNECT_MS);
+            });
+        };
+        retry = setTimeout(attempt, RECONNECT_MS);
       };
     };
     connect();
@@ -155,6 +170,7 @@ export function ReviewProvider({ initial, children }: { initial: State; children
       state,
       ended,
       error,
+      reconnecting,
       run,
       refresh,
       arrived: arrived === null ? null : arrival(state.version, state.carried ?? []),
@@ -163,7 +179,7 @@ export function ReviewProvider({ initial, children }: { initial: State; children
       unread,
       markSeen,
     }),
-    [state, ended, error, run, refresh, arrived, events, unread, markSeen],
+    [state, ended, error, reconnecting, run, refresh, arrived, events, unread, markSeen],
   );
   return <ReviewContext value={store}>{children}</ReviewContext>;
 }
