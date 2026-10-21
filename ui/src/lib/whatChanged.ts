@@ -15,12 +15,16 @@ export function newRows(body: readonly HunkLine[], offsets: readonly number[]): 
 }
 
 /**
- * The rows around a place when the new plan names only the place: `count` rows, centred on it,
- * without removed rows.
+ * The rows the new plan has at a place when it names only the place: the run of added rows around
+ * it, or the row alone when it is context. Capped at the diff's size.
  */
-export function nearRows(body: readonly HunkLine[], row: number, count: number): number[] {
-  const start = Math.max(0, Math.min(row - Math.floor((count - 1) / 2), body.length - count));
-  return body.flatMap((line, i) => (i >= start && i < start + count && line.op !== "-" ? [i] : []));
+export function nearRows(body: readonly HunkLine[], row: number): number[] {
+  if (body[row]?.op !== "+") return body[row]?.op === undefined ? [] : [row];
+  let from = row;
+  let to = row;
+  while (body[from - 1]?.op === "+") from -= 1;
+  while (body[to + 1]?.op === "+") to += 1;
+  return Array.from({ length: Math.min(to - from + 1, MAX_DIFF_LINES) }, (_, i) => from + i);
 }
 
 /** A line diff by longest common subsequence, ignoring trailing space. */

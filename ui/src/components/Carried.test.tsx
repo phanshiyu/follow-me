@@ -77,10 +77,10 @@ test("a new plan version shows its banner, keeps the commit in place and carries
   const changed = page.getByRole("article", { name: "Thread" }).first();
   await expect.element(changed.getByText("Code changed since you asked")).toBeVisible();
   await expect.element(changed.getByText("What you commented on, in v2")).toBeVisible();
-  // The v2 quote is the first guard; the rows now at that place hold the second.
+  // The v2 quote is the first guard; the rows now at that place add the second.
   await expect
     .element(changed.getByRole("region", { name: "What changed" }))
-    .toHaveTextContent("- assertNumber(a);+ assertNumber(b);");
+    .toHaveTextContent("assertNumber(a);+ assertNumber(b);");
   await expect.element(changed.getByText("Done, both are checked in one call.")).toBeVisible();
   await expect.element(page.getByText("This code is gone in v3")).toBeVisible();
 

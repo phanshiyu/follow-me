@@ -26,7 +26,7 @@ export function CarriedCard({
   const { row } = placement;
   const picked =
     placement.carried.offsets ??
-    (unit?.kind === "hunk" && row !== null ? nearRows(unit.body, row, lines.length) : []);
+    (unit?.kind === "hunk" && row !== null ? nearRows(unit.body, row) : []);
   const now = unit?.kind === "hunk" ? newRows(unit.body, picked) : [];
   const diff = kind === "changed" ? whatChanged(lines, now) : null;
   const response = state.previous?.responses.find((r) => r.comment === comment.id);

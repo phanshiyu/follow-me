@@ -135,7 +135,7 @@ function Page() {
         {arrived === null ? null : (
           <div
             role="status"
-            className="flex items-center justify-center gap-3 border-b bg-sky-500/10 px-6 py-1 text-sky-900 text-sm dark:text-sky-100"
+            className="absolute top-full left-1/2 mt-2 flex -translate-x-1/2 items-center gap-3 rounded-full border bg-sky-50 py-0.5 pr-1 pl-4 text-sky-900 text-sm shadow-md dark:bg-sky-950 dark:text-sky-100"
           >
             <span>{arrived}</span>
             <Button variant="ghost" size="xs" onClick={dismissArrived}>
