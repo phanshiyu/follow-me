@@ -6,6 +6,7 @@ import {
   renderEvents,
   renderPrompt,
   renderReport,
+  reportItems,
 } from "./prompt.ts";
 import type { Comment, Diff, Review, ServerEvent } from "./types.ts";
 
@@ -191,4 +192,88 @@ test("a thread the agent started reaches the report only once the reviewer answe
   assert.ok(
     text.includes("Agent: same is the shared parser state.\nReviewer replied: Then why mutate it?"),
   );
+});
+
+function reviewOf(comments: Comment[], excluded?: Review["excluded"]): Review {
+  return {
+    schema: "follow-me/review@1",
+    mode: "walk",
+    planVersion: JSON.parse("1"),
+    planHash: "x",
+    endedAt: "2026-01-01T00:00:00.000Z",
+    comments,
+    ...(excluded === undefined ? {} : { excluded }),
+  };
+}
+
+function flagAt(offsets: number[], changes: number[], body: string, id: string): Comment {
+  return JSON.parse(
+    JSON.stringify({
+      id,
+      anchor: { kind: "hunk", unit: "h_aaaaaaaaaaaa", commit: 0, changes, offsets },
+      context: { commitMessage: "Guard", path: "src/lib.js" },
+      body,
+      severity: "major",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    }),
+  );
+}
+
+test("report items give a flag on an added line and a context-line question their branch lines", () => {
+  const flag = flagAt([4], [3], "Check for null.", "c_flagaa");
+  const question: Comment = {
+    ...comment([2], [], "Why keep this?"),
+    id: JSON.parse('"c_questa"'),
+    replies: [
+      { id: JSON.parse('"r_abcdef"'), author: "agent", body: "Shared state.", createdAt: "t" },
+    ],
+  };
+  const opts = { branch: "feature", responses: [] };
+  const items = reportItems(reviewOf([question, flag]), commits(), diff().units, opts);
+  assert.deepEqual(items, [
+    {
+      path: "src/lib.js",
+      oldPath: "src/lib.js",
+      newLine: 2,
+      oldLine: 2,
+      startNewLine: null,
+      startOldLine: null,
+      severity: null,
+      kind: "question",
+      body: "Why keep this?\n\n<details><summary>Answer</summary>\n\nShared state.\n\n</details>",
+      thread: [{ author: "agent", body: "Shared state." }],
+      resolved: false,
+      excluded: false,
+    },
+    {
+      path: "src/lib.js",
+      oldPath: "src/lib.js",
+      newLine: 3,
+      oldLine: null,
+      startNewLine: null,
+      startOldLine: null,
+      severity: "major",
+      kind: "flag",
+      body: "**major**\n\nCheck for null.",
+      thread: [],
+      resolved: false,
+      excluded: false,
+    },
+  ]);
+});
+
+test("an excluded item leaves the main list and shows under Excluded", () => {
+  const flag = flagAt([4], [3], "Check for null.", "c_flagaa");
+  const opts = { branch: "feature", responses: [] };
+  const kept = renderReport(reviewOf([flag]), commits(), diff().units, opts);
+  assert.ok(kept.includes("Reviewer: Check for null."));
+  const left = renderReport(
+    reviewOf([flag], { comments: [flag.id], concerns: [] }),
+    commits(),
+    diff().units,
+    opts,
+  );
+  assert.ok(!left.includes("Reviewer: Check for null."), left);
+  assert.ok(left.includes("## Excluded"), left);
+  assert.ok(left.includes("src/lib.js · line 3 · flag · major: Check for null."), left);
 });

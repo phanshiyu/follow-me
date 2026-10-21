@@ -249,9 +249,9 @@ function renderComment(comment: Comment, ctx: Context): string {
   return lines.join("\n");
 }
 
-const QUESTIONS = `A question is not a request to change the plan. Answer it by explaining, not by moving lines. Where the asked-about lines now live, add or rewrite the \`narration\` of that commit or unit so it answers the question, in plain spoken sentences. When the answer is about flow, structure or order across files, add a \`diagram\` there too. Then write one response with \`"status": "answered"\`, a \`note\` of one to three sentences that answers the question directly, and \`"at"\` naming the commit (1-based) and unit that carry the explanation. Move lines only if answering shows the order itself was wrong. Say so in the note, and answer the question as well. If the diff cannot answer it, use \`"deferred"\` and say what is missing.`;
+const QUESTIONS = `A question is not a request to change the plan. Answer it by explaining, not by moving lines. Where the asked-about lines now live, add or rewrite the \`narration\` (the page shows it as your note) of that commit or unit so it answers the question, in plain sentences. When the answer is about flow, structure or order across files, add a \`diagram\` there too. Then write one response with \`"status": "answered"\`, a \`note\` of one to three sentences that answers the question directly, and \`"at"\` naming the commit (1-based) and unit that carry the explanation. Move lines only if answering shows the order itself was wrong. Say so in the note, and answer the question as well. If the diff cannot answer it, use \`"deferred"\` and say what is missing.`;
 
-const CONCERNS = `You are also a careful reviewer. Add a concern only for something you would raise in a pull request: a bug or unhandled case, a change with no test where one is expected, a name that misleads, or a risky change such as a migration, concurrency or security. Pin it to the change lines with \`lines\`. Say what goes wrong and when, in one or two sentences. Severity: \`blocker\` breaks behaviour or loses data, \`major\` should be fixed before merge, \`minor\` is worth a note. Do not flag style, formatting or taste. Do not repeat the narration. Most commits deserve no concern, and a plan with none is fine. Never write more than one concern per unit. Concerns are in your voice as a reviewer, while narration stays the author's.
+const CONCERNS = `You are also a careful reviewer. Add a concern only for something you would raise in a pull request: a bug or unhandled case, a change with no test where one is expected, a name that misleads, or a risky change such as a migration, concurrency or security. Pin it to the change lines with \`lines\`. Say what goes wrong and when, in one or two sentences. Severity: \`blocker\` breaks behaviour or loses data, \`major\` should be fixed before merge, \`minor\` is worth a note. Do not flag style, formatting or taste. Do not repeat the note. Most commits deserve no concern, and a plan with none is fine. Never write more than one concern per unit. Concerns are in your voice as a reviewer, while the note stays the author's.
 
 A concern is \`{ "severity": "blocker" | "major" | "minor", "kind": "bug" | "missing-test" | "naming" | "risk", "text": "...", "lines": [0, 1] }\`. \`lines\` holds change indices of that unit and is allowed only on a unit ref. Write \`"concerns": [ ... ]\` on a commit, or on a unit written as an object: \`{ "unit": "h_x:0-3", "concerns": [ ... ] }\`. Never write an id; follow-me derives one.`;
 
@@ -264,7 +264,8 @@ const ORDERING = `Order the commits so the story reads naturally:
 - The last commit must bring the tree to exactly the tip, which follows from covering every unit.
 
 Write each commit message as a short imperative title, then a blank line and a body that
-says why. Keep the title to 50 characters or fewer; put detail in the body.`;
+says why. Put the why in the body first, before anything else. Keep the title to 50
+characters or fewer; put detail in the body.`;
 
 const GOALS = {
   split: {
@@ -277,17 +278,16 @@ ${ORDERING}`,
   },
   walk: {
     title: "tell the story of this branch",
-    goal: `The reader is a reviewer meeting this branch for the first time. They will watch it
-being written commit by commit, hear your narration read aloud as each line appears, and
-comment on the code itself. The final tree is fixed. You decide how its change lines are
-grouped and ordered, and what the author is thinking while writing them.
+    goal: `The reader is a reviewer meeting this branch for the first time. They will read it commit
+by commit and comment on the code itself. The final tree is fixed. You decide how its change
+lines are grouped and ordered, and why each step is there.
 
 ${ORDERING}
 
-Give every commit a \`narration\`. Add one to a unit too wherever the why of that hunk is not
-obvious from the commit's narration. Narration should sound like someone thinking aloud at the
-keyboard: first person, present tense, two or three sentences, no markdown. Say why, not what
-the lines already show.`,
+Add a \`narration\` to a commit, or to a unit, only when it says something the commit message
+body does not. The page shows it as your note. A note is one plain paragraph on why, in plain
+text with no markdown. Say why, not what the lines already show. Leave it out when the body
+already says it.`,
   },
 } satisfies Record<PromptInput["mode"], { readonly title: string; readonly goal: string }>;
 
@@ -305,7 +305,7 @@ const FORMAT = (
     { "message": "Add the Token type\\n\\nThe parser needs it.", "units": ["h_0123456789ab", "h_ba9876543210:0-3,7"] },
     {
       "message": "Parse tokens",
-      "narration": "Now that tokens exist I can finally read them. I start with the happy path.",
+      "narration": "Tokens are read in one pass, so the loop below never backtracks.",
       "units": [{ "unit": "h_ba9876543210", "narration": "The loop is boring on purpose." }, "f_0123456789ab"]
     }
   ],
@@ -314,19 +314,18 @@ const FORMAT = (
   ]
 }
 
-\`narration\` is optional on a commit and on a unit. A unit with narration is written as
-\`{ "unit": "<ref>", "narration": "..." }\` instead of the plain ref string.
+\`narration\` is optional on a commit and on a unit, and the page shows it as your note. A unit
+with a note is written as \`{ "unit": "<ref>", "narration": "..." }\` instead of the plain ref string.
 
 \`diagram\` is optional on a commit and on a unit, written the same way:
 \`{ "unit": "<ref>", "diagram": "..." }\`. It is Mermaid source that the review page draws beside
-the code: a commit's diagram while its commit is on screen, a unit's while playback is on that
-unit. Add one only where a picture says what the code and prose cannot: data flowing between
+the code: a commit's diagram under its commit, a unit's under its hunk. Add one only where a picture says what the code and prose cannot: data flowing between
 modules, a state machine, a call graph, or the before and after shape of a structure. Most commits
 need none. The first line names the diagram type, for example:
 
   "diagram": "flowchart LR\\n  parse --> validate --> apply"
 
-Narration stays plain text even when a diagram is present, because it is read aloud.
+The note stays plain text even when a diagram is present.
 \`responses\` is [] when there are no review comments. \`status\` is one of "addressed",
 "declined", "deferred" or, for a question, "answered", and \`note\` says what you did or why not.
 An "answered" response also carries \`"at": { "commit": 3, "unit": "h_x" }\`: the commit, counted from 1,
@@ -820,6 +819,212 @@ function renderPlanFeedback(ctx: Context, comments: readonly Comment[]): string[
   return out;
 }
 
+/** One line of a hunk with its numbers on the original branch: the tip's, and the base's. */
+type NumberedRow = { readonly op: string; readonly tip: number; readonly base: number };
+
+/** The rows `want` picks, numbered as the quoting code numbers them. */
+function numberedRows(
+  hunk: TextHunk,
+  units: ReadonlyMap<UnitId, Unit>,
+  want: (offset: number, change: number | null) => boolean,
+): NumberedRow[] {
+  let tip = tipStartOf(hunk, units);
+  let base = hunk.oldStart + 1;
+  const rows: NumberedRow[] = [];
+  hunk.body.forEach((line, i) => {
+    if (want(i, line.op === " " ? null : line.change)) rows.push({ op: line.op, tip, base });
+    if (line.op !== "-") tip += 1;
+    if (line.op !== "+") base += 1;
+  });
+  return rows;
+}
+
+type Span = {
+  readonly newLine: number | null;
+  readonly oldLine: number | null;
+  readonly startNewLine: number | null;
+  readonly startOldLine: number | null;
+};
+
+const NO_SPAN: Span = { newLine: null, oldLine: null, startNewLine: null, startOldLine: null };
+
+/** The last row names the line: both sides for context, the tip for an addition, the base for a removal. */
+function spanOf(rows: readonly NumberedRow[]): Span {
+  const first = rows[0];
+  const last = rows.at(-1);
+  if (first === undefined || last === undefined) return NO_SPAN;
+  const range = rows.length > 1;
+  return {
+    newLine: last.op === "-" ? null : last.tip,
+    oldLine: last.op === "+" ? null : last.base,
+    startNewLine: range && first.op !== "-" ? first.tip : null,
+    startOldLine: range && first.op !== "+" ? first.base : null,
+  };
+}
+
+function commentSpan(ctx: Context, c: Comment): Span {
+  const { anchor } = c;
+  if (anchor.kind !== "hunk") return NO_SPAN;
+  const hunk = ctx.units.get(anchor.unit);
+  if (hunk?.kind !== "hunk") return NO_SPAN;
+  const { offsets, changes } = anchor;
+  if (offsets !== undefined)
+    return spanOf(numberedRows(hunk, ctx.units, (i) => offsets.includes(i)));
+  return spanOf(
+    numberedRows(
+      hunk,
+      ctx.units,
+      (_, n) => n !== null && (changes === null || changes.includes(n)),
+    ),
+  );
+}
+
+function concernSpan(ctx: Context, concern: PlacedConcern): Span {
+  const hunk = concern.unit === undefined ? undefined : ctx.units.get(concern.unit);
+  if (hunk?.kind !== "hunk") return NO_SPAN;
+  const lines = concern.lines;
+  return spanOf(
+    numberedRows(
+      hunk,
+      ctx.units,
+      (_, n) => n !== null && (lines === undefined || lines.includes(n)),
+    ),
+  );
+}
+
+export type ReportThreadEntry = { readonly author: "agent" | "reviewer"; readonly body: string };
+
+/** One thing to carry to the merge request. Line numbers are the original branch's. */
+export type ReportItem = Span & {
+  readonly path: string | null;
+  readonly oldPath: string | null;
+  readonly severity: Severity | null;
+  readonly kind: "flag" | "concern" | "question";
+  readonly body: string;
+  readonly thread: readonly ReportThreadEntry[];
+  readonly resolved: boolean;
+  readonly excluded: boolean;
+};
+
+/** The item with the label the markdown uses to point at it. */
+type Collected = { readonly item: ReportItem; readonly where: Where };
+
+function threadOf(c: Comment): ReportThreadEntry[] {
+  return (c.replies ?? []).map((r) => ({ author: r.author, body: r.body }));
+}
+
+function withSeverity(severity: Severity | null, text: string): string {
+  return severity === null ? text : `**${severity}**\n\n${text}`;
+}
+
+function collectItems(
+  review: Review,
+  commits: readonly ReportCommit[],
+  units: ReadonlyMap<UnitId, Unit>,
+  responses: readonly CommentResponse[],
+): Collected[] {
+  const ctx: Context = { commits, units };
+  const fromReviewer = review.comments.filter((c) => c.author !== "agent");
+  const walk = review.mode === "walk";
+  const rest = fromReviewer.filter((c) => c.kind !== "question");
+  const issues = walk ? rest : rest.filter((c) => c.severity !== undefined);
+  const noComments = new Set<string>(review.excluded?.comments ?? []);
+  const noConcerns = new Set<string>(review.excluded?.concerns ?? []);
+  const resolved = new Set<string>(review.resolved ?? []);
+  const out: Collected[] = buildItems(ctx, keptConcerns(review, commits), issues).map((it) => {
+    const { kept } = it;
+    const first = it.comments[0];
+    if (kept !== null) {
+      const note = kept.note === null ? "" : `\n\nReviewer: ${kept.note}`;
+      const thread = it.comments.flatMap((c): ReportThreadEntry[] => [
+        { author: "reviewer", body: c.body },
+        ...threadOf(c),
+      ]);
+      return {
+        where: it.where,
+        item: {
+          ...concernSpan(ctx, kept.concern),
+          path: it.where.path,
+          oldPath: it.where.path,
+          severity: it.severity,
+          kind: "concern",
+          body: withSeverity(it.severity, `${kept.concern.text}${note}`),
+          thread,
+          resolved: false,
+          excluded: noConcerns.has(kept.concern.id),
+        },
+      };
+    }
+    if (first === undefined) throw new Error("an item with neither a concern nor a comment");
+    return {
+      where: it.where,
+      item: {
+        ...commentSpan(ctx, first),
+        path: it.where.path,
+        oldPath: it.where.path,
+        severity: it.severity,
+        kind: "flag",
+        body: withSeverity(it.severity, first.body),
+        thread: threadOf(first),
+        resolved: resolved.has(first.id),
+        excluded: noComments.has(first.id),
+      },
+    };
+  });
+  for (const q of fromReviewer.filter((c) => c.kind === "question")) {
+    const where = whereComment(ctx, q);
+    const answer = responses.find((r) => r.comment === q.id)?.note;
+    const lastAgent = (q.replies ?? []).findLast((r) => r.author === "agent")?.body;
+    const said = answer ?? lastAgent;
+    const details =
+      said === undefined ? "" : `\n\n<details><summary>Answer</summary>\n\n${said}\n\n</details>`;
+    out.push({
+      where,
+      item: {
+        ...commentSpan(ctx, q),
+        path: where.path,
+        oldPath: where.path,
+        severity: q.severity ?? null,
+        kind: "question",
+        body: `${q.body}${details}`,
+        thread: threadOf(q),
+        resolved: resolved.has(q.id),
+        excluded: noComments.has(q.id),
+      },
+    });
+  }
+  return sortItems(out, units);
+}
+
+/**
+ * The items of a review for the merge request, in file order then line order, general items last.
+ * Excluded ones are present and marked; whoever posts them skips those.
+ */
+export function reportItems(
+  review: Review,
+  commits: readonly ReportCommit[],
+  units: ReadonlyMap<UnitId, Unit>,
+  opts: ReportOptions,
+): ReportItem[] {
+  return collectItems(review, commits, units, opts.responses).map((c) => c.item);
+}
+
+/** A short list of what the reviewer left out, so nothing vanishes without a trace. */
+function renderExcluded(collected: readonly Collected[]): string[] {
+  const left = collected.filter((c) => c.item.excluded);
+  if (left.length === 0) return [];
+  const out = ["## Excluded", "", "The reviewer left these out of the hand-off:", ""];
+  for (const { item, where } of left) {
+    const place = where.path === null ? where.label : `${where.path} · ${where.label}`;
+    const first = item.body.split("\n").find((l) => l !== "" && !l.startsWith("**")) ?? "";
+    out.push(
+      `- ${place} · ${item.kind}${item.severity === null ? "" : ` · ${item.severity}`}: ${first}`,
+    );
+  }
+  out.push("");
+  return out;
+}
+
 export type ReportOptions = {
   readonly branch: string;
   /** Responses from plans after the review, which answer its questions. */
@@ -834,6 +1039,26 @@ export type ReportOptions = {
  * Concerns the reviewer has not decided are left out, as are those dismissed.
  */
 export function renderReport(
+  full: Review,
+  commits: readonly ReportCommit[],
+  units: ReadonlyMap<UnitId, Unit>,
+  opts: ReportOptions,
+): string {
+  const excluded = full.excluded;
+  if (excluded === undefined) return renderIncluded(full, commits, units, opts);
+  const noComments = new Set<string>(excluded.comments);
+  const noConcerns = new Set<string>(excluded.concerns);
+  const review: Review = {
+    ...full,
+    comments: full.comments.filter((c) => !noComments.has(c.id)),
+    concerns: (full.concerns ?? []).filter((d) => !noConcerns.has(d.concern)),
+  };
+  const tail = renderExcluded(collectItems(full, commits, units, opts.responses));
+  const main = renderIncluded(review, commits, units, opts);
+  return tail.length === 0 ? main : `${main}${main.endsWith("\n") ? "" : "\n"}${tail.join("\n")}`;
+}
+
+function renderIncluded(
   review: Review,
   commits: readonly ReportCommit[],
   units: ReadonlyMap<UnitId, Unit>,
@@ -927,6 +1152,8 @@ function renderEvent(event: ServerEvent, ctx: Context | null): string[] {
       return [`- question ${event.commentId} marked ${event.resolved ? "resolved" : "open again"}`];
     case "version":
       return [`- plan v${event.version} is now open`];
+    case "submitted":
+      return ["- the reviewer submitted the review; the held flags follow as new comments"];
     case "ended":
       return [`- the reviewer ended the review; the report is next to ${event.review}`];
     default: {

@@ -106,8 +106,8 @@ export type Selection =
   | { readonly kind: "rest" }
   | { readonly kind: "lines"; readonly changes: readonly number[] };
 /**
- * narration is what the author is thinking as this unit is written, spoken during playback.
- * diagram is Mermaid source the page draws beside the code while playback is on this unit.
+ * narration is the agent's note on why this unit is written the way it is.
+ * diagram is Mermaid source the page draws under this unit's lines.
  */
 export type UnitRef = {
   readonly unit: UnitId;
@@ -140,8 +140,8 @@ export type PlacedConcern = Concern & {
 };
 
 /**
- * narration is the author thinking aloud while writing this commit: first person, present tense.
- * diagram is Mermaid source for the shape the commit builds, drawn beside its code.
+ * narration is the agent's note on why this commit exists, shown beside its message.
+ * diagram is Mermaid source for the shape the commit builds, drawn under its header.
  */
 export type PlannedCommit = {
   readonly message: string;
@@ -292,6 +292,11 @@ export type Comment = {
   /** The question this one asks again. */
   readonly follows?: CommentId;
   readonly severity?: Severity;
+  /**
+   * A flag made on the page and not yet submitted. It is stored and autosaved, but the agent does
+   * not see it until the reviewer submits. A question is never pending.
+   */
+  readonly pending?: true;
   readonly replies?: readonly Reply[];
   /** Absent means the reviewer. "agent" is a thread the agent started, for example an explanation. */
   readonly author?: "agent";
@@ -326,6 +331,14 @@ export type Review = {
   readonly concerns?: readonly ConcernDecision[];
   /** Questions from earlier versions the reviewer marked resolved during this review. */
   readonly resolved?: readonly CommentId[];
+  /** Items the reviewer left out of the hand-off to the merge request. */
+  readonly excluded?: Excluded;
+};
+
+/** Comments and agent concerns kept out of the report's main list and of `report --json`. */
+export type Excluded = {
+  readonly comments: readonly CommentId[];
+  readonly concerns: readonly ConcernId[];
 };
 
 /** The autosave of an unfinished review, in the same shape its Review will have. */
@@ -333,6 +346,7 @@ export type ReviewDraft = {
   readonly comments: readonly Comment[];
   readonly concerns: readonly ConcernDecision[];
   readonly resolved: readonly CommentId[];
+  readonly excluded: Excluded;
 };
 
 /** The version before a swap or a fresh open: its comments and what the new plan answered. */
@@ -357,6 +371,8 @@ export type ServerEvent = { readonly seq: number } & (
     }
   | { readonly type: "resolved"; readonly commentId: CommentId; readonly resolved: boolean }
   | { readonly type: "version"; readonly version: PlanVersion; readonly hash: string }
+  /** The reviewer released every pending flag; the comment events that follow carry them. */
+  | { readonly type: "submitted" }
   | { readonly type: "ended"; readonly review: string }
 );
 
@@ -409,4 +425,6 @@ export type HostedSummary = {
   readonly mode: ReviewMode;
   readonly version: PlanVersion;
   readonly comments: number;
+  /** ISO time this session was registered; with the id it names one event log. */
+  readonly openedAt: string;
 };

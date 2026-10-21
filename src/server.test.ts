@@ -379,6 +379,7 @@ test("one server hosts two sessions, lists them, and saves each review in its ow
       mode: "split",
       version: 3,
       comments: 1,
+      openedAt: first.summary.openedAt,
     },
     {
       id: sessionIdOf(two),
@@ -388,6 +389,7 @@ test("one server hosts two sessions, lists them, and saves each review in its ow
       mode: "split",
       version: 3,
       comments: 2,
+      openedAt: second.summary.openedAt,
     },
   ]);
   const index = await (await fetch(host.url)).text();
@@ -1004,4 +1006,103 @@ test("offsets outside the hunk body, unsorted or on a file unit are refused and 
   assert.equal(await readFile(join(run.dir, "v3.draft.json"), "utf8"), before);
   const state = await jsonOf(await fetch(new URL("api/state", run.url)));
   assert.equal(state.comments.length, 1);
+});
+
+test("a pending flag is held from the agent until submit; a question is never held", async (t) => {
+  const run = await start(t, twoCommitState());
+  const agentEvents = async (since: number) =>
+    jsonOf(await fetch(new URL(`api/events?since=${since}&timeout=0&audience=agent`, run.url)));
+
+  const flag = await jsonOf(
+    await post(run.url, "api/comments", {
+      ...newComment("guard this"),
+      severity: "major",
+      pending: true,
+    }),
+  );
+  assert.deepEqual(await agentEvents(0), { seq: 1, events: [] });
+  // The page still receives it, and it is autosaved.
+  const page = await jsonOf(await fetch(new URL("api/events?since=0&timeout=0", run.url)));
+  assert.equal(page.events.length, 1);
+  const draft = JSON.parse(await readFile(join(run.dir, "v3.draft.json"), "utf8"));
+  assert.equal(draft.comments[0].pending, true);
+  const live = await (await fetch(new URL("api/report", run.url))).text();
+  assert.doesNotMatch(live, /guard this/);
+
+  const question = await jsonOf(
+    await post(run.url, "api/comments", { ...newComment("why?"), kind: "question" }),
+  );
+  const seen = await agentEvents(0);
+  assert.deepEqual(
+    seen.events.map((e: { type: string; comment: { id: string } }) => [e.type, e.comment.id]),
+    [["comment", question.id]],
+  );
+  const refused = await post(run.url, "api/comments", {
+    ...newComment("x"),
+    kind: "question",
+    pending: true,
+  });
+  assert.equal(refused.status, 400);
+
+  const submitted = await jsonOf(await post(run.url, "api/submit", {}));
+  assert.deepEqual(submitted, { released: 1 });
+  const after = await agentEvents(0);
+  assert.deepEqual(
+    after.events.map((e: { type: string }) => e.type),
+    ["comment", "submitted", "comment"],
+  );
+  assert.equal(after.events[2].comment.id, flag.id);
+  assert.equal("pending" in after.events[2].comment, false);
+  assert.match(await (await fetch(new URL("api/report", run.url))).text(), /guard this/);
+  assert.deepEqual(await jsonOf(await post(run.url, "api/submit", {})), { released: 0 });
+});
+
+test("ending the review submits pending flags into the saved review", async (t) => {
+  const run = await start(t, twoCommitState());
+  await post(run.url, "api/comments", { ...newComment("held"), severity: "minor", pending: true });
+  await post(run.url, "api/end", {});
+  const review = await run.done;
+  assert.equal(review?.comments.length, 1);
+  assert.equal(review?.comments[0]?.pending, undefined);
+});
+
+test("exclusions persist in the draft and the review, and the JSON report marks them", async (t) => {
+  const run = await start(t, stateWithConcern());
+  const { id } = await jsonOf(
+    await post(run.url, "api/comments", { ...newComment("guard"), severity: "major" }),
+  );
+  const asked = await jsonOf(
+    await post(run.url, "api/comments", { ...newComment("why?"), kind: "question" }),
+  );
+  const none = await post(run.url, "api/excluded", { comment: id });
+  assert.equal(none.status, 400);
+  const missing = await post(run.url, "api/excluded", { comment: "c_zzzzzz", excluded: true });
+  assert.equal(missing.status, 404);
+
+  const set = await jsonOf(
+    await post(run.url, "api/excluded", { comment: asked.id, excluded: true }),
+  );
+  assert.deepEqual(set, { comments: [asked.id], concerns: [] });
+  await post(run.url, "api/excluded", { concern: CONCERN, excluded: true });
+  assert.deepEqual((await jsonOf(await fetch(new URL("api/state", run.url)))).excluded, {
+    comments: [asked.id],
+    concerns: [CONCERN],
+  });
+  const draft = JSON.parse(await readFile(join(run.dir, "v3.draft.json"), "utf8"));
+  assert.deepEqual(draft.excluded, { comments: [asked.id], concerns: [CONCERN] });
+
+  const items = await jsonOf(await fetch(new URL("api/report?format=json", run.url)));
+  assert.deepEqual(
+    items.map((i: { kind: string; excluded: boolean }) => [i.kind, i.excluded]),
+    [
+      ["flag", false],
+      ["question", true],
+    ],
+  );
+  assert.equal(items[0].path, "src/a.ts");
+
+  await post(run.url, "api/excluded", { comment: asked.id, excluded: false });
+  await post(run.url, "api/end", {});
+  const review = await run.done;
+  assert.deepEqual(review?.excluded, { comments: [], concerns: [CONCERN] });
 });

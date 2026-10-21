@@ -153,7 +153,7 @@ async function loadHosted(
     if (!verdict.ok) {
       throw new RegistrationError(`plan v${version} no longer fits ${branch}; check it again`);
     }
-    const reviewsDir = session.reviewsDir(mode);
+    const reviewsDir = session.reviewsDir();
     const comments = await loadDraftComments(reviewsDir, version);
     const prior = session.priorReview(mode, version);
     const previous =
@@ -164,7 +164,7 @@ async function loadHosted(
             comments: prior.comments,
             responses: stored.file.responses,
           };
-    const command = mode === "walk" ? "walk" : "review";
+    const command = "review";
     // A version swap runs inside the server that already owns this session's lock.
     const release =
       held ??
@@ -286,11 +286,12 @@ async function call(port: number, method: string, path: string, body?: unknown):
 
 function parseSummary(raw: unknown): HostedSummary | null {
   if (!isFields(raw)) return null;
-  const { id, url, repo, branch, mode, version, comments } = raw;
+  const { id, url, repo, branch, mode, version, comments, openedAt } = raw;
   if (typeof url !== "string" || typeof repo !== "string") return null;
   if (typeof branch !== "string" || (mode !== "split" && mode !== "walk")) return null;
   if (!isSessionId(id) || !isPlanVersion(version) || typeof comments !== "number") return null;
-  return { id, url, repo, branch, mode, version, comments };
+  if (typeof openedAt !== "string") return null;
+  return { id, url, repo, branch, mode, version, comments, openedAt };
 }
 
 /** Registers a session with the server on this port; the same session yields the same URL. */
@@ -324,7 +325,7 @@ export async function pollEvents(
   since: number,
   timeoutMs: number,
 ) {
-  const path = `${summary.url}api/events?since=${since}&timeout=${timeoutMs}`;
+  const path = `${summary.url}api/events?since=${since}&timeout=${timeoutMs}&audience=agent`;
   const batch = parseEventBatch(await call(port, "GET", path));
   if (typeof batch === "string")
     throw new RegistrationError(`the server sent bad events: ${batch}`);
@@ -341,7 +342,9 @@ export async function followEvents(
   since: number,
   onEvent: (event: ServerEvent) => void,
 ): Promise<void> {
-  const res = await fetch(`${sessionUrl(port, summary)}api/events/stream?since=${since}`);
+  const res = await fetch(
+    `${sessionUrl(port, summary)}api/events/stream?since=${since}&audience=agent`,
+  );
   if (!res.ok || res.body === null) {
     throw new RegistrationError(`GET api/events/stream failed with ${res.status}`);
   }
@@ -392,8 +395,12 @@ export async function postComment(
 }
 
 /** The consolidated report of the hosted session as it stands. */
-export async function fetchReport(port: number, summary: HostedSummary): Promise<string> {
-  const res = await fetch(`${sessionUrl(port, summary)}api/report`);
+export async function fetchReport(
+  port: number,
+  summary: HostedSummary,
+  format: "markdown" | "json" = "markdown",
+): Promise<string> {
+  const res = await fetch(`${sessionUrl(port, summary)}api/report?format=${format}`);
   if (!res.ok) throw new RegistrationError(`GET api/report failed with ${res.status}`);
   return res.text();
 }

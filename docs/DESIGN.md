@@ -159,25 +159,25 @@ A `--port` held by our own server means attach. Held by anything else, the serve
 free port and the CLI prints `port N is in use by another program, using M`. Binding never fails
 with EADDRINUSE.
 
-## Reviewer mode and playback
+## Reviewer mode
 
-The same engine serves a second persona. A reviewer runs `follow-me walk` on a branch someone else
-wrote, watches it being written commit by commit with narration read aloud, and comments on the
-code. Nothing is applied.
+The same engine serves a second persona, chosen by whether a split branch was applied for the
+session: after `apply`, `follow-me review` is the author's review of their own plan; without it, it is
+a reviewer meeting someone else's branch. The reviewer reads the commits in order and comments on the
+code. Nothing is applied and no branch is written. `walk` is an old name for `review`.
 
-Narration lives in the plan. A commit and any unit ref may carry `narration`, so one planner call
-produces both the order and the voice-over, and validation passes it through to
-`ProjectedCommit`. A unit entry with narration serializes as `{ "unit": "h_x:0-3", "narration": … }`;
-without it the entry stays a plain string, so older plans and their hashes are unchanged. The walk
-prompt shares the unit dump and the rules with the split prompt and differs only in its goal.
+A reviewer's plan has no new format. A commit and any unit ref may carry `narration`, which the page
+shows as the agent's note, and validation passes it through to `ProjectedCommit`. A unit entry with a
+note serializes as `{ "unit": "h_x:0-3", "narration": … }`; without it the entry stays a plain string,
+so older plans and their hashes are unchanged. The reviewer prompt shares the unit dump and the rules
+with the split prompt and differs only in its goal: it asks for the why in each commit body first and
+for a note only where it adds to that body.
 
-`Review.mode` is `split` or `walk`, and a file without it reads as `split`. A walk review is a code
-review for the author, not plan feedback, so `lastReview` ignores it: walk comments never reach the
-planner as comments to answer. `follow-me feedback` renders a walk review grouped by file, quoting
-each hunk as it reads in that commit with its line number on the tip. Walk reviews share
-`reviews/vN.json` with plan reviews, so one plan version gets one review of either kind.
-
-Playback is described in the next section.
+`Review.mode` is `split` or `walk` (the wire name of the reviewer's mode), and a file without it reads
+as `split`. A reviewer's review is a code review for the author, not plan feedback, so `lastReview`
+ignores it: its comments never reach the planner as comments to answer. Every review, of either kind,
+is written to `reviews/vN.json`, so one plan version gets one review. Older builds wrote reviewer
+reviews to `reviews/walk/vN.json`; those are still read (`feedback --walk`, `status`).
 
 ## The review page
 
@@ -231,9 +231,16 @@ files stay the durable record written as it goes (`reviews/vN.draft.json`) and a
   else `{ seq, events: [] }` at the timeout. `GET api/events/stream` serves the same log as
   Server-Sent Events: it replays after `since` (or `Last-Event-ID`), pushes each new event, pings every
   15 s and closes after `ended`. Every mutation emits one event: `comment`, `comment-updated`,
-  `comment-deleted`, `reply`, `concern`, `resolved`, `version`, `ended`. `since` beyond the log is a 409,
+  `comment-deleted`, `reply`, `concern`, `resolved`, `version`, `submitted`, `ended`. `since` beyond the log is a 409,
   because a restarted server restarts the count. `api/state` carries the current `seq`, so a page
   that reads state and then polls from it misses nothing.
+- **Held flags.** A change request or rated comment the page creates carries `pending: true`. It is
+  stored, autosaved and sent to the page like any comment, but it is held back from the agent: the CLI
+  reads the log with `audience=agent`, which drops a pending comment's events and everything said
+  under it, and the prompt and the report never see it. A question is never pending, so it reaches
+  `watch` at once. `POST api/submit` clears `pending` on every held flag in one go, emits one
+  `submitted` event and then a `comment` event for each, so an agent that missed them sees them as new.
+  Ending the review submits implicitly, so a saved review never holds a pending flag.
 - **Replies.** `Comment.replies` holds the conversation under a comment, posted to
   `POST api/comments/<cid>/replies` by the agent (`follow-me reply`) or the reviewer. They are
   autosaved and written into the review. A page's `PUT` of a comment never overwrites them.
@@ -265,9 +272,39 @@ files stay the durable record written as it goes (`reviews/vN.draft.json`) and a
 - **Report.** `renderReport` in `prompt.ts` is the one renderer: reviewer comments and the agent's kept
   concerns by file in diff order and by line, severity in each heading, the hunk quoted as that commit
   writes it, both voices, replies under their comment, questions and their answers last. Undecided and
-  dismissed concerns are left out. `follow-me feedback` and `report`, `GET api/report` and the `vN.md`
-  written on end all call it.
+  dismissed concerns are left out, and so are items the reviewer excluded, which close the report under
+  a short "Excluded" list. `follow-me report` (`feedback` is its old name), `GET api/report` and the
+  `vN.md` written on end all call it.
 - **Concerns and questions.** A plan may carry `concerns` on commits and unit refs; validation derives
   `k_` ids, allows one per unit, and the reviewer's decisions live in `Review.concerns`. A comment of
   `kind: "question"` is answered by a response with status `answered` whose `at` points at narration or a
   diagram in the new plan; validation rejects an answer that points at nothing.
+
+## Entry point
+
+The user never types a follow-me command; the agent runs `follow-me` with no command, and each call is
+idempotent and returns. It syncs the skill into every detected harness, opens the session (re-extracting
+if the tip moved), and then does the first thing that applies: if the review is already hosted, it just
+listens; if the draft is invalid or fails the syntax gate, it prints the issues; if there is no plan for
+the tip, it writes `prompt.md` and says where; if the plan already has a review, it prints the report;
+otherwise it applies (author mode) or only freezes (reviewer mode), starts or attaches the server, opens
+the browser on that first launch only, and listens. Mode is a split already applied, else whether the
+configured `user.email` wrote every commit of the branch (`--author` and `--reviewer` override).
+
+Listening long-polls `api/events?audience=agent` for up to `--wait` seconds (default 60) from a cursor
+kept in `cursor.json` beside the session, keyed by the hosted session's id and `openedAt`, so a repeated
+call prints only what is new and a restarted server reads from the start. The agent's own replies, held
+flags and version swaps are not news. A `submitted` or `ended` event ends the loop with the report.
+
+## Hand-off
+
+follow-me never holds a forge token, so the end of a review is a hand-off, not a post. The reviewer
+decides what leaves: `Review.excluded` lists the comment and concern ids to keep out
+(`POST api/excluded { comment | concern, excluded }`, autosaved, written into the review and sent in
+`api/state`). `follow-me report --json` (and `GET api/report?format=json`) prints every item as
+`{ path, oldPath, newLine, oldLine, startNewLine, startOldLine, severity, kind, body, thread, resolved,
+excluded }` in file order. Line numbers are the original branch's: the tip's for an added or context
+row, the base's for a removed one, computed from the hunk and the projected commit as the quoting code
+does. The split's last tree equals the tip, so the numbers are the ones a merge request shows for the
+same base. The agent, not follow-me, then posts the non-excluded items with `glab` or `gh`, after
+checking that the merge request head is the tip (see the skill's "Porting a review").

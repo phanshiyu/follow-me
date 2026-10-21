@@ -13,13 +13,14 @@ import {
   parseNewReply,
 } from "./comments.ts";
 import { isConcernId, isPlanVersion } from "./plan.ts";
-import { renderReport } from "./prompt.ts";
+import { renderReport, reportItems } from "./prompt.ts";
 import { isLockToken } from "./session.ts";
 import type {
   Comment,
   CommentId,
   ConcernDecision,
   ConcernId,
+  Excluded,
   HostedSummary,
   LockToken,
   PlanVersion,
@@ -184,7 +185,7 @@ export async function loadDraft(reviewsDir: string, version: PlanVersion): Promi
     text = await readFile(draftPath(reviewsDir, version), "utf8");
   } catch (error) {
     if (isRecord(error) && error["code"] === "ENOENT") {
-      return { comments: [], concerns: [], resolved: [] };
+      return { comments: [], concerns: [], resolved: [], excluded: { comments: [], concerns: [] } };
     }
     throw error;
   }
@@ -305,7 +306,7 @@ function indexPage(rows: readonly IndexRow[], now: number): string {
     items.length === 0
       ? `    <section class="empty">
       <h1>No sessions yet</h1>
-      <p>Run <code>follow-me review</code> to review a plan, or <code>follow-me walk</code> to read a branch someone else wrote. Each one opens here.</p>
+      <p>Ask your coding agent to review a branch with follow-me. Each review opens here.</p>
       <p><a href="https://github.com/phanshiyu/follow-me#readme">How follow-me works</a></p>
     </section>`
       : `    <h1>Sessions</h1>
@@ -350,6 +351,8 @@ type View = {
   readonly comments: Map<string, Comment>;
   readonly decisions: Map<ConcernId, ConcernDecision>;
   readonly resolved: Set<CommentId>;
+  readonly excludedComments: Set<CommentId>;
+  readonly excludedConcerns: Set<ConcernId>;
   readonly unitIds: ReadonlySet<string>;
   /** Body length of each hunk, the bound for an anchor's row offsets. */
   readonly hunkRows: ReadonlyMap<string, number>;
@@ -366,6 +369,8 @@ function viewOf(registration: Registration, loaded: Loaded, draft: ReviewDraft):
     comments: new Map(state.comments.map((c): [string, Comment] => [c.id, c])),
     decisions: new Map(draft.concerns.map((d): [ConcernId, ConcernDecision] => [d.concern, d])),
     resolved: new Set(draft.resolved),
+    excludedComments: new Set(draft.excluded.comments),
+    excludedConcerns: new Set(draft.excluded.concerns),
     unitIds: new Set(state.units.map((u) => u.id)),
     hunkRows: new Map(
       state.units.flatMap((u): [string, number][] =>
@@ -393,6 +398,31 @@ function mintReplyId(taken: ReadonlySet<string>): ReplyId {
 
 /** Distributes over the union, so each event type keeps its own fields. */
 type EventBody = ServerEvent extends infer E ? (E extends unknown ? Omit<E, "seq"> : never) : never;
+
+/**
+ * What the agent may see of the log: a pending flag is held back with everything said about it,
+ * and reaches the agent as an ordinary "comment" event when the reviewer submits.
+ */
+function forAgent(log: readonly ServerEvent[]): ServerEvent[] {
+  const held = new Set<CommentId>();
+  const out: ServerEvent[] = [];
+  for (const event of log) {
+    if (event.type === "comment" || event.type === "comment-updated") {
+      const { comment } = event;
+      if (comment.pending === true) {
+        held.add(comment.id);
+        continue;
+      }
+      if (held.delete(comment.id)) out.push({ ...event, type: "comment" });
+      else out.push(event);
+    } else if (event.type === "comment-deleted") {
+      if (!held.delete(event.id)) out.push(event);
+    } else if (event.type === "reply") {
+      if (!held.has(event.commentId)) out.push(event);
+    } else out.push(event);
+  }
+  return out;
+}
 
 const DEFAULT_POLL_MS = 25_000;
 const MAX_POLL_MS = 60_000;
@@ -422,17 +452,24 @@ function hostSession(
     for (const wake of [...waiters]) wake();
     for (const listener of [...listeners]) listener();
   };
-  const waitForEvents = (since: number, timeoutMs: number, signal: AbortSignal) =>
+  const seen = (agent: boolean): readonly ServerEvent[] => (agent ? forAgent(events) : events);
+  const waitForEvents = (since: number, timeoutMs: number, signal: AbortSignal, agent: boolean) =>
     new Promise<{ readonly seq: number; readonly events: readonly ServerEvent[] }>((resolve) => {
-      const answer = () => resolve({ seq: events.length, events: events.slice(since) });
-      if (events.length > since || timeoutMs === 0 || signal.aborted) return answer();
+      const news = () => seen(agent).filter((e) => e.seq > since);
+      const answer = () => resolve({ seq: events.length, events: news() });
+      if (news().length > 0 || timeoutMs === 0 || signal.aborted) return answer();
       const wake = () => {
+        if (news().length === 0 && !signal.aborted) return;
         clearTimeout(timer);
         waiters.delete(wake);
         signal.removeEventListener("abort", wake);
         answer();
       };
-      const timer = setTimeout(wake, timeoutMs);
+      const timer = setTimeout(() => {
+        waiters.delete(wake);
+        signal.removeEventListener("abort", wake);
+        answer();
+      }, timeoutMs);
       waiters.add(wake);
       signal.addEventListener("abort", wake);
     });
@@ -443,6 +480,11 @@ function hostSession(
     if (ending) throw new HttpError(409, "this review is already ending");
     if (swapping) throw new HttpError(409, "the session is switching plan versions; try again");
   };
+  /** The exclusions as stored, or null when nothing is excluded. */
+  const excludedOf = (): Excluded | null =>
+    view.excludedComments.size + view.excludedConcerns.size === 0
+      ? null
+      : { comments: [...view.excludedComments], concerns: [...view.excludedConcerns] };
   // Writes are chained so two rapid edits never race on the same file.
   let writes: Promise<void> = Promise.resolve();
   const saveDraft = (): Promise<void> => {
@@ -450,6 +492,7 @@ function hostSession(
     const file = view.draftFile;
     const concerns = [...view.decisions.values()];
     const resolved = [...view.resolved];
+    const excluded = excludedOf();
     const snapshot = JSON.stringify(
       {
         schema: "follow-me/review-draft@1",
@@ -457,6 +500,7 @@ function hostSession(
         comments: [...view.comments.values()],
         ...(concerns.length === 0 ? {} : { concerns }),
         ...(resolved.length === 0 ? {} : { resolved }),
+        ...(excluded === null ? {} : { excluded }),
       },
       null,
       2,
@@ -489,18 +533,33 @@ function hostSession(
     return parsed;
   };
 
+  /** Clears `pending` on every held flag at once and tells the agent what it missed. */
+  const release = (): number => {
+    const held = [...view.comments.values()].filter((c) => c.pending === true);
+    if (held.length === 0) return 0;
+    emit({ type: "submitted" });
+    for (const comment of held) {
+      const { pending: _held, ...open } = comment;
+      view.comments.set(comment.id, open);
+      emit({ type: "comment", comment: open });
+    }
+    return held.length;
+  };
+
   const review = (): Review => {
     const concerns = [...view.decisions.values()];
     const resolved = [...view.resolved];
+    const excluded = excludedOf();
     return {
       schema: "follow-me/review@1",
       mode: view.loaded.state.mode,
       planVersion: view.loaded.state.version,
       planHash: view.loaded.state.planHash,
       endedAt: new Date().toISOString(),
-      comments: [...view.comments.values()],
+      comments: [...view.comments.values()].filter((c) => c.pending !== true),
       ...(concerns.length === 0 ? {} : { concerns }),
       ...(resolved.length === 0 ? {} : { resolved }),
+      ...(excluded === null ? {} : { excluded }),
     };
   };
 
@@ -540,18 +599,25 @@ function hostSession(
       mode: view.loaded.state.mode,
       version: view.loaded.state.version,
       comments: view.comments.size,
+      openedAt: new Date(openedAt).toISOString(),
     }),
     snapshot: () => ({
       ...view.loaded.state,
       comments: [...view.comments.values()],
       concerns: [...view.decisions.values()],
       resolved: [...view.resolved],
+      excluded: { comments: [...view.excludedComments], concerns: [...view.excludedConcerns] },
       seq: events.length,
       previous: view.loaded.previous,
     }),
     /** Events after `since`, now and as they happen, until unfollowed or the review ends. */
     latest: () => events.length,
-    follow: (since: number, send: (event: ServerEvent) => void, stop: () => void) => {
+    follow: (
+      since: number,
+      send: (event: ServerEvent) => void,
+      stop: () => void,
+      agent: boolean,
+    ) => {
       if (since > events.length) {
         throw new HttpError(
           409,
@@ -560,7 +626,7 @@ function hostSession(
       }
       let last = since;
       const flush = () => {
-        for (const event of events.slice(last)) {
+        for (const event of seen(agent).filter((e) => e.seq > last)) {
           send(event);
           last = event.seq;
           if (event.type === "ended") {
@@ -574,16 +640,24 @@ function hostSession(
       flush();
       return () => listeners.delete(flush);
     },
-    poll: (since: number, timeoutMs: number, signal: AbortSignal) => {
+    poll: (since: number, timeoutMs: number, signal: AbortSignal, agent: boolean) => {
       if (since > events.length) {
         throw new HttpError(
           409,
           `since ${since} is ahead of this session's log (${events.length})`,
         );
       }
-      return waitForEvents(since, timeoutMs, signal);
+      return waitForEvents(since, timeoutMs, signal, agent);
     },
     report: () => report(review()),
+    reportItems: () => {
+      const { state } = view.loaded;
+      const units = new Map<UnitId, Unit>(state.units.map((u) => [u.id, u]));
+      return reportItems(review(), state.commits, units, {
+        branch: state.anchor.branch,
+        responses: [],
+      });
+    },
     add: async (raw: unknown): Promise<CommentId> => {
       open();
       if (!isRecord(raw)) throw new HttpError(400, "malformed comment");
@@ -613,6 +687,7 @@ function hostSession(
       const gone = view.comments.get(target);
       if (gone === undefined) throw new HttpError(404, "no such comment");
       view.comments.delete(target);
+      view.excludedComments.delete(gone.id);
       emit({ type: "comment-deleted", id: gone.id });
       await saveDraft();
     },
@@ -648,6 +723,37 @@ function hostSession(
       emit({ type: "concern", concernId, ...rest });
       await saveDraft();
       return decision;
+    },
+    /** Leaves a comment or an agent concern out of the hand-off, or puts it back. */
+    exclude: async (raw: unknown): Promise<Excluded> => {
+      open();
+      const body = isRecord(raw) ? raw : {};
+      const { comment, concern, excluded } = body;
+      if (typeof excluded !== "boolean" || (comment === undefined) === (concern === undefined)) {
+        throw new HttpError(400, "expected { comment } or { concern }, and { excluded: boolean }");
+      }
+      if (comment !== undefined) {
+        if (!isCommentId(comment) || !view.comments.has(comment)) {
+          throw new HttpError(404, "no such comment");
+        }
+        if (excluded) view.excludedComments.add(comment);
+        else view.excludedComments.delete(comment);
+      } else {
+        if (!isConcernId(concern) || !view.concernIds.has(concern)) {
+          throw new HttpError(404, "no such concern in this plan");
+        }
+        if (excluded) view.excludedConcerns.add(concern);
+        else view.excludedConcerns.delete(concern);
+      }
+      await saveDraft();
+      return { comments: [...view.excludedComments], concerns: [...view.excludedConcerns] };
+    },
+    /** Releases every held flag in one go; the reviewer pressed Submit. */
+    submit: async (): Promise<{ released: number }> => {
+      open();
+      const released = release();
+      await saveDraft();
+      return { released };
     },
     resolve: async (raw: unknown): Promise<readonly CommentId[]> => {
       open();
@@ -688,6 +794,7 @@ function hostSession(
           { ...view.registration, version, hash, lockToken: null },
           view.loaded.release,
         );
+        release();
         if (hasWork()) await writeReview(review());
         else await rm(view.draftFile, { force: true });
         view = viewOf(
@@ -704,6 +811,7 @@ function hostSession(
     end: async (): Promise<{ review: Review; file: string }> => {
       open();
       ending = true;
+      release();
       const finished = review();
       const file = await writeReview(finished);
       view.loaded.release();
@@ -898,6 +1006,7 @@ export function startServer(opts: HostOptions): Promise<Host> {
         since,
         (event) => res.write(`id: ${event.seq}\ndata: ${JSON.stringify(event)}\n\n`),
         () => res.end(),
+        url.searchParams.get("audience") === "agent",
       );
       res.on("close", () => {
         clearInterval(ping);
@@ -910,7 +1019,11 @@ export function startServer(opts: HostOptions): Promise<Host> {
       res.on("close", () => abort.abort());
       const since = queryInt(url, "since", 0, Number.MAX_SAFE_INTEGER, 0);
       const timeout = queryInt(url, "timeout", 0, MAX_POLL_MS, DEFAULT_POLL_MS);
-      return sendJson(res, 200, await session.poll(since, timeout, abort.signal));
+      const agent = url.searchParams.get("audience") === "agent";
+      return sendJson(res, 200, await session.poll(since, timeout, abort.signal, agent));
+    }
+    if (method === "GET" && rest === "/api/report" && url.searchParams.get("format") === "json") {
+      return sendJson(res, 200, session.reportItems());
     }
     if (method === "GET" && rest === "/api/report") {
       res.writeHead(200, { "content-type": "text/markdown; charset=utf-8" });
@@ -926,6 +1039,12 @@ export function startServer(opts: HostOptions): Promise<Host> {
       }
       await session.swap(version, hash);
       return sendJson(res, 200, session.summary());
+    }
+    if (method === "POST" && rest === "/api/submit") {
+      return sendJson(res, 200, await session.submit());
+    }
+    if (method === "POST" && rest === "/api/excluded") {
+      return sendJson(res, 200, await session.exclude(await readJson(req)));
     }
     if (method === "POST" && rest === "/api/resolved") {
       return sendJson(res, 200, { resolved: await session.resolve(await readJson(req)) });
