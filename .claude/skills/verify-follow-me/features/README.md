@@ -48,3 +48,4 @@ Keep implementation details out of the map. Name only user paths, stable handles
 - [Many sessions](./many-sessions.md) covers two fixtures on one server, the index page, and the server exiting when both end.
 - [Install and uninstall the agent skill](./install-uninstall.md) covers detection, install, an unchanged rerun, and uninstall in a temp HOME.
 - [Clean](./clean.md) covers removing sessions of deleted branches and `clean --all`.
+- [Dogfood](./dogfood.md) covers `scripts/dogfood.sh`: the naive planner, the syntax gate and the tree proof on this repo's own last commits.
