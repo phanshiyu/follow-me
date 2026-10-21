@@ -216,8 +216,11 @@ export function parseNewDecision(concern: ConcernId, v: unknown): ConcernDecisio
   return withDecision(concern, { ...v, decidedAt: undefined });
 }
 
-/** Absent reads as none. The first item that does not parse names its index and reason. */
-function parseList<T>(
+/**
+ * Absent reads as none. The first item that does not parse names its index and reason. Items
+ * are objects so a string result can only mean a failure; string values go through parseIds.
+ */
+function parseList<T extends object>(
   raw: unknown,
   parse: (item: unknown) => T | string,
   what: string,
@@ -233,26 +236,44 @@ function parseList<T>(
   return out;
 }
 
-function parseConcernId(item: unknown): ConcernId | string {
-  return isConcernId(item) ? item : "not a concern id";
+/** Absent reads as none. The first item that is not an id of the kind names its index. */
+function parseIds<T extends string>(
+  raw: unknown,
+  is: (item: unknown) => item is T,
+  what: string,
+  kind: string,
+): T[] | string {
+  if (raw === undefined) return [];
+  if (!isArray(raw)) return `${what} is not an array`;
+  const out: T[] = [];
+  for (const [i, item] of raw.entries()) {
+    if (!is(item)) return `${what}[${i}]: not a ${kind} id`;
+    out.push(item);
+  }
+  return out;
+}
+
+/** Keeps only the items that are ids of the kind. */
+function lenientIds<T extends string>(raw: unknown, is: (item: unknown) => item is T): T[] {
+  return isArray(raw) ? raw.filter(is) : [];
+}
+
+function isCommentIdValue(item: unknown): item is CommentId {
+  return typeof item === "string" && isCommentId(item);
 }
 
 /** Absent reads as nothing excluded. */
 export function parseExcluded(v: unknown): Excluded | string {
   if (v === undefined) return { comments: [], concerns: [] };
   if (!isFields<"comments" | "concerns">(v)) return "excluded is not an object";
-  const comments = parseList(v.comments, parseCommentId, "excluded.comments");
+  const comments = parseIds(v.comments, isCommentIdValue, "excluded.comments", "comment");
   if (typeof comments === "string") return comments;
-  const concerns = parseList(v.concerns, parseConcernId, "excluded.concerns");
+  const concerns = parseIds(v.concerns, isConcernId, "excluded.concerns", "concern");
   return typeof concerns === "string" ? concerns : { comments, concerns };
 }
 
 function asCommentId(item: unknown): CommentId | null {
-  return typeof item === "string" && isCommentId(item) ? item : null;
-}
-
-function parseCommentId(item: unknown): CommentId | string {
-  return asCommentId(item) ?? "not a comment id";
+  return isCommentIdValue(item) ? item : null;
 }
 
 function parseEarlierReplies(v: unknown): EarlierReplies | string {
@@ -322,7 +343,7 @@ export function parseReview(v: unknown): Review | string {
   if (typeof comments === "string") return comments;
   const concerns = parseList(v.concerns, parseDecision, "concerns");
   if (typeof concerns === "string") return concerns;
-  const resolved = parseList(v.resolved, parseCommentId, "resolved");
+  const resolved = parseIds(v.resolved, isCommentIdValue, "resolved", "comment");
   if (typeof resolved === "string") return resolved;
   const excluded = parseExcluded(v.excluded);
   if (typeof excluded === "string") return excluded;
@@ -343,7 +364,7 @@ export function parseReview(v: unknown): Review | string {
   };
 }
 
-function lenient<T>(items: unknown, parse: (item: unknown) => T | string): T[] {
+function lenient<T extends object>(items: unknown, parse: (item: unknown) => T | string): T[] {
   if (!isArray(items)) return [];
   return items.flatMap((item) => {
     const parsed = parse(item);
@@ -364,7 +385,7 @@ export function parseDraft(v: unknown): ReviewDraft | string {
   return {
     comments: lenient(v.comments, parseComment),
     concerns: lenient(v.concerns, parseDecision),
-    resolved: lenient(v.resolved, parseCommentId),
+    resolved: lenientIds(v.resolved, isCommentIdValue),
     excluded: typeof excluded === "string" ? { comments: [], concerns: [] } : excluded,
     earlierReplies: lenient(v.earlierReplies, parseEarlierReplies),
   };

@@ -14,7 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { parseReview } from "../src/comments.ts";
+import { parseDraft, parseReview } from "../src/comments.ts";
 import { PLAN_SCHEMA, validatePlan } from "../src/plan.ts";
 import {
   BranchMovedError,
@@ -278,4 +278,34 @@ test("a held lock is handed over by its token and only the new holder releases i
   assert.throws(() => session.lock("apply"), SessionLockedError);
   server.release();
   assert.deepEqual(session.lockState(), { kind: "free" });
+});
+
+test("a review and its autosave keep excluded and resolved ids", () => {
+  const ids = {
+    resolved: ["c_4sdvtb"],
+    excluded: { comments: ["c_4sdvtb"], concerns: ["k_0a1b2c3d"] },
+  };
+  const review = parseReview({
+    schema: "follow-me/review@1",
+    planVersion: 4,
+    planHash: "h",
+    endedAt: "2026-10-22T00:00:00.000Z",
+    comments: [],
+    ...ids,
+  });
+  assert.deepEqual(review, {
+    schema: "follow-me/review@1",
+    mode: "split",
+    planVersion: 4,
+    planHash: "h",
+    endedAt: "2026-10-22T00:00:00.000Z",
+    comments: [],
+    ...ids,
+  });
+  assert.deepEqual(parseDraft({ comments: [], ...ids }), {
+    comments: [],
+    concerns: [],
+    earlierReplies: [],
+    ...ids,
+  });
 });
