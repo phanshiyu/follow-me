@@ -305,6 +305,8 @@ export type ConcernDecision = {
   readonly decision: "kept" | "dismissed";
   readonly severity?: Severity;
   readonly note?: string;
+  /** ISO time the server recorded the decision, so the timeline can be rebuilt after a restart. */
+  readonly decidedAt?: string;
 };
 
 /**
@@ -351,6 +353,7 @@ export type ServerEvent = { readonly seq: number } & (
       readonly decision: "kept" | "dismissed";
       readonly severity?: Severity;
       readonly note?: string;
+      readonly decidedAt?: string;
     }
   | { readonly type: "resolved"; readonly commentId: CommentId; readonly resolved: boolean }
   | { readonly type: "version"; readonly version: PlanVersion; readonly hash: string }

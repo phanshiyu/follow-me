@@ -598,10 +598,12 @@ test("events: a poll returns at once when news exists, wakes on news and times o
   assert.equal(all.seq, 5);
   assert.equal(all.events[2].commentId, id);
   assert.equal(all.events[2].reply.author, "agent");
+  assert.match(all.events[3].decidedAt, /^\d{4}-\d\d-\d\dT/);
   assert.deepEqual(
-    { ...all.events[3], seq: 0 },
+    { ...all.events[3], seq: 0, decidedAt: undefined },
     {
       seq: 0,
+      decidedAt: undefined,
       type: "concern",
       concernId: CONCERN,
       decision: "kept",
@@ -735,14 +737,37 @@ test("concern decisions and questions reach the saved review, the report and its
   assert.ok(live.includes("Reviewer asked: why drop old1?"));
 
   const draft = JSON.parse(await readFile(join(run.dir, "v3.draft.json"), "utf8"));
+  const [stamped] = draft.concerns;
+  assert.match(stamped.decidedAt, /^\d{4}-\d\d-\d\dT/);
   assert.deepEqual(draft.concerns, [
-    { concern: CONCERN, decision: "kept", severity: "blocker", note: "Agreed." },
+    {
+      concern: CONCERN,
+      decision: "kept",
+      severity: "blocker",
+      note: "Agreed.",
+      decidedAt: stamped.decidedAt,
+    },
   ]);
+
+  // The server owns the time: a client cannot back-date a decision, and a second one restamps.
+  await post(run.url, `api/concerns/${CONCERN}`, {
+    decision: "dismissed",
+    decidedAt: "2000-01-01T00:00:00.000Z",
+  });
+  const second = JSON.parse(await readFile(join(run.dir, "v3.draft.json"), "utf8"));
+  assert.notEqual(second.concerns[0].decidedAt, "2000-01-01T00:00:00.000Z");
+  assert.ok(second.concerns[0].decidedAt >= stamped.decidedAt);
+  await post(run.url, `api/concerns/${CONCERN}`, {
+    decision: "kept",
+    severity: "blocker",
+    note: "Agreed.",
+  });
 
   await post(run.url, "api/end", {});
   await run.done;
   const saved = JSON.parse(await readFile(join(run.dir, "v3.json"), "utf8"));
-  assert.deepEqual(saved.concerns, draft.concerns);
+  assert.equal(saved.concerns[0].decision, "kept");
+  assert.match(saved.concerns[0].decidedAt, /^\d{4}-\d\d-\d\dT/);
   assert.equal(saved.comments[0].kind, "question");
   assert.deepEqual(saved.comments[0].context.lines, ["-old1", "+new1"]);
   const file = await readFile(join(run.dir, "v3.md"), "utf8");

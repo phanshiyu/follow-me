@@ -177,7 +177,7 @@ export function parseComment(v: unknown): Comment | string {
   };
 }
 
-type DecisionFields = "concern" | "decision" | "severity" | "note";
+type DecisionFields = "concern" | "decision" | "severity" | "note" | "decidedAt";
 
 function withDecision(
   concern: ConcernId,
@@ -188,11 +188,15 @@ function withDecision(
   }
   if (v.severity !== undefined && !isSeverity(v.severity)) return "severity is unknown";
   if (v.note !== undefined && typeof v.note !== "string") return "note is not a string";
+  if (v.decidedAt !== undefined && typeof v.decidedAt !== "string") {
+    return "decidedAt is not a string";
+  }
   return {
     concern,
     decision: v.decision,
     ...(v.severity === undefined ? {} : { severity: v.severity }),
     ...(v.note === undefined || v.note.trim() === "" ? {} : { note: v.note }),
+    ...(v.decidedAt === undefined ? {} : { decidedAt: v.decidedAt }),
   };
 }
 
@@ -203,10 +207,10 @@ export function parseDecision(v: unknown): ConcernDecision | string {
   return withDecision(v.concern, v);
 }
 
-/** The body of POST .../concerns/<id>; the id comes from the URL. */
+/** The body of POST .../concerns/<id>; the id comes from the URL and the time is the server's. */
 export function parseNewDecision(concern: ConcernId, v: unknown): ConcernDecision | string {
   if (!isFields<DecisionFields>(v)) return "the decision is not an object";
-  return withDecision(concern, v);
+  return withDecision(concern, { ...v, decidedAt: undefined });
 }
 
 /** Absent reads as none. The first item that does not parse names its index and reason. */
@@ -310,6 +314,7 @@ type EventFields =
   | "decision"
   | "severity"
   | "note"
+  | "decidedAt"
   | "resolved"
   | "version"
   | "hash"

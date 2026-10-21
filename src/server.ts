@@ -665,8 +665,9 @@ function hostSession(
       if (!isConcernId(target) || !view.concernIds.has(target)) {
         throw new HttpError(404, "no such concern in this plan");
       }
-      const decision = parseNewDecision(target, raw);
-      if (typeof decision === "string") throw new HttpError(400, `malformed decision: ${decision}`);
+      const parsed = parseNewDecision(target, raw);
+      if (typeof parsed === "string") throw new HttpError(400, `malformed decision: ${parsed}`);
+      const decision: ConcernDecision = { ...parsed, decidedAt: new Date().toISOString() };
       view.decisions.set(target, decision);
       const { concern: concernId, ...rest } = decision;
       emit({ type: "concern", concernId, ...rest });
