@@ -23,5 +23,5 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true
   },
-  "include": ["bin", "src", "test", "scripts", "ui/playback.js"]
+  "include": ["bin", "src", "test", "scripts"]
 }

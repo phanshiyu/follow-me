@@ -1,0 +1,121 @@
+/* The server's own pages (the session index and "this session has ended") link this file. */
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --panel: #f6f7f9;
+  --border: #d8dce2;
+  --text: #1c2026;
+  --muted: #5f6774;
+  --accent: #2459d6;
+  --chip: #eef3ff;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171c;
+    --panel: #1c2027;
+    --border: #2f353f;
+    --text: #e4e7ec;
+    --muted: #8d96a5;
+    --accent: #6c9bff;
+    --chip: #1b2538;
+  }
+}
+
+body.index {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font:
+    14px / 1.5 system-ui,
+    sans-serif;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.index-main {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.index-main h1 {
+  font-size: 20px;
+  margin: 8px 0 16px;
+}
+
+.session-index {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.session-index li {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 16px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+
+.session-index li:first-child {
+  border-top: none;
+}
+
+.session-index .session {
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.session-index .branch {
+  color: var(--accent);
+}
+
+.session-index .session:hover .branch {
+  text-decoration: underline;
+}
+
+.session-index .path {
+  grid-column: 1 / -1;
+  font: 12px var(--font-mono);
+}
+
+.mode {
+  justify-self: end;
+  padding: 0 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  background: var(--chip);
+}
+
+.empty {
+  margin-top: 15vh;
+  text-align: center;
+}
+
+.empty a {
+  color: var(--accent);
+}
+
+.empty code {
+  font-family: var(--font-mono);
+  background: var(--panel);
+  padding: 1px 6px;
+  border-radius: 4px;
+}

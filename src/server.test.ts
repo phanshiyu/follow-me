@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { type TestContext, test } from "node:test";
+import { pathToFileURL } from "node:url";
 import type { Host, Loader, Registration, ReviewState } from "./server.ts";
 import {
   ago,
@@ -292,65 +293,59 @@ test("requests from a foreign origin are refused", async (t) => {
   await run.done;
 });
 
-test("the UI is served under /s/<id>/ and its assets at the root", async (t) => {
-  const run = await start(t, twoCommitState());
+async function startWithUi(t: TestContext, uiDir: URL): Promise<Running> {
+  const dir = await tempDir(t);
+  const host = await startServer({
+    port: 0,
+    idleMs: 60_000,
+    load: fixedLoader(new Map([[dir, twoCommitState()]])),
+    uiDir,
+  });
+  t.after(() => host.close());
+  const { summary, done } = await host.register(registration(dir));
+  return { url: new URL(summary.url, host.url).href, dir: join(dir, "reviews"), done, host };
+}
+
+test("the built page is served under /s/<id>/ and /report, its assets at the root", async (t) => {
+  const ui = await tempDir(t);
+  await mkdir(join(ui, "assets"));
+  await writeFile(join(ui, "index.html"), "<title>follow-me review</title>");
+  await writeFile(join(ui, "assets", "index-Ab12.js"), "export {};");
+  await writeFile(join(ui, "assets", "geist-latin-wght-normal-Bg.woff2"), "font");
+  await writeFile(join(ui, "style.css"), "body {}");
+  const run = await startWithUi(t, pathToFileURL(`${ui}/`));
+
   const page = await fetch(run.url);
   assert.equal(page.headers.get("content-type"), "text/html; charset=utf-8");
   assert.match(await page.text(), /<title>follow-me review<\/title>/);
+  assert.equal((await fetch(new URL("report", run.url))).status, 200);
   const bare = await fetch(run.url.slice(0, -1), { redirect: "manual" });
   assert.deepEqual([bare.status, bare.headers.get("location")], [308, new URL(run.url).pathname]);
-  const script = await fetch(new URL("/app.js", run.url));
-  assert.equal(script.headers.get("content-type"), "text/javascript; charset=utf-8");
-  const playback = await fetch(new URL("/playback.js", run.url));
-  assert.match(await playback.text(), /export function buildScript\(/);
-  assert.equal((await fetch(new URL("/style.css", run.url))).status, 200);
-  assert.equal((await fetch(new URL("/nope.js", run.url))).status, 404);
+
+  const script = await fetch(new URL("/assets/index-Ab12.js", run.url));
+  assert.deepEqual(
+    [script.headers.get("content-type"), script.headers.get("cache-control")],
+    ["text/javascript; charset=utf-8", "max-age=31536000, immutable"],
+  );
+  const font = await fetch(new URL("/assets/geist-latin-wght-normal-Bg.woff2", run.url));
+  assert.equal(font.headers.get("content-type"), "font/woff2");
+  const css = await fetch(new URL("/style.css", run.url));
+  assert.deepEqual([css.status, css.headers.get("cache-control")], [200, "no-store"]);
+  for (const bad of ["/nope.js", "/assets/nope.js", "/assets/%2e%2e%2fstyle.css", "/index.html"]) {
+    assert.equal((await fetch(new URL(bad, run.url))).status, 404, bad);
+  }
   assert.equal((await fetch(new URL("/s/000000000000/", run.url))).status, 404);
   assert.equal((await fetch(new URL("/s/000000000000/api/state", run.url))).status, 404);
   await post(run.url, "api/end", {});
   await run.done;
 });
 
-test("the Mermaid bundle and the chunks it imports are served as JavaScript", async (t) => {
-  const run = await start(t, twoCommitState());
-  const entry = await fetch(new URL("/vendor/mermaid.mjs", run.url));
-  assert.deepEqual(
-    [entry.status, entry.headers.get("content-type")],
-    [200, "text/javascript; charset=utf-8"],
-  );
-  const body = await entry.text();
-  const chunk = /from"\.\/(chunks\/mermaid\.esm\.min\/[\w-]+\.mjs)"/.exec(body)?.[1];
-  assert.ok(chunk, "the entry imports a chunk by relative path");
-  const imported = await fetch(new URL(`/vendor/${chunk}`, run.url));
-  assert.deepEqual(
-    [imported.status, imported.headers.get("content-type")],
-    [200, "text/javascript; charset=utf-8"],
-  );
-  assert.equal(
-    (await fetch(new URL("/vendor/chunks/mermaid.esm.min/nope.mjs", run.url))).status,
-    404,
-  );
-  assert.equal(
-    (await fetch(new URL("/vendor/chunks/mermaid.esm.min/%2e%2e%2fpackage.json", run.url))).status,
-    404,
-  );
-  await post(run.url, "api/end", {});
-  await run.done;
-});
-
-test("Prism components are served by name and nothing else is reachable through the route", async (t) => {
-  const run = await start(t, twoCommitState());
-  for (const name of ["core", "clike", "javascript", "markup-templating"]) {
-    const res = await fetch(new URL(`/vendor/prism/${name}.js`, run.url));
-    assert.deepEqual(
-      [name, res.status, res.headers.get("content-type")],
-      [name, 200, "text/javascript; charset=utf-8"],
-    );
-  }
-  for (const bad of ["nope", "%2e%2e%2fpackage", "..%2fcomponents%2fprism-core"]) {
-    assert.equal((await fetch(new URL(`/vendor/prism/${bad}.js`, run.url))).status, 404, bad);
-  }
-  assert.equal((await fetch(new URL("/highlight.js", run.url))).status, 200);
+test("without a build the page says how to make one", async (t) => {
+  const run = await startWithUi(t, pathToFileURL(`${await tempDir(t)}/`));
+  const page = await fetch(run.url);
+  assert.equal(page.status, 503);
+  assert.match(await page.text(), /npm run build/);
+  assert.equal((await fetch(new URL("/assets/index-Ab12.js", run.url))).status, 404);
   await post(run.url, "api/end", {});
   await run.done;
 });

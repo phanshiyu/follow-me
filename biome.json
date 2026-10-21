@@ -42,5 +42,10 @@
         "useLiteralKeys": "off"
       }
     }
+  },
+  "css": {
+    "parser": {
+      "tailwindDirectives": true
+    }
   }
 }

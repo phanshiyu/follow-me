@@ -101,6 +101,8 @@ export type HostOptions = {
   /** How long the server waits for a new session after its last one ended. */
   readonly idleMs: number;
   readonly load: Loader;
+  /** Where the built page lives; tests point it at a stand-in. */
+  readonly uiDir?: URL;
 };
 
 /** The requested port is taken; host.ts decides whether that is our server or a stranger. */
@@ -121,19 +123,16 @@ export class RegistrationError extends Error {
 /** GET /api/health answers with this, so a CLI can tell our server from another program. */
 export const HEALTH_APP = "follow-me";
 
-const UI_DIR = new URL("../ui/", import.meta.url);
-/** Every module and the stylesheet in ui/ is served flat, so a new module needs no route. */
-const STATIC_FILE = /^\/([a-z][a-z-]*\.(?:js|css))$/;
+/** The page Vite builds from ui/ into ui/dist; `npm run build` makes it. */
+const UI_DIR = new URL("../ui/dist/", import.meta.url);
+/** Hashed bundles under /assets/ and the few flat files of ui/public at the root. */
+const STATIC_FILE = /^\/((?:assets\/)?[\w-]+(?:\.[\w-]+)*\.(js|css|woff2|svg))$/;
 const STATIC_TYPES = new Map([
   ["js", "text/javascript; charset=utf-8"],
   ["css", "text/css; charset=utf-8"],
+  ["woff2", "font/woff2"],
+  ["svg", "image/svg+xml"],
 ]);
-/** Mermaid's ESM entry imports its chunks by relative path, so they are served beside it. */
-const MERMAID_ENTRY = new URL(import.meta.resolve("mermaid/dist/mermaid.esm.min.mjs"));
-const MERMAID_CHUNK = /^\/vendor\/chunks\/mermaid\.esm\.min\/([\w-]+\.mjs)$/;
-/** Prism is a plain script per component, loaded one at a time by the page as languages need. */
-const PRISM_CORE = new URL(import.meta.resolve("prismjs/components/prism-core.min.js"));
-const PRISM_PATH = /^\/vendor\/prism\/([a-z][a-z-]*)\.js$/;
 const MAX_BODY_BYTES = 1_000_000;
 const BASE32 = "abcdefghijklmnopqrstuvwxyz234567";
 
@@ -332,41 +331,17 @@ ${body}
 `;
 }
 
-/** The file behind a /vendor/ path, or null. Chunk names are checked, so no path escapes. */
-function vendorFile(path: string): URL | null {
-  const part = PRISM_PATH.exec(path)?.[1];
-  if (part !== undefined) {
-    return part === "core" ? PRISM_CORE : new URL(`prism-${part}.min.js`, PRISM_CORE);
-  }
-  if (path === "/vendor/mermaid.mjs") return MERMAID_ENTRY;
-  const chunk = MERMAID_CHUNK.exec(path)?.[1];
-  return chunk === undefined ? null : new URL(`chunks/mermaid.esm.min/${chunk}`, MERMAID_ENTRY);
-}
-
-async function readUi(name: string): Promise<Buffer> {
+async function readUi(dir: URL, name: string): Promise<Buffer | null> {
   try {
-    return await readFile(fileURLToPath(new URL(name, UI_DIR)));
+    return await readFile(fileURLToPath(new URL(name, dir)));
   } catch (error) {
-    if (isRecord(error) && error["code"] === "ENOENT") throw new HttpError(404, "not found");
+    if (isRecord(error) && error["code"] === "ENOENT") return null;
     throw error;
   }
 }
 
-async function sendVendor(res: ServerResponse, file: URL): Promise<void> {
-  let bytes: Buffer;
-  try {
-    bytes = await readFile(fileURLToPath(file));
-  } catch (error) {
-    if (isRecord(error) && error["code"] === "ENOENT") throw new HttpError(404, "not found");
-    throw error;
-  }
-  // The bundle only changes with the installed package, and it is several megabytes.
-  res.writeHead(200, {
-    "content-type": "text/javascript; charset=utf-8",
-    "cache-control": "max-age=86400",
-  });
-  res.end(bytes);
-}
+const NOT_BUILT = `<!doctype html><html lang="en"><head><meta charset="utf-8" /><meta name="color-scheme" content="light dark" /><title>follow-me</title></head><body style="font-family: system-ui; max-width: 40rem; margin: 4rem auto; padding: 0 1rem"><h1>The review page is not built</h1><p>This follow-me runs from a checkout without <code>ui/dist</code>. Run <code>npm run build</code> (or <code>npm run ui:build</code>) in the checkout, then reload.</p></body></html>
+`;
 
 /** What a hosted session shows right now. A version swap replaces it whole. */
 type View = {
@@ -755,6 +730,7 @@ function sameRegistration(a: Registration, b: Registration): boolean {
  * itself once it has had no session for idleMs.
  */
 export function startServer(opts: HostOptions): Promise<Host> {
+  const uiDir = opts.uiDir ?? UI_DIR;
   const registry = new Map<SessionId, HostedSession>();
   const pending = new Map<SessionId, Promise<HostedSession>>();
   let boundPort = 0;
@@ -849,17 +825,20 @@ export function startServer(opts: HostOptions): Promise<Host> {
     const url = new URL(req.url ?? "/", "http://localhost");
     const path = url.pathname;
 
-    const asset = method === "GET" ? STATIC_FILE.exec(path)?.[1] : undefined;
-    if (asset !== undefined) {
-      const bytes = await readUi(asset);
-      const type = STATIC_TYPES.get(asset.slice(asset.lastIndexOf(".") + 1));
-      res.writeHead(200, { "content-type": type ?? "text/plain", "cache-control": "no-store" });
+    const asset = method === "GET" ? STATIC_FILE.exec(path) : null;
+    if (asset !== null) {
+      const [, name = "", ext = ""] = asset;
+      const bytes = await readUi(uiDir, name);
+      if (bytes === null) throw new HttpError(404, "not found");
+      // Vite hashes every name under assets/, so those never change under the same URL.
+      const cache = name.startsWith("assets/") ? "max-age=31536000, immutable" : "no-store";
+      res.writeHead(200, {
+        "content-type": STATIC_TYPES.get(ext) ?? "text/plain",
+        "cache-control": cache,
+      });
       res.end(bytes);
       return;
     }
-
-    const vendor = method === "GET" ? vendorFile(path) : null;
-    if (vendor) return sendVendor(res, vendor);
 
     if (method === "GET" && path === "/") {
       const rows = [...registry.values()].map((h) => ({
@@ -888,7 +867,7 @@ export function startServer(opts: HostOptions): Promise<Host> {
       res.end();
       return;
     }
-    if (method === "GET" && rest === "/") {
+    if (method === "GET" && (rest === "/" || rest === "/report")) {
       if (!isSessionId(rawId) || !registry.has(rawId)) {
         return sendHtml(
           res,
@@ -896,11 +875,8 @@ export function startServer(opts: HostOptions): Promise<Host> {
           '<!doctype html><html lang="en"><head><meta charset="utf-8" /><meta name="color-scheme" content="light dark" /><title>follow-me</title><link rel="stylesheet" href="/style.css" /></head><body class="index"><header class="topbar"><strong>follow-me</strong></header><main class="index-main"><section class="empty"><h1>This session has ended</h1><p>It finished, or it never existed. <a href="/">All sessions</a></p></section></main></body></html>\n',
         );
       }
-      return sendHtml(
-        res,
-        200,
-        await readFile(fileURLToPath(new URL("index.html", UI_DIR)), "utf8"),
-      );
+      const page = await readUi(uiDir, "index.html");
+      return page === null ? sendHtml(res, 503, NOT_BUILT) : sendHtml(res, 200, page.toString());
     }
 
     const session = hosted(rawId);

@@ -37,19 +37,41 @@
   "scripts": {
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p ui",
     "test": "node --test 'src/**/*.test.ts' 'test/**/*.test.ts'",
-    "check": "npm run lint && npm run typecheck && npm test",
+    "ui:dev": "vite --config ui/vite.config.ts",
+    "ui:build": "vite build --config ui/vite.config.ts",
+    "ui:test": "vitest run --config ui/vite.config.ts",
+    "check": "npm run lint && npm run typecheck && npm test && npm run ui:test",
     "prepublishOnly": "npm run check && npm run build",
-    "build": "rm -rf dist && tsc -p tsconfig.build.json && cp -R ui dist/ui"
-  },
-  "dependencies": {
-    "mermaid": "12.2.0",
-    "prismjs": "1.30.0"
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && npm run ui:build && mkdir -p dist/ui && cp -R ui/dist dist/ui/dist"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",
+    "@fontsource-variable/geist": "^5.3.0",
+    "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^26.6.5",
-    "typescript": "^7.0.2"
+    "@types/prismjs": "^1.26.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "@vitest/browser-playwright": "^5.0.5",
+    "class-variance-authority": "^0.7.1",
+    "cn": "^0.5.0",
+    "dompurify": "^3.4.17",
+    "lucide-react": "^1.61.0",
+    "marked": "^18.1.1",
+    "mermaid": "12.2.0",
+    "playwright": "^1.64.1",
+    "prismjs": "1.30.0",
+    "radix-ui": "^1.8.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "tailwindcss": "^4.3.3",
+    "tw-animate-css": "^1.4.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5",
+    "vitest-browser-react": "^2.3.0"
   }
 }
