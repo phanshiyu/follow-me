@@ -45,8 +45,13 @@ let selected = 0;
 let unitsById = new Map();
 /** unit id -> (change index -> index of the commit that owns the line) */
 let owners = new Map();
-/** "commit:unit" -> change indices the reader clicked, to anchor a comment to them */
-const picks = new Map();
+/**
+ * The lines picked for a comment: a contiguous run of one commit's own lines in one unit, as hunk
+ * body indices. from is where a shift-click range starts.
+ */
+let selection = null;
+/** The comment box to focus after the next render. */
+let focusKey = null;
 /** Unsent textarea contents survive re-renders, keyed like the boxes. */
 const drafts = new Map();
 const openBoxes = new Set();
@@ -135,40 +140,68 @@ function describeChanges(changes) {
   return changes === null ? "whole hunk" : `lines ${changes.join(", ")}`;
 }
 
-function commentView(comment) {
-  const key = `edit:${comment.id}`;
-  if (editing.has(comment.id)) {
-    const area = el("textarea", {
-      oninput: () => drafts.set(key, area.value),
+/**
+ * A comment textarea with its buttons. Cmd or Ctrl+Enter saves and Escape cancels; neither
+ * resumes playback.
+ */
+function commentForm({ key, placeholder, action = "Comment", initial = "", submit, close }) {
+  const area = el("textarea", {
+    placeholder,
+    "aria-label": placeholder,
+    oninput: () => drafts.set(key, area.value),
+  });
+  area.value = drafts.get(key) ?? initial;
+  const cancel = () => {
+    drafts.delete(key);
+    close();
+    render();
+  };
+  const save = () =>
+    guarded(async () => {
+      const body = area.value.trim();
+      if (!body) return;
+      await submit(body);
+      drafts.delete(key);
+      close();
+      if (player.view === "play") notice = "Comment saved. Space to continue.";
+      await reloadComments();
     });
-    area.value = drafts.get(key) ?? comment.body;
+  area.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      save();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      cancel();
+    }
+  });
+  return el(
+    "div",
+    { class: "box", "data-box": key },
+    area,
+    el(
+      "div",
+      { class: "row" },
+      el("button", { class: "primary", text: action, onclick: save }),
+      el("button", { text: "Cancel", onclick: cancel }),
+      el("span", { class: "hint", text: "⌘/Ctrl+Enter to save, Esc to cancel" }),
+    ),
+  );
+}
+
+function commentView(comment) {
+  if (editing.has(comment.id)) {
     return el(
       "div",
       { class: "comment" },
-      area,
-      el(
-        "div",
-        { class: "row box" },
-        el("button", {
-          class: "primary",
-          text: "Save",
-          onclick: () =>
-            guarded(async () => {
-              await api("PUT", `/api/comments/${comment.id}`, { ...comment, body: area.value });
-              editing.delete(comment.id);
-              drafts.delete(key);
-              await reloadComments();
-            }),
-        }),
-        el("button", {
-          text: "Cancel",
-          onclick: () => {
-            editing.delete(comment.id);
-            drafts.delete(key);
-            render();
-          },
-        }),
-      ),
+      commentForm({
+        key: `edit:${comment.id}`,
+        placeholder: "Edit your comment",
+        action: "Save",
+        initial: comment.body,
+        submit: (body) => api("PUT", `/api/comments/${comment.id}`, { ...comment, body }),
+        close: () => editing.delete(comment.id),
+      }),
     );
   }
   const where =
@@ -186,6 +219,7 @@ function commentView(comment) {
         text: "edit",
         onclick: () => {
           editing.add(comment.id);
+          focusKey = `edit:${comment.id}`;
           render();
         },
       }),
@@ -202,55 +236,24 @@ function commentView(comment) {
   );
 }
 
-/**
- * A collapsed button that opens into a textarea. `makeAnchor` runs at save time so a
- * hunk comment picks up whichever lines are selected then.
- */
-function commentBox({ key, label, placeholder, makeAnchor, context, onSaved }) {
+/** A button that opens into a comment form, focused. */
+function commentBox({ key, label, placeholder, anchor, context }) {
   if (!openBoxes.has(key)) {
     return el("button", {
-      text: typeof label === "function" ? label() : label,
+      text: label,
       onclick: () => {
         openBoxes.add(key);
+        focusKey = key;
         render();
       },
     });
   }
-  const area = el("textarea", { placeholder, oninput: () => drafts.set(key, area.value) });
-  area.value = drafts.get(key) ?? "";
-  const close = () => {
-    openBoxes.delete(key);
-    drafts.delete(key);
-  };
-  return el(
-    "div",
-    { class: "box" },
-    area,
-    el(
-      "div",
-      { class: "row" },
-      el("button", {
-        class: "primary",
-        text: "Comment",
-        onclick: () =>
-          guarded(async () => {
-            const body = area.value.trim();
-            if (!body) return;
-            await api("POST", "/api/comments", { anchor: makeAnchor(), context, body });
-            close();
-            onSaved?.();
-            await reloadComments();
-          }),
-      }),
-      el("button", {
-        text: "Cancel",
-        onclick: () => {
-          close();
-          render();
-        },
-      }),
-    ),
-  );
+  return commentForm({
+    key,
+    placeholder,
+    submit: (body) => api("POST", "/api/comments", { anchor, context, body }),
+    close: () => openBoxes.delete(key),
+  });
 }
 
 function describeFileUnit(unit) {
@@ -258,8 +261,45 @@ function describeFileUnit(unit) {
   return `${unit.reason} file ${change}`;
 }
 
+/** Body indices of a commit's own change lines in a unit, in hunk order. */
+function ownLines(unit, commitIndex) {
+  return rowsOf(unit.body, ownersOf(unit), commitIndex).flatMap((r) =>
+    r.kind === "line" && r.mine ? [r.line] : [],
+  );
+}
+
+/** Picks a line for a comment; shift extends the pick to a range. Pauses playback. */
+function pickLine(unit, commitIndex, line, extend) {
+  const own = ownLines(unit, commitIndex);
+  const same = extend && selection?.unit === unit.id && selection.commit === commitIndex;
+  const from = same ? selection.from : line;
+  const [a, b] = [own.indexOf(from), own.indexOf(line)].sort((x, y) => x - y);
+  selection = { commit: commitIndex, unit: unit.id, from, lines: own.slice(a, b + 1) };
+  focusKey = `line:${commitIndex}:${unit.id}`;
+  if (player.playing) pause();
+  render();
+}
+
+function lineBox(unit, commit) {
+  const changes = selection.lines.map((i) => unit.body[i].change);
+  const n = changes.length;
+  return commentForm({
+    key: `line:${commit.index}:${unit.id}`,
+    placeholder: `Comment on ${n === 1 ? "this line" : `these ${n} lines`}`,
+    submit: (body) =>
+      api("POST", "/api/comments", {
+        anchor: { kind: "hunk", unit: unit.id, commit: commit.index, changes },
+        context: { commitMessage: commit.message, path: unit.path },
+        body,
+      }),
+    close: () => {
+      selection = null;
+    },
+  });
+}
+
 /** One line of a hunk. Only the commit's own change lines can be picked for a comment. */
-function diffLine(unit, index, mine, pickKey) {
+function diffLine(unit, commit, index, mine) {
   const line = unit.body[index];
   const key = lineKey(unit.id, index);
   const text = el("span", { class: "text", text: line.text.replace(/\n$/, "") });
@@ -272,7 +312,10 @@ function diffLine(unit, index, mine, pickKey) {
       text,
     );
   }
-  const picked = picks.get(pickKey)?.has(line.change) ?? false;
+  const picked =
+    selection?.commit === commit.index &&
+    selection.unit === unit.id &&
+    selection.lines.includes(index);
   const classes = ["dl", line.op === "+" ? "add" : "del", "mine"];
   if (picked) classes.push("picked");
   return el(
@@ -280,15 +323,24 @@ function diffLine(unit, index, mine, pickKey) {
     {
       class: classes.join(" "),
       "data-line": key,
-      title: "Click to select this line for a comment",
-      onclick: () => {
-        const set = picks.get(pickKey) ?? new Set();
-        if (!set.delete(line.change)) set.add(line.change);
-        picks.set(pickKey, set);
-        render();
+      onmousedown: (event) => {
+        // Shift-click extends the pick; without this it also selects page text.
+        if (event.shiftKey) event.preventDefault();
       },
+      onclick: (event) => pickLine(unit, commit.index, index, event.shiftKey),
     },
-    el("span", { class: "gutter", text: String(line.change) }),
+    el(
+      "span",
+      { class: "gutter" },
+      el("button", {
+        type: "button",
+        class: "add-comment",
+        tabindex: "-1",
+        "aria-label": "Comment on this line",
+        text: "+",
+      }),
+      String(line.change),
+    ),
     el("span", { class: "op", text: line.op }),
     text,
   );
@@ -312,26 +364,19 @@ function ownersOf(unit) {
 
 function unitComments(unit, commit) {
   const anchor = { kind: "hunk", unit: unit.id, commit: commit.index, changes: null };
-  const pickKey = `${commit.index}:${unit.id}`;
-  const existing = commentsAt(anchor);
-  const picked = () => [...(picks.get(pickKey) ?? [])].sort((a, b) => a - b);
   return el(
     "div",
     { class: "comments" },
-    ...existing.map(commentView),
+    ...commentsAt(anchor).map(commentView),
     el(
       "div",
       { class: "controls" },
       commentBox({
-        key: `box:${pickKey}`,
-        label: () => {
-          const n = picked().length;
-          return n > 0 ? `Comment on ${n} selected line${n === 1 ? "" : "s"}` : "Comment";
-        },
+        key: `box:${commit.index}:${unit.id}`,
+        label: unit.kind === "hunk" ? "Comment on this hunk" : "Comment",
         placeholder: "What about this change?",
-        makeAnchor: () => ({ ...anchor, changes: picked().length > 0 ? picked() : null }),
+        anchor,
         context: { commitMessage: commit.message, path: unit.path },
-        onSaved: () => picks.delete(pickKey),
       }),
     ),
   );
@@ -344,7 +389,6 @@ function staticNarration(text) {
 }
 
 function unitView(unit, commit) {
-  const pickKey = `${commit.index}:${unit.id}`;
   const ref = commit.refs.find((r) => r.unit === unit.id);
   const head = el("div", { class: "unit-head", title: unit.id });
   let content;
@@ -360,14 +404,16 @@ function unitView(unit, commit) {
         text: `${mineCount} of ${unit.changeCount} changed lines in this commit`,
       }),
     );
+    const picking = selection?.commit === commit.index && selection.unit === unit.id;
+    const boxAfter = picking ? Math.max(...selection.lines) : -1;
     content = el(
       "div",
       { class: "diff" },
-      ...rows.map((row) =>
-        row.kind === "fold"
-          ? foldRow(row.lines, row.commit)
-          : diffLine(unit, row.line, row.mine, pickKey),
-      ),
+      ...rows.flatMap((row) => {
+        if (row.kind === "fold") return [foldRow(row.lines, row.commit)];
+        const line = diffLine(unit, commit, row.line, row.mine);
+        return row.line === boxAfter ? [line, lineBox(unit, commit)] : [line];
+      }),
     );
   } else {
     const summary =
@@ -424,7 +470,7 @@ function renderPlanNote() {
       placeholder: walk
         ? "Anything about the change as a whole"
         : "Anything about the plan as a whole",
-      makeAnchor: () => anchor,
+      anchor,
       context: { commitMessage: "", path: null },
     }),
   );
@@ -468,14 +514,14 @@ function renderMain() {
               key: `box:message:${commit.index}`,
               label: "Comment on the message",
               placeholder: "What should this message say?",
-              makeAnchor: () => messageAnchor,
+              anchor: messageAnchor,
               context,
             }),
             commentBox({
               key: `box:position:${commit.index}`,
               label: "This belongs elsewhere",
               placeholder: "Where should this go, and why?",
-              makeAnchor: () => positionAnchor,
+              anchor: positionAnchor,
               context,
             }),
           ),
@@ -498,6 +544,10 @@ function render() {
   renderList();
   renderPlanNote();
   renderMain();
+  if (focusKey !== null) {
+    document.querySelector(`[data-box="${focusKey}"] textarea`)?.focus();
+    focusKey = null;
+  }
 }
 
 function select(index) {
@@ -535,6 +585,8 @@ let beats = [];
 const watched = new Set();
 /** When p last restarted a commit, so a second press soon after goes one further back. */
 let restartedAt = 0;
+/** Shown in the narration card until the next move, such as after a comment is saved. */
+let notice = null;
 let steps = [];
 let narrated = true;
 let voices = [];
@@ -763,6 +815,12 @@ function applyPlayback() {
 
   const step = steps[player.position];
   const beat = beats[beatAt(steps, player.position)];
+  if (notice !== null) {
+    setCard(notice, "notice");
+    (beat?.kind === "chunk" ? anchorOf(beat) : null)?.before(card);
+    if (!card.isConnected) main.querySelector(".commit-head .message")?.after(card);
+    return;
+  }
   if (step === undefined || beat === undefined) {
     setCard(
       isWalk()
@@ -839,6 +897,7 @@ async function playLoop(generation) {
 /** Moves to a step and starts a fresh loop, which waits while paused. */
 function seek(position) {
   synth?.cancel();
+  notice = null;
   player.position = Math.max(0, Math.min(steps.length, position));
   player.generation += 1;
   present();
@@ -848,6 +907,8 @@ function seek(position) {
 function play() {
   if (player.view !== "play") enterPlay();
   if (player.position >= steps.length) seek(0);
+  notice = null;
+  applyPlayback();
   player.playing = true;
   synth?.resume();
   updatePlayer();
@@ -903,6 +964,29 @@ function previousCommit() {
   const again = now - restartedAt < 1500 || currentBeat() === intro;
   restartedAt = now;
   toBeat(again ? introOf(beats, selected - 1) : intro);
+}
+
+/** Pauses and opens a comment on the chunk on screen, its lines preselected. */
+function commentOnChunk() {
+  if (player.view !== "play") return;
+  const at = currentBeat();
+  const beat = beats[at];
+  if (beat?.kind !== "chunk") {
+    report(new Error("Step to a chunk to comment on it."));
+    return;
+  }
+  pause();
+  const show = steps.findIndex((s) => s.kind === "show" && s.beat === at);
+  if (player.position < show) seek(show);
+  if (beat.lines.length === 0) {
+    const key = `box:${beat.commit}:${beat.unit}`;
+    openBoxes.add(key);
+    focusKey = key;
+  } else {
+    selection = { commit: beat.commit, unit: beat.unit, from: beat.lines[0], lines: beat.lines };
+    focusKey = `line:${beat.commit}:${beat.unit}`;
+  }
+  render();
 }
 
 function toggleKeys() {
@@ -1045,6 +1129,7 @@ const KEYS = {
   p: previousCommit,
   k: previousCommit,
   r: () => player.view === "play" && toBeat(currentBeat()),
+  c: commentOnChunk,
   m: toggleMute,
   "?": toggleKeys,
 };
