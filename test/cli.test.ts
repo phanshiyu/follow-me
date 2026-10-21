@@ -1361,12 +1361,9 @@ test("follow-me with no command walks the states: prompt, issues, review, questi
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ anchor, context, body, ...more }),
   });
-  await fetch(
-    new URL("api/comments", url),
-    comment("hold this back", { severity: "major", pending: true }),
-  );
-  const quiet = run(repo.dir, "--wait", "0");
-  assert.equal(quiet.out.includes("hold this back"), false);
+  await fetch(new URL("api/comments", url), comment("change this", { severity: "major" }));
+  const flagged = run(repo.dir, "--wait", "0");
+  assert.match(flagged.out, /change this/);
 
   // A question reaches a call that is already listening.
   const listening = runAsync(repo.dir, "--wait", "10");
@@ -1376,7 +1373,7 @@ test("follow-me with no command walks the states: prompt, issues, review, questi
   assert.equal(heard.code, 0, heard.err);
   assert.match(heard.out, /new question c_[a-z2-7]{6} on the message of commit 1/);
   assert.match(heard.out, /why one commit\?/);
-  assert.equal(heard.out.includes("hold this back"), false);
+  assert.equal(heard.out.includes("change this"), false);
   assert.equal(
     heard.out.endsWith(
       'next: answer with follow-me reply <id> --body "<markdown>" [--diagram file], or run follow-me again to keep listening\n',
@@ -1390,7 +1387,7 @@ test("follow-me with no command walks the states: prompt, issues, review, questi
   const submitted = run(repo.dir, "--wait", "5");
   assert.equal(submitted.code, 0, submitted.err);
   assert.match(submitted.out, /the reviewer submitted the review/);
-  assert.match(submitted.out, /hold this back/);
+  assert.match(submitted.out, /change this/);
   assert.equal(
     submitted.out.endsWith("next: done; the user can port it with follow-me report --json\n"),
     true,
@@ -1400,7 +1397,7 @@ test("follow-me with no command walks the states: prompt, issues, review, questi
   const after = run(repo.dir, "--wait", "0");
   assert.equal(after.code, 0, after.err);
   assert.match(after.out, /^review v1 ended with 2 comments\n/);
-  assert.match(after.out, /hold this back/);
+  assert.match(after.out, /change this/);
   assert.equal(
     after.out.endsWith("next: done; the user can port it with follow-me report --json\n"),
     true,

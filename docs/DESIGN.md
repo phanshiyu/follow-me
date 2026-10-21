@@ -234,13 +234,10 @@ files stay the durable record written as it goes (`reviews/vN.draft.json`) and a
   `comment-deleted`, `reply`, `concern`, `resolved`, `version`, `submitted`, `ended`. `since` beyond the log is a 409,
   because a restarted server restarts the count. `api/state` carries the current `seq`, so a page
   that reads state and then polls from it misses nothing.
-- **Held flags.** A change request or rated comment the page creates carries `pending: true`. It is
-  stored, autosaved and sent to the page like any comment, but it is held back from the agent: the CLI
-  reads the log with `audience=agent`, which drops a pending comment's events and everything said
-  under it, and the prompt and the report never see it. A question is never pending, so it reaches
-  `watch` at once. `POST api/submit` clears `pending` on every held flag in one go, emits one
-  `submitted` event and then a `comment` event for each, so an agent that missed them sees them as new.
-  Ending the review submits implicitly, so a saved review never holds a pending flag.
+- **No held flags.** Every comment reaches the agent the moment the page posts it: `watch`, the bare
+  entry, the prompt and the report all see it. Older pages send `pending: true`; the parser drops it.
+  `POST api/submit` changes no comment and emits one `submitted` event, which tells the listening agent
+  the reviewer is done, so the bare entry prints the report.
 - **Replies.** `Comment.replies` holds the conversation under a comment, posted to
   `POST api/comments/<cid>/replies` by the agent (`follow-me reply`) or the reviewer. They are
   autosaved and written into the review. A page's `PUT` of a comment never overwrites them.
@@ -293,8 +290,8 @@ configured `user.email` wrote every commit of the branch (`--author` and `--revi
 
 Listening long-polls `api/events?audience=agent` for up to `--wait` seconds (default 60) from a cursor
 kept in `cursor.json` beside the session, keyed by the hosted session's id and `openedAt`, so a repeated
-call prints only what is new and a restarted server reads from the start. The agent's own replies, held
-flags and version swaps are not news. A `submitted` or `ended` event ends the loop with the report.
+call prints only what is new and a restarted server reads from the start. The agent's own replies and version
+swaps are not news. A `submitted` or `ended` event ends the loop with the report.
 
 ## Hand-off
 

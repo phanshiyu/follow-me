@@ -118,7 +118,6 @@ type CommentFields =
   | "kind"
   | "follows"
   | "severity"
-  | "pending"
   | "replies"
   | "author"
   | "diagram";
@@ -158,10 +157,6 @@ export function parseComment(v: unknown): Comment | string {
   }
   const severity = v.severity;
   if (severity !== undefined && !isSeverity(severity)) return "severity is unknown";
-  if (v.pending !== undefined && v.pending !== true) return "pending is not true";
-  if (v.pending === true && (v.kind === "question" || v.author === "agent")) {
-    return "only a reviewer's flag can be pending";
-  }
   const replies = parseList(v.replies, parseReply, "replies");
   if (typeof replies === "string") return replies;
   return {
@@ -177,7 +172,6 @@ export function parseComment(v: unknown): Comment | string {
     ...(v.kind === "question" ? { kind: "question" } : {}),
     ...(follows === undefined ? {} : { follows }),
     ...(severity === undefined ? {} : { severity }),
-    ...(v.pending === true ? { pending: true } : {}),
     ...(replies.length === 0 ? {} : { replies }),
     ...(v.author === "agent" ? { author: "agent" } : {}),
     ...(v.diagram === undefined ? {} : { diagram: v.diagram }),

@@ -399,31 +399,6 @@ function mintReplyId(taken: ReadonlySet<string>): ReplyId {
 /** Distributes over the union, so each event type keeps its own fields. */
 type EventBody = ServerEvent extends infer E ? (E extends unknown ? Omit<E, "seq"> : never) : never;
 
-/**
- * What the agent may see of the log: a pending flag is held back with everything said about it,
- * and reaches the agent as an ordinary "comment" event when the reviewer submits.
- */
-function forAgent(log: readonly ServerEvent[]): ServerEvent[] {
-  const held = new Set<CommentId>();
-  const out: ServerEvent[] = [];
-  for (const event of log) {
-    if (event.type === "comment" || event.type === "comment-updated") {
-      const { comment } = event;
-      if (comment.pending === true) {
-        held.add(comment.id);
-        continue;
-      }
-      if (held.delete(comment.id)) out.push({ ...event, type: "comment" });
-      else out.push(event);
-    } else if (event.type === "comment-deleted") {
-      if (!held.delete(event.id)) out.push(event);
-    } else if (event.type === "reply") {
-      if (!held.has(event.commentId)) out.push(event);
-    } else out.push(event);
-  }
-  return out;
-}
-
 const DEFAULT_POLL_MS = 25_000;
 const MAX_POLL_MS = 60_000;
 const STREAM_PING_MS = 15_000;
@@ -452,10 +427,9 @@ function hostSession(
     for (const wake of [...waiters]) wake();
     for (const listener of [...listeners]) listener();
   };
-  const seen = (agent: boolean): readonly ServerEvent[] => (agent ? forAgent(events) : events);
-  const waitForEvents = (since: number, timeoutMs: number, signal: AbortSignal, agent: boolean) =>
+  const waitForEvents = (since: number, timeoutMs: number, signal: AbortSignal) =>
     new Promise<{ readonly seq: number; readonly events: readonly ServerEvent[] }>((resolve) => {
-      const news = () => seen(agent).filter((e) => e.seq > since);
+      const news = () => events.filter((e) => e.seq > since);
       const answer = () => resolve({ seq: events.length, events: news() });
       if (news().length > 0 || timeoutMs === 0 || signal.aborted) return answer();
       const wake = () => {
@@ -533,19 +507,6 @@ function hostSession(
     return parsed;
   };
 
-  /** Clears `pending` on every held flag at once and tells the agent what it missed. */
-  const release = (): number => {
-    const held = [...view.comments.values()].filter((c) => c.pending === true);
-    if (held.length === 0) return 0;
-    emit({ type: "submitted" });
-    for (const comment of held) {
-      const { pending: _held, ...open } = comment;
-      view.comments.set(comment.id, open);
-      emit({ type: "comment", comment: open });
-    }
-    return held.length;
-  };
-
   const review = (): Review => {
     const concerns = [...view.decisions.values()];
     const resolved = [...view.resolved];
@@ -556,7 +517,7 @@ function hostSession(
       planVersion: view.loaded.state.version,
       planHash: view.loaded.state.planHash,
       endedAt: new Date().toISOString(),
-      comments: [...view.comments.values()].filter((c) => c.pending !== true),
+      comments: [...view.comments.values()],
       ...(concerns.length === 0 ? {} : { concerns }),
       ...(resolved.length === 0 ? {} : { resolved }),
       ...(excluded === null ? {} : { excluded }),
@@ -612,12 +573,7 @@ function hostSession(
     }),
     /** Events after `since`, now and as they happen, until unfollowed or the review ends. */
     latest: () => events.length,
-    follow: (
-      since: number,
-      send: (event: ServerEvent) => void,
-      stop: () => void,
-      agent: boolean,
-    ) => {
+    follow: (since: number, send: (event: ServerEvent) => void, stop: () => void) => {
       if (since > events.length) {
         throw new HttpError(
           409,
@@ -626,7 +582,7 @@ function hostSession(
       }
       let last = since;
       const flush = () => {
-        for (const event of seen(agent).filter((e) => e.seq > last)) {
+        for (const event of events.filter((e) => e.seq > last)) {
           send(event);
           last = event.seq;
           if (event.type === "ended") {
@@ -640,14 +596,14 @@ function hostSession(
       flush();
       return () => listeners.delete(flush);
     },
-    poll: (since: number, timeoutMs: number, signal: AbortSignal, agent: boolean) => {
+    poll: (since: number, timeoutMs: number, signal: AbortSignal) => {
       if (since > events.length) {
         throw new HttpError(
           409,
           `since ${since} is ahead of this session's log (${events.length})`,
         );
       }
-      return waitForEvents(since, timeoutMs, signal, agent);
+      return waitForEvents(since, timeoutMs, signal);
     },
     report: () => report(review()),
     reportItems: () => {
@@ -748,12 +704,14 @@ function hostSession(
       await saveDraft();
       return { comments: [...view.excludedComments], concerns: [...view.excludedConcerns] };
     },
-    /** Releases every held flag in one go; the reviewer pressed Submit. */
-    submit: async (): Promise<{ released: number }> => {
+    /**
+     * The reviewer pressed Submit. Every comment already reached the agent, so this only tells it
+     * the reviewer is done; `released` stays for pages that still read it.
+     */
+    submit: (): { released: number } => {
       open();
-      const released = release();
-      await saveDraft();
-      return { released };
+      emit({ type: "submitted" });
+      return { released: 0 };
     },
     resolve: async (raw: unknown): Promise<readonly CommentId[]> => {
       open();
@@ -794,7 +752,6 @@ function hostSession(
           { ...view.registration, version, hash, lockToken: null },
           view.loaded.release,
         );
-        release();
         if (hasWork()) await writeReview(review());
         else await rm(view.draftFile, { force: true });
         view = viewOf(
@@ -811,7 +768,6 @@ function hostSession(
     end: async (): Promise<{ review: Review; file: string }> => {
       open();
       ending = true;
-      release();
       const finished = review();
       const file = await writeReview(finished);
       view.loaded.release();
@@ -1006,7 +962,6 @@ export function startServer(opts: HostOptions): Promise<Host> {
         since,
         (event) => res.write(`id: ${event.seq}\ndata: ${JSON.stringify(event)}\n\n`),
         () => res.end(),
-        url.searchParams.get("audience") === "agent",
       );
       res.on("close", () => {
         clearInterval(ping);
@@ -1019,8 +974,7 @@ export function startServer(opts: HostOptions): Promise<Host> {
       res.on("close", () => abort.abort());
       const since = queryInt(url, "since", 0, Number.MAX_SAFE_INTEGER, 0);
       const timeout = queryInt(url, "timeout", 0, MAX_POLL_MS, DEFAULT_POLL_MS);
-      const agent = url.searchParams.get("audience") === "agent";
-      return sendJson(res, 200, await session.poll(since, timeout, abort.signal, agent));
+      return sendJson(res, 200, await session.poll(since, timeout, abort.signal));
     }
     if (method === "GET" && rest === "/api/report" && url.searchParams.get("format") === "json") {
       return sendJson(res, 200, session.reportItems());
@@ -1041,7 +995,7 @@ export function startServer(opts: HostOptions): Promise<Host> {
       return sendJson(res, 200, session.summary());
     }
     if (method === "POST" && rest === "/api/submit") {
-      return sendJson(res, 200, await session.submit());
+      return sendJson(res, 200, session.submit());
     }
     if (method === "POST" && rest === "/api/excluded") {
       return sendJson(res, 200, await session.exclude(await readJson(req)));

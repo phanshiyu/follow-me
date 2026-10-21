@@ -325,7 +325,7 @@ export async function pollEvents(
   since: number,
   timeoutMs: number,
 ) {
-  const path = `${summary.url}api/events?since=${since}&timeout=${timeoutMs}&audience=agent`;
+  const path = `${summary.url}api/events?since=${since}&timeout=${timeoutMs}`;
   const batch = parseEventBatch(await call(port, "GET", path));
   if (typeof batch === "string")
     throw new RegistrationError(`the server sent bad events: ${batch}`);
@@ -342,9 +342,7 @@ export async function followEvents(
   since: number,
   onEvent: (event: ServerEvent) => void,
 ): Promise<void> {
-  const res = await fetch(
-    `${sessionUrl(port, summary)}api/events/stream?since=${since}&audience=agent`,
-  );
+  const res = await fetch(`${sessionUrl(port, summary)}api/events/stream?since=${since}`);
   if (!res.ok || res.body === null) {
     throw new RegistrationError(`GET api/events/stream failed with ${res.status}`);
   }

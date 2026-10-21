@@ -1008,11 +1008,12 @@ test("offsets outside the hunk body, unsorted or on a file unit are refused and 
   assert.equal(state.comments.length, 1);
 });
 
-test("a pending flag is held from the agent until submit; a question is never held", async (t) => {
+test("a flag reaches the agent at once, and submit only says the review is done", async (t) => {
   const run = await start(t, twoCommitState());
   const agentEvents = async (since: number) =>
     jsonOf(await fetch(new URL(`api/events?since=${since}&timeout=0&audience=agent`, run.url)));
 
+  // An older page still sends pending: true; the server ignores it.
   const flag = await jsonOf(
     await post(run.url, "api/comments", {
       ...newComment("guard this"),
@@ -1020,50 +1021,28 @@ test("a pending flag is held from the agent until submit; a question is never he
       pending: true,
     }),
   );
-  assert.deepEqual(await agentEvents(0), { seq: 1, events: [] });
-  // The page still receives it, and it is autosaved.
-  const page = await jsonOf(await fetch(new URL("api/events?since=0&timeout=0", run.url)));
-  assert.equal(page.events.length, 1);
-  const draft = JSON.parse(await readFile(join(run.dir, "v3.draft.json"), "utf8"));
-  assert.equal(draft.comments[0].pending, true);
-  const live = await (await fetch(new URL("api/report", run.url))).text();
-  assert.doesNotMatch(live, /guard this/);
-
-  const question = await jsonOf(
-    await post(run.url, "api/comments", { ...newComment("why?"), kind: "question" }),
-  );
   const seen = await agentEvents(0);
   assert.deepEqual(
     seen.events.map((e: { type: string; comment: { id: string } }) => [e.type, e.comment.id]),
-    [["comment", question.id]],
+    [["comment", flag.id]],
   );
-  const refused = await post(run.url, "api/comments", {
-    ...newComment("x"),
-    kind: "question",
-    pending: true,
-  });
-  assert.equal(refused.status, 400);
+  assert.equal("pending" in seen.events[0].comment, false);
+  const draft = JSON.parse(await readFile(join(run.dir, "v3.draft.json"), "utf8"));
+  assert.equal("pending" in draft.comments[0], false);
+  assert.match(await (await fetch(new URL("api/report", run.url))).text(), /guard this/);
 
-  const submitted = await jsonOf(await post(run.url, "api/submit", {}));
-  assert.deepEqual(submitted, { released: 1 });
-  const after = await agentEvents(0);
+  assert.deepEqual(await jsonOf(await post(run.url, "api/submit", {})), { released: 0 });
+  const after = await agentEvents(1);
   assert.deepEqual(
     after.events.map((e: { type: string }) => e.type),
-    ["comment", "submitted", "comment"],
+    ["submitted"],
   );
-  assert.equal(after.events[2].comment.id, flag.id);
-  assert.equal("pending" in after.events[2].comment, false);
-  assert.match(await (await fetch(new URL("api/report", run.url))).text(), /guard this/);
-  assert.deepEqual(await jsonOf(await post(run.url, "api/submit", {})), { released: 0 });
-});
-
-test("ending the review submits pending flags into the saved review", async (t) => {
-  const run = await start(t, twoCommitState());
-  await post(run.url, "api/comments", { ...newComment("held"), severity: "minor", pending: true });
   await post(run.url, "api/end", {});
   const review = await run.done;
-  assert.equal(review?.comments.length, 1);
-  assert.equal(review?.comments[0]?.pending, undefined);
+  assert.deepEqual(
+    review?.comments.map((c) => c.body),
+    ["guard this"],
+  );
 });
 
 test("exclusions persist in the draft and the review, and the JSON report marks them", async (t) => {
