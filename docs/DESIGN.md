@@ -159,9 +159,39 @@ planner as comments to answer. `follow-me feedback` renders a walk review groupe
 each hunk as it reads in that commit with its line number on the tip. Walk reviews share
 `reviews/vN.json` with plan reviews, so one plan version gets one review of either kind.
 
-Playback is a script of steps built from the projected commits: a commit begins (its narration,
-else its title, is spoken), each unit begins (its narration is spoken and waited for), then each of
-the commit's own change lines appears or fades out. The UI holds a position into that script, and
-every line's look is a pure function of the position (`ui/playback.js`), so seeking, pausing and
-re-rendering never disagree. Speech uses the browser's `speechSynthesis`; muting keeps the timing
-without audio, and a timeout bounds engines that never report the end of an utterance.
+Playback is described in the next section.
+
+## The review page
+
+The page is a thin DOM shell (`ui/app.js`) over pure functions in `ui/playback.js`, which tsc
+checks and `test/playback.test.ts` covers. Anything a test can state as data lives there.
+
+Playback is a chunk stepper. `buildScript` turns the projected commits into beats: per commit an
+intro, one chunk per run of its own change lines inside one unit (at most three other lines between
+two change lines, cut to twelve lines, preferably right after a blank or closing line), one chunk
+per whole-file or mode unit, and an outro. A unit's narration goes on its first chunk. `schedule`
+turns beats into timed steps at a speed: a say step shows the narration card and speaks it, a show
+step reveals the chunk, a rest follows each chunk and a hold ends each commit. Reading time is
+`max(2000, 1000 + 300 per word)`, code time `clamp(1500 + 400 per non-blank added line + 200 per
+removed line, 2000, 9000)`, the rest 600ms and the hold 2500ms, all divided by the speed. A say step
+lasts its reading time or until speech ends, whichever is later. A commit without narration speaks
+its title and stays up long enough to read its whole message; a chunk without narration shows a
+generated label such as `src/lib.js · adds 2 lines in mul` and says nothing. Only one utterance
+exists at a time: every speak cancels the last, and every move retires the running loop by
+generation. The position is a step index, and every line's look is a pure function of it, so
+seeking, pausing and re-rendering never disagree.
+
+A hunk reads as it stands in its commit (`rowsOf`). The commit's own lines are the change, removals
+struck through. Lines earlier commits added are context, lines they removed are gone. Lines later
+commits remove are context, and lines later commits add fold into one row per run that links to
+their commit. The gutter shows base and tip line numbers (`lineNumbers`), computed from each hunk's
+base start shifted by earlier hunks of the file. Comments still anchor to change indices on the
+wire and are displayed by tip line number (`describeLines`).
+
+A commit and any unit may carry `diagram`, Mermaid source, beside `narration`. It parses like
+narration, and `parsePlanFile` rejects one whose first line does not name a Mermaid diagram type.
+The page draws the commit's diagram in a side panel and swaps to a unit's while playback is on that
+unit (`diagramAt`). The server serves Mermaid's ESM entry from `node_modules` at
+`/vendor/mermaid.mjs` and its chunks beside it, because the ESM build imports them by relative
+path. The page imports it only when the plan has a diagram, and shows Mermaid's error text in the
+panel when a diagram does not render.

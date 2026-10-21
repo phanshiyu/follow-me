@@ -77,10 +77,10 @@ If the hashes differ, `apply` exits with code 1. The commits are signed when you
 
 The red blob in the party hat is your branch tip. Nothing follow-me does moves it.
 
-![The review page: the commit list on the left, commit 1 of 8 on the right with its message and two hunks](assets/screenshots/review.png)
+![The review page: the commit list on the left, commit 3 of 8 with file line numbers, a comment on lines 14-15 and its diagram on the right](assets/screenshots/review.png)
 *The review page. Pick a commit on the left. Comment on its message, its position ("This belongs elsewhere"), a hunk, or single lines.*
 
-![One hunk split across commits: commit 3's lines are bright, the rest are dimmed and marked with the commit that takes them](assets/screenshots/split-hunk.png)
+![One hunk split across commits: commit 4 adds one line, earlier commits' lines read as context and the four lines commit 5 adds fold into one row](assets/screenshots/split-hunk.png)
 *One hunk split across commits. Commit 3 takes 2 of 7 change lines. The others are dimmed and marked "→ commit 4" or "→ commit 5".*
 
 On the review page, `n` or `j` goes to the next commit, `p` or `k` to the previous one. **End review** saves `.follow-me/<branch>/reviews/vN.json`. An unfinished review autosaves and comes back when you open the session again.
@@ -95,7 +95,7 @@ follow-me walk --base main
 
 `walk` extracts the branch and plans it as a narrated story. With an Anthropic key in the environment it asks the API. Without one, it prints `follow-me prompt --walk` for your coding agent, and you run `follow-me walk` again once the agent's draft passes `follow-me check`. `walk` applies nothing and writes no branch.
 
-![Playback: lines of commit 3 type in, the narration caption reads "Import the guard and call it where inputs come from outside.", with speed and voice pickers](assets/screenshots/playback.png)
+![Playback: chunk 2 of 2 of commit 3, its narration card above the two lines it introduces, the progress strip in the player bar and the unit's sequence diagram beside the code](assets/screenshots/playback.png)
 *Playback. Each line types in while the narration for its commit or hunk is read aloud. The caption shows the narration being read.*
 
 Playback goes commit by commit. Space pauses, **Previous** and **Next** move between commits, and you can change the speed, pick a voice, or mute. Pause on any line to comment on it. Narration uses the browser's built-in speech synthesis, so it needs no key and no network.
