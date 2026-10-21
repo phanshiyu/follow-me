@@ -4,6 +4,8 @@ follow-me ships one skill, `skills/follow-me/SKILL.md`, in the open Agent Skills
 (https://agentskills.io). It tells an agent how to drive the `follow-me` CLI. Every harness below
 reads that file as-is, so installing means copying the `follow-me` folder into the directory the
 harness scans. The skill needs the `follow-me` command on your PATH.
+The agent does the planning: follow-me never calls a model and needs no API key, so it uses
+whatever model and credentials your harness already has.
 
 ## Install
 

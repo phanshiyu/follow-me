@@ -34,4 +34,4 @@ Preconditions:
 - The script runs the CLI from the checkout it lives in (it needs `node_modules`) but splits a clone, so the checkout's branches and `.follow-me/` stay untouched.
 - `apply` runs with `--no-sign`, so a global `commit.gpgsign` cannot prompt for a key in CI or a terminal.
 - The base moves with HEAD. A new commit that touches a file the gate cannot parse at the tip is reported as the tip's own state and does not fail the run.
-- Do not run `plan` without `--naive` here. It calls the Anthropic API.
+- `plan` without `--naive` exits 1 with a pointer to `follow-me prompt`; use `--naive` here.

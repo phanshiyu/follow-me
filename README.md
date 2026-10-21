@@ -30,7 +30,7 @@ You need Node 24 or newer and git.
 npm i -g @shiyuphan/follow-me
 ```
 
-follow-me ships an Agent Skill that teaches a coding agent to drive the CLI. Install it once:
+follow-me never calls a model and holds no API key. Your coding agent writes the plan, so the Agent Skill that teaches it to drive the CLI is part of the install. Install it once:
 
 ```sh
 follow-me install
@@ -50,10 +50,10 @@ follow-me uninstall         # removes exactly the files install writes
 Check out the branch you want to split and run this from the repo root:
 
 ```sh
-follow-me split --base main     # extract, draft, apply and open the review in one go
+follow-me split --base main     # extract, apply your agent's draft and open the review in one go
 ```
 
-With an Anthropic key in the environment, `split` asks the API for the draft. Without one, it writes `.follow-me/<branch>/prompt.md` and stops: ask your coding agent to follow it, then run `follow-me check` and `follow-me split` again. Every command ends with a `next:` line naming the step after it. The steps `split` runs are also commands of their own:
+Until there is a valid draft, `split` writes `.follow-me/<branch>/prompt.md` and stops: ask your coding agent to follow it, then run `follow-me check` and `follow-me split` again. Every command ends with a `next:` line naming the step after it. The steps `split` runs are also commands of their own:
 
 ```sh
 follow-me extract --base main   # snapshot the diff from main to the tip, list the units
@@ -67,9 +67,7 @@ follow-me feedback              # print the review as markdown for the agent
 
 A unit is a text hunk (`h_…`), a whole file that cannot be split by line (`f_…`), or a mode change (`m_…`). The draft assigns every change line to exactly one commit. `h_x:0-3,7` takes change lines 0 to 3 and 7 of hunk `h_x`, so one hunk can spread across several commits.
 
-If you skip the agent, `follow-me plan` asks the Anthropic API for the draft. It needs `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` in the environment, and takes `--model <id>`.
-
-`check` and `apply` also parse every file each commit writes, so a split can leave a commit that does not build but never one that ends inside a function. `.js`, `.ts`, `.json`, `.sh` and `.py` files are checked and other types are listed as skipped; `--syntax "<command with {file}>"` swaps in your own checker and `apply --allow-syntax-errors` goes ahead anyway. With no API key and no agent, `follow-me plan --naive` writes one `wip: <path>` commit per touched file, which is enough to run `check`, `apply` and the tree proof on any branch.
+`check` and `apply` also parse every file each commit writes, so a split can leave a commit that does not build but never one that ends inside a function. `.js`, `.ts`, `.json`, `.sh` and `.py` files are checked and other types are listed as skipped; `--syntax "<command with {file}>"` swaps in your own checker and `apply --allow-syntax-errors` goes ahead anyway. Without an agent, `follow-me plan --naive` writes one `wip: <path>` commit per touched file, which is enough to run `check`, `apply` and the tree proof on any branch.
 
 `apply` never writes your original branch, your index, or your working tree. It builds the commits in a temporary index and points `<branch>-split` at them, or the branch you name with `--name`. It refuses the branch being split and any branch checked out in a worktree, even with `--force`. `--force` only lets it move a branch follow-me did not create. Then it compares the last commit's tree hash with the original tip's and prints both:
 
@@ -102,12 +100,12 @@ Check out their branch and run:
 follow-me walk --base main
 ```
 
-`walk` extracts the branch and plans it as a narrated story. With an Anthropic key in the environment it asks the API. Without one, it prints `follow-me prompt --walk` for your coding agent, and you run `follow-me walk` again once the agent's draft passes `follow-me check`. `walk` applies nothing and writes no branch.
+`walk` extracts the branch and plans it as a narrated story. When there is no plan yet, it prints `follow-me prompt --walk` for your coding agent, and you run `follow-me walk` again once the agent's draft passes `follow-me check`. `walk` applies nothing and writes no branch.
 
 ![Playback: chunk 2 of 2 of commit 3, its narration card above the two lines it introduces, the progress strip in the player bar and the unit's sequence diagram beside the code](assets/screenshots/playback.png)
 *Playback. Each line types in while the narration for its commit or hunk is read aloud. The caption shows the narration being read.*
 
-Playback goes commit by commit. Space pauses, **Previous** and **Next** move between commits, and you can change the speed, pick a voice, or mute. Pause on any line to comment on it. Narration uses the browser's built-in speech synthesis, so it needs no key and no network.
+Playback goes commit by commit. Space pauses, **Previous** and **Next** move between commits, and you can change the speed, pick a voice, or mute. Pause on any line to comment on it. Narration uses the browser's built-in speech synthesis, so it needs no network.
 
 When you end the review, `follow-me feedback --walk` prints it as a code review for the author, grouped by file. Code reviews are saved apart from the author's plan reviews, in `.follow-me/<branch>/reviews/walk/vN.json`, so you can walk a plan the author already reviewed. Each comment quotes its hunk as it reads in that commit, with the line number on the branch. The author's agent fixes the branch itself. A walk review never feeds the split loop below.
 

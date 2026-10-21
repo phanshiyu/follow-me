@@ -44,7 +44,7 @@ When the user says they finished reviewing:
 commit by commit in the browser, one chunk of change at a time: it reads your narration aloud,
 then shows the lines it explains. The reviewer comments on the code. Nothing is applied and no branch is written.
 
-1. `follow-me walk [--branch <name>]` opens the session. If there is no plan yet and no API key, it
+1. `follow-me walk [--branch <name>]` opens the session. If there is no plan yet, it
    prints two commands and stops. Run the first, `follow-me prompt --walk`, and read all of it.
 2. Write the draft it names. The order rules are the same, and every commit also gets a
    `narration`: what the author is thinking while writing it, first person, present tense, two or

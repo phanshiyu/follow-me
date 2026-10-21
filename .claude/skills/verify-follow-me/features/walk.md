@@ -4,7 +4,7 @@ Walk is the reviewer's mode. It plays a narrated plan of someone else's branch c
 
 ## Sub-features
 
-- `walk-no-plan` prints the two commands to run when no plan exists and no API key is set.
+- `walk-no-plan` prints the two commands to run when no plan exists.
 - `walk-narrated-plan` accepts a draft whose commits and units carry narration.
 - `walk-serve` hosts the plan in walk mode and exposes the narration in the page state.
 - `walk-comment` records a hunk comment in a walk review.
@@ -21,7 +21,7 @@ Walk is the reviewer's mode. It plays a narrated plan of someone else's branch c
 
 Preconditions:
 
-- `$A` is a fresh fixture with no `.follow-me/` yet, `FOLLOW_ME_HOME` is the throwaway dir, no `ANTHROPIC_*` variable is set. `mkdir -p "$EV/walk"`.
+- `$A` is a fresh fixture with no `.follow-me/` yet, `FOLLOW_ME_HOME` is the throwaway dir. `mkdir -p "$EV/walk"`.
 
 - **No plan.** In `$A`, run `"$FM" extract --base main`, then `"$FM" walk --no-open`. Exit code `1`, stdout begins `no plan for feature yet` and ends with `follow-me prompt --walk` and `follow-me walk`.
 - **Prompt.** Run `"$FM" prompt --walk | head -3`. It starts `# follow-me: tell the story of this branch`.
@@ -48,7 +48,7 @@ Preconditions:
 
 ## Gotchas
 
-- `walk` without a plan and without `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` stops after printing instructions. With a key it would call the API, so unset both before driving.
+- `walk` without a plan stops after printing instructions. It never calls a model.
 - A walk review is a code review for the author. It does not feed the next split plan as comments to answer.
 - A draft with no narration still walks. The narration check needs the fields above.
 - Speech is the browser's built-in synthesis. The API run cannot hear it, so narration is verified as text in `state.json`.

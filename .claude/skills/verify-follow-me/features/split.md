@@ -38,6 +38,6 @@ Preconditions:
 
 - The fixture repo has `.follow-me/` ignored by its own `.gitignore`, so `git status --porcelain` stays empty even after a session exists.
 - Unit ids are content hashes. Read them from `loadDiff` as `drive.sh` does. The ids in `follow-me prompt` examples (`h_0123456789ab`, `f_0123456789ab`, `h_ba9876543210`) are not real units.
-- `plan` calls the Anthropic API. Do not run it. Write the draft yourself.
+- `plan` without `--naive` exits 1: there is no built-in planner. Write the draft yourself.
 - Running `drive.sh` twice on one fixture reuses its session. Use a fresh fixture for a clean first-apply proof.
 - Without `FOLLOW_ME_HOME` the script refuses to run. That guard exists to keep the real server out of the run.

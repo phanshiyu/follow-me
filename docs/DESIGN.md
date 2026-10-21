@@ -91,9 +91,9 @@ they pointed at. A comment is answered when a later plan lists it in
 `responses`; nothing is stored on the comment. Unanswered comments are warnings,
 not errors, so a human can still apply.
 
-Three planners write the same draft format. An agent reads `follow-me prompt`
-and writes `draft.json` itself. `follow-me plan` asks the Anthropic API. `follow-me plan --naive`
-needs neither: one `wip: <path>` commit per touched file in diff order, so the pipeline runs on a
+Two planners write the same draft format. An agent reads `follow-me prompt`
+and writes `draft.json` itself; follow-me never calls a model. `follow-me plan --naive`
+needs no agent: one `wip: <path>` commit per touched file in diff order, so the pipeline runs on a
 real branch with no planner. `scripts/dogfood.sh` runs it on this repo's last commits in CI.
 
 ## Many sessions
