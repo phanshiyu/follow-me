@@ -367,7 +367,14 @@ function makeSession(root: string, dir: string, anchor: SessionAnchor, diff: Dif
       .filter((v) => below(v) && v > (done?.version ?? 0))
       .sort((a, b) => a - b)
       .at(-1);
-    return unfinished === undefined ? (done?.review ?? null) : draftReview(mode, unfinished);
+    if (unfinished === undefined) return done?.review ?? null;
+    // A draft answers comments from every earlier version, so the finished review's
+    // comments stay visible beside the newer autosave's.
+    const current = draftReview(mode, unfinished);
+    if (done === undefined) return current;
+    const seen = new Set(current.comments.map((c) => c.id));
+    const earlier = done.review.comments.filter((c) => !seen.has(c.id));
+    return { ...current, comments: [...earlier, ...current.comments] };
   };
 
   return {

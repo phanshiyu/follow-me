@@ -515,6 +515,7 @@ async function apply(cwd: string, args: Args): Promise<number> {
  * write runs under it, and the page is then swapped to the new plan version in place.
  */
 async function applyHosted(session: Session, args: Args, open: Open): Promise<number> {
+  rememberPort(session, open.port);
   const code = await applyLocked(session, args);
   const latest = session.plans().at(-1);
   if (code !== 0 || latest === undefined) return code;
@@ -698,6 +699,7 @@ async function hostReview(
   const home = stateDir();
   const open = await openOnServer(session, mode);
   if (open !== null) {
+    rememberPort(session, open.port);
     announce(sessionUrl(open.port, open.summary), args);
     return { kind: "elsewhere", ...open };
   }
@@ -711,7 +713,7 @@ async function hostReview(
       hash: prepared.plan.hash,
       lockToken: held.token,
     };
-    const port = portOf(args);
+    const port = portOf(args) ?? rememberedPort(session);
     let started: Started;
     const running = await runningServer(home, port);
     if (running !== null) started = { kind: "attached", port: running };
@@ -721,6 +723,7 @@ async function hostReview(
       started = { kind: "attached", port: server.port };
     } else started = await startOrAttach(home, port, say);
 
+    rememberPort(session, started.kind === "attached" ? started.port : started.host.port);
     if (started.kind === "attached") {
       const summary = await registerWith(started.port, registration);
       announce(sessionUrl(started.port, summary), args);
@@ -769,7 +772,9 @@ async function openOnServer(session: Session, mode: ReviewMode | null): Promise<
   const summary = (await listSessions(live.port)).find(
     (s) => s.id === id && (mode === null || s.mode === mode),
   );
-  return summary === undefined ? null : { port: live.port, summary };
+  if (summary === undefined) return null;
+  rememberPort(session, live.port);
+  return { port: live.port, summary };
 }
 
 /**
@@ -802,6 +807,7 @@ async function revive(session: Session): Promise<Open | null> {
     if (error instanceof RegistrationError) return null;
     throw error;
   }
+  rememberPort(session, server.port);
   say("review server restarted, nothing lost");
   if (server.port !== record.port) {
     say(portFallbackMessage(record.port, server.port));
@@ -955,6 +961,7 @@ async function split(cwd: string, args: Args): Promise<number> {
   say(headline(session));
   const open = await openOnServer(session, "split");
   if (open !== null) {
+    rememberPort(session, open.port);
     announce(sessionUrl(open.port, open.summary), args);
     next("end the review on the page, then follow-me report");
     return 0;
@@ -1807,6 +1814,27 @@ function upgrade(targets: SkillTargets, cwd: string): number {
 }
 
 const HELP_OR_VERSION = new Set(["--help", "--version"]);
+
+/**
+ * The port the page was last served on for this session. A server that died or exited idle
+ * takes its record with it; reusing the port keeps an open page on a live origin.
+ */
+function rememberedPort(session: Session): number | undefined {
+  try {
+    const raw: unknown = JSON.parse(readFileSync(join(session.dir, "page.json"), "utf8"));
+    if (typeof raw === "object" && raw !== null && "port" in raw) {
+      const port = raw.port;
+      if (typeof port === "number" && Number.isInteger(port) && port > 0) return port;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+function rememberPort(session: Session, port: number): void {
+  writeFileSync(join(session.dir, "page.json"), `${JSON.stringify({ port })}\n`);
+}
 
 export async function main(argv: readonly string[], cwd: string): Promise<number> {
   const [command, ...rest] = argv;
