@@ -8,7 +8,9 @@
  *               project every commit, prove the last one equals the tip. Pure.
  *   git.ts      the only module that spawns git: load a Diff, write a branch from a ValidPlan.
  *   session.ts  the .follow-me/<slug>/ layout: session anchor, plans, reviews, draft.
- *   prompt.ts   the planner prompt for an agent, and the Anthropic API planner.
+ *   comments.ts the wire formats of review state: comments, replies, concern decisions, the
+ *               review file, the autosaved draft and the server's events. Pure parsers.
+ *   prompt.ts   the planner prompt for an agent, the feedback and the consolidated report.
  *   server.ts   the review server: a registry of hosted sessions, their JSON API, and ui/.
  *   host.ts     the one server per user: its record in the state dir, attach, start, stop.
  *   cli.ts      argv -> one call into the modules above.
@@ -26,6 +28,10 @@ export type ModeUnitId = Brand<string, "ModeUnitId">;
 export type UnitId = HunkId | FileUnitId | ModeUnitId;
 export type Sha = Brand<string, "Sha">;
 export type CommentId = Brand<string, "CommentId">;
+/** "r_" + 6 base32. */
+export type ReplyId = Brand<string, "ReplyId">;
+/** "k_" + 8 hex of sha256 over the unit, the lines and the text, so re-planning keeps it. */
+export type ConcernId = Brand<string, "ConcernId">;
 export type PlanVersion = Brand<number, "PlanVersion">;
 /** Repo-relative path exactly as git prints it. */
 export type RepoPath = Brand<string, "RepoPath">;
@@ -108,6 +114,29 @@ export type UnitRef = {
   readonly select: Selection;
   readonly narration?: string;
   readonly diagram?: string;
+  readonly concerns?: readonly Concern[];
+};
+
+export type Severity = "blocker" | "major" | "minor";
+export type ConcernKind = "bug" | "missing-test" | "naming" | "risk";
+
+/**
+ * Something the planning agent would raise in a pull request, in its voice as a reviewer. Written
+ * without an id; validation derives one. lines are change indices of the unit, allowed only on a
+ * unit ref.
+ */
+export type Concern = {
+  readonly severity: Severity;
+  readonly kind: ConcernKind;
+  readonly text: string;
+  readonly lines?: readonly number[];
+};
+
+/** A concern as validation carries it into a projected commit: with its id and its unit. */
+export type PlacedConcern = Concern & {
+  readonly id: ConcernId;
+  /** Absent for a concern on the commit as a whole. */
+  readonly unit?: UnitId;
 };
 
 /**
@@ -118,13 +147,17 @@ export type PlannedCommit = {
   readonly message: string;
   readonly narration?: string;
   readonly diagram?: string;
+  readonly concerns?: readonly Concern[];
   readonly units: readonly UnitRef[];
 };
-export type ResponseStatus = "addressed" | "declined" | "deferred";
+/** "answered" is valid only for a question. */
+export type ResponseStatus = "addressed" | "declined" | "deferred" | "answered";
 export type CommentResponse = {
   readonly comment: CommentId;
   readonly status: ResponseStatus;
   readonly note: string;
+  /** Where in this plan the explanation lives. commit is 1-based, as the prompt numbers commits. */
+  readonly at?: { readonly commit: number; readonly unit?: UnitId };
 };
 
 /**
@@ -154,6 +187,8 @@ export type ProjectedCommit = {
   readonly message: string;
   readonly narration?: string;
   readonly diagram?: string;
+  /** Every concern of the commit: its own first, then those of its unit refs in order. */
+  readonly concerns?: readonly PlacedConcern[];
   /** Hunk selections resolved to explicit lines; whole-file and mode units stay "rest". */
   readonly refs: readonly UnitRef[];
   readonly changes: readonly TreeChange[];
@@ -190,6 +225,13 @@ export type PlanIssue =
       readonly under: RepoPath;
     }
   | { readonly kind: "unknown-response"; readonly comment: string }
+  | { readonly kind: "bad-answer"; readonly comment: CommentId; readonly reason: string }
+  | { readonly kind: "bad-concern"; readonly commit: number; readonly reason: string }
+  | {
+      readonly kind: "too-many-concerns";
+      readonly unit: UnitId;
+      readonly commits: readonly number[];
+    }
   | {
       readonly kind: "final-mismatch";
       readonly path: RepoPath;
@@ -201,7 +243,8 @@ export type PlanIssue =
 export type PlanWarning =
   | { readonly kind: "unanswered"; readonly comment: CommentId; readonly review: PlanVersion }
   /** A title over LONG_TITLE characters; the page clamps titles, so long ones lose their end. */
-  | { readonly kind: "long-title"; readonly commit: number; readonly length: number };
+  | { readonly kind: "long-title"; readonly commit: number; readonly length: number }
+  | { readonly kind: "question-addressed"; readonly comment: CommentId };
 
 export type Anchor =
   | {
@@ -214,13 +257,45 @@ export type Anchor =
   | { readonly kind: "position"; readonly commit: number }
   | { readonly kind: "plan" };
 
-/** Comments snapshot what they pointed at, so a later reader need not load the old plan. */
+export type ReplyAuthor = "agent" | "reviewer";
+
+/** One turn of the conversation under a comment. diagram is Mermaid source. */
+export type Reply = {
+  readonly id: ReplyId;
+  readonly author: ReplyAuthor;
+  readonly body: string;
+  readonly diagram?: string;
+  readonly createdAt: string;
+};
+
+/**
+ * Comments snapshot what they pointed at, so a later reader need not load the old plan. Absent
+ * kind is a change request; "question" asks for an explanation. context.lines holds the selected
+ * change lines as text, for when the unit no longer exists.
+ */
 export type Comment = {
   readonly id: CommentId;
   readonly anchor: Anchor;
-  readonly context: { readonly commitMessage: string; readonly path: RepoPath | null };
+  readonly context: {
+    readonly commitMessage: string;
+    readonly path: RepoPath | null;
+    readonly lines?: readonly string[];
+  };
   readonly body: string;
   readonly createdAt: string;
+  readonly kind?: "question";
+  /** The question this one asks again. */
+  readonly follows?: CommentId;
+  readonly severity?: Severity;
+  readonly replies?: readonly Reply[];
+};
+
+/** The reviewer's verdict on one of the agent's concerns; severity overrides the agent's. */
+export type ConcernDecision = {
+  readonly concern: ConcernId;
+  readonly decision: "kept" | "dismissed";
+  readonly severity?: Severity;
+  readonly note?: string;
 };
 
 /**
@@ -237,7 +312,41 @@ export type Review = {
   readonly planHash: string;
   readonly endedAt: string;
   readonly comments: readonly Comment[];
+  readonly concerns?: readonly ConcernDecision[];
+  /** Questions from earlier versions the reviewer marked resolved during this review. */
+  readonly resolved?: readonly CommentId[];
 };
+
+/** The autosave of an unfinished review, in the same shape its Review will have. */
+export type ReviewDraft = {
+  readonly comments: readonly Comment[];
+  readonly concerns: readonly ConcernDecision[];
+  readonly resolved: readonly CommentId[];
+};
+
+/** The version before a swap or a fresh open: its comments and what the new plan answered. */
+export type PreviousVersion = {
+  readonly version: PlanVersion;
+  readonly comments: readonly Comment[];
+  readonly responses: readonly CommentResponse[];
+};
+
+/** One entry of the hosted session's append-only log. seq starts at 1 and never repeats. */
+export type ServerEvent = { readonly seq: number } & (
+  | { readonly type: "comment" | "comment-updated"; readonly comment: Comment }
+  | { readonly type: "comment-deleted"; readonly id: CommentId }
+  | { readonly type: "reply"; readonly commentId: CommentId; readonly reply: Reply }
+  | {
+      readonly type: "concern";
+      readonly concernId: ConcernId;
+      readonly decision: "kept" | "dismissed";
+      readonly severity?: Severity;
+      readonly note?: string;
+    }
+  | { readonly type: "resolved"; readonly commentId: CommentId; readonly resolved: boolean }
+  | { readonly type: "version"; readonly version: PlanVersion; readonly hash: string }
+  | { readonly type: "ended"; readonly review: string }
+);
 
 /** Wire format of session.json. */
 export type SessionAnchor = {

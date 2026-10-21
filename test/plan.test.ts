@@ -118,7 +118,7 @@ test("malformed: every bad field is reported with its JSON path", () => {
     {
       kind: "malformed",
       at: "$.commits[0].units[1]",
-      reason: 'expected a unit ref string or { "unit", "narration", "diagram" }',
+      reason: 'expected a unit ref string or { "unit", "narration", "diagram", "concerns" }',
     },
     { kind: "malformed", at: "$.commits[1]", reason: "expected an object" },
     { kind: "malformed", at: "$.responses", reason: "expected an array" },
@@ -472,4 +472,158 @@ test("validation carries commit and unit narration into the projected commits", 
     second?.refs.find((r) => r.unit === lib),
     { unit: lib, select: { kind: "lines", changes: [0, 1, 3, 4, 5, 6] }, narration: "The rest." },
   );
+});
+
+function planWith(commits: readonly unknown[], responses: readonly unknown[] = []) {
+  return { ...draft(diff, []), commits, responses };
+}
+
+test("concerns get derived ids, ride on projected commits and leave plain plans byte-identical", () => {
+  const lib = unitAt(diff, "src/lib.js", 1);
+  const concern = { severity: "major", kind: "bug", text: "div skips non-numbers.", lines: [2] };
+  const withConcerns = planWith([
+    {
+      message: "feat: guard div",
+      concerns: [{ severity: "minor", kind: "risk", text: "This ordering hides the guard." }],
+      units: [{ unit: `${lib}:2`, concerns: [concern] }],
+    },
+    { message: "feat: the rest", units: everything(diff) },
+  ]);
+  const verdict = validatePlan(diff, withConcerns);
+  assert.ok(verdict.ok, JSON.stringify(!verdict.ok && verdict.issues));
+  const [first, second] = verdict.plan.commits;
+  assert.deepEqual(
+    first?.concerns?.map(({ id: _id, ...rest }) => rest),
+    [
+      { severity: "minor", kind: "risk", text: "This ordering hides the guard." },
+      { ...concern, unit: lib },
+    ],
+  );
+  for (const placed of first?.concerns ?? []) assert.match(placed.id, /^k_[0-9a-f]{8}$/);
+  assert.equal(second?.concerns, undefined);
+
+  // Re-planning around the same concern keeps its id.
+  const reordered = validatePlan(
+    diff,
+    planWith([
+      {
+        message: "feat: the rest",
+        units: [`${lib}:0-1,3-6`, ...everything(diff).filter((u) => u !== lib)],
+      },
+      { message: "feat: guard div", units: [{ unit: `${lib}:2`, concerns: [concern] }] },
+    ]),
+  );
+  assert.ok(reordered.ok);
+  assert.equal(reordered.plan.commits[1]?.concerns?.[0]?.id, first?.concerns?.[1]?.id);
+
+  // The wire form survives a round trip, and concern-free plans serialize as before.
+  const parsed = parsePlanFile(withConcerns);
+  assert.ok(!Array.isArray(parsed));
+  assert.deepEqual(parsePlanFile(serializePlanFile(parsed)), parsed);
+  const plain = planWith([{ message: "a", units: everything(diff) }]);
+  const nulled = parsePlanFile(
+    planWith([{ message: "a", units: everything(diff), concerns: null }]),
+  );
+  assert.ok(!Array.isArray(nulled));
+  assert.equal(JSON.stringify(serializePlanFile(nulled)), JSON.stringify(plain));
+});
+
+test("a unit carries one concern, on lines its commit takes, and lines only belong to units", () => {
+  const lib = unitAt(diff, "src/lib.js", 1);
+  const rest = everything(diff).filter((u) => u !== lib);
+  const note = (text: string, lines?: number[]) => ({
+    severity: "minor",
+    kind: "naming",
+    text,
+    ...(lines === undefined ? {} : { lines }),
+  });
+  const two = validatePlan(
+    diff,
+    planWith([
+      { message: "a", units: [{ unit: `${lib}:0-1`, concerns: [note("one", [0])] }] },
+      { message: "b", units: [{ unit: `${lib}:2-6`, concerns: [note("two", [3])] }, ...rest] },
+    ]),
+  );
+  assert.deepEqual(issuesOf(two), [{ kind: "too-many-concerns", unit: lib, commits: [0, 1] }]);
+
+  const elsewhere = validatePlan(
+    diff,
+    planWith([
+      { message: "a", units: [{ unit: `${lib}:0-1`, concerns: [note("far", [5])] }] },
+      { message: "b", units: [`${lib}:2-6`, ...rest] },
+    ]),
+  );
+  assert.deepEqual(
+    issuesOf(elsewhere).map((i) => i.kind),
+    ["bad-concern"],
+  );
+
+  const onCommit = parsePlanFile(
+    planWith([{ message: "a", concerns: [note("x", [0])], units: everything(diff) }]),
+  );
+  assert.deepEqual(onCommit, [
+    {
+      kind: "malformed",
+      at: "$.commits[0].concerns",
+      reason: "[0]: lines: only a concern on a unit ref has lines",
+    },
+  ]);
+  const badSeverity = parsePlanFile(
+    planWith([
+      { message: "a", concerns: [{ severity: "huge", kind: "bug", text: "x" }], units: [] },
+    ]),
+  );
+  assert.ok(Array.isArray(badSeverity));
+});
+
+test("an answered response must answer a question and point at an explanation", () => {
+  const units = everything(diff);
+  const base = review("c_q", "c_change");
+  const asked: Review = {
+    ...base,
+    comments: base.comments.map((c) => (c.id === "c_q" ? { ...c, kind: "question" } : c)),
+  };
+  const answer = (comment: string, at: unknown, status = "answered") => ({
+    comment,
+    status,
+    note: "because",
+    ...(at === undefined ? {} : { at }),
+  });
+  const verdictOf = (commit: object, responses: unknown[]) =>
+    validatePlan(diff, planWith([{ message: "a", ...commit, units }], responses), {
+      lastReview: asked,
+    });
+  const reasons = (responses: unknown[], commit: object = { narration: "Here is why." }) =>
+    issuesOf(verdictOf(commit, responses)).map((i) =>
+      i.kind === "bad-answer" ? i.reason : i.kind,
+    );
+  const change = answer("c_change", undefined, "deferred");
+
+  const ok = verdictOf({ narration: "Here is why." }, [answer("c_q", { commit: 1 }), change]);
+  assert.ok(ok.ok);
+  assert.equal(ok.plan.file.responses[0]?.at?.commit, 1);
+
+  assert.deepEqual(reasons([answer("c_q", undefined), change]), [
+    'an answer needs "at" naming the commit that explains it',
+  ]);
+  assert.deepEqual(reasons([answer("c_q", { commit: 2 }), change]), [
+    "at.commit 2 is not a commit of this plan",
+  ]);
+  assert.deepEqual(reasons([answer("c_q", { commit: 1 }), change], {}), [
+    "commit 1 has no narration or diagram to point at",
+  ]);
+  assert.deepEqual(
+    reasons([
+      answer("c_q", { commit: 1, unit: "h_ffffffffffff" }),
+      answer("c_change", { commit: 1 }),
+    ]),
+    [
+      "commit 1 does not take h_ffffffffffff",
+      "answered is only for questions; use addressed, declined or deferred",
+    ],
+  );
+
+  const addressed = verdictOf({}, [answer("c_q", undefined, "addressed"), change]);
+  assert.ok(addressed.ok);
+  assert.deepEqual(addressed.warnings, [{ kind: "question-addressed", comment: "c_q" }]);
 });

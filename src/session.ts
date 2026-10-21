@@ -7,10 +7,12 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { isRepoPath, isSha, isUnitId } from "./diff.ts";
+import { parseDraft, parseReview } from "./comments.ts";
+import { isSha } from "./diff.ts";
 import {
   branchExists,
   currentBranch,
@@ -23,8 +25,6 @@ import {
   resolveCommit,
 } from "./git.ts";
 import {
-  isArray,
-  isCommentId,
   isFields,
   isPlanVersion,
   parsePlanFile,
@@ -33,9 +33,7 @@ import {
   type ValidPlan,
 } from "./plan.ts";
 import type {
-  Anchor,
   Applied,
-  Comment,
   Diff,
   LockToken,
   PlanFile,
@@ -214,6 +212,12 @@ export type Session = {
   walkReviews(): StoredReview[];
   /** The split-mode review with the highest version, or null. Walk reviews never feed the planner. */
   lastReview(): Review | null;
+  /**
+   * The latest review of this mode below `before` (any version when null): the finished one, or
+   * the autosave of an unfinished review at a higher version. During the live loop the comments
+   * only exist in that autosave, and a plan answering them must still validate against them.
+   */
+  priorReview(mode: ReviewMode, before: PlanVersion | null): Review | null;
   readDraft(): unknown;
   writeDraft(draft: unknown): void;
   writePrompt(text: string): void;
@@ -295,79 +299,6 @@ function parseApplied(v: unknown): Applied | null {
   return { schema, version, branch, head, hash, signed };
 }
 
-function isCommitIndex(v: unknown): v is number {
-  return typeof v === "number" && Number.isInteger(v) && v >= 0;
-}
-
-function parseCommentAnchor(v: unknown): Anchor | string {
-  if (!isFields<"kind" | "unit" | "commit" | "changes">(v)) return "anchor is not an object";
-  if (v.kind === "plan") return { kind: "plan" };
-  if (!isCommitIndex(v.commit)) return "anchor.commit is not a commit index";
-  const commit = v.commit;
-  if (v.kind === "message" || v.kind === "position") return { kind: v.kind, commit };
-  if (v.kind !== "hunk") return "anchor.kind is unknown";
-  if (typeof v.unit !== "string" || !isUnitId(v.unit)) return "anchor.unit is not a unit id";
-  if (v.changes === null) return { kind: "hunk", unit: v.unit, commit, changes: null };
-  if (!isArray(v.changes) || !v.changes.every(isCommitIndex)) {
-    return "anchor.changes is not null or a list of change indices";
-  }
-  return { kind: "hunk", unit: v.unit, commit, changes: v.changes.filter(isCommitIndex) };
-}
-
-function parseComment(v: unknown): Comment | string {
-  if (!isFields<"id" | "anchor" | "context" | "body" | "createdAt">(v)) return "not an object";
-  if (typeof v.id !== "string" || !isCommentId(v.id)) return "id is not a comment id";
-  const anchor = parseCommentAnchor(v.anchor);
-  if (typeof anchor === "string") return anchor;
-  const ctx = v.context;
-  if (!isFields<"commitMessage" | "path">(ctx) || typeof ctx.commitMessage !== "string") {
-    return "context.commitMessage is not a string";
-  }
-  const path = ctx.path;
-  if (path !== null && (typeof path !== "string" || !isRepoPath(path))) {
-    return "context.path is not null or a path";
-  }
-  if (typeof v.body !== "string" || typeof v.createdAt !== "string") {
-    return "body and createdAt must be strings";
-  }
-  return {
-    id: v.id,
-    anchor,
-    context: { commitMessage: ctx.commitMessage, path },
-    body: v.body,
-    createdAt: v.createdAt,
-  };
-}
-
-/** Boundary parse of reviews/vN.json. Files written before walk mode existed have no mode. */
-export function parseReview(v: unknown): Review | string {
-  if (!isFields<"schema" | "mode" | "planVersion" | "planHash" | "endedAt" | "comments">(v)) {
-    return "not an object";
-  }
-  if (v.schema !== "follow-me/review@1") return 'schema is not "follow-me/review@1"';
-  const mode = v.mode ?? "split";
-  if (mode !== "split" && mode !== "walk") return 'mode is not "split" or "walk"';
-  if (!isPlanVersion(v.planVersion)) return "planVersion is not a positive integer";
-  if (typeof v.planHash !== "string" || typeof v.endedAt !== "string") {
-    return "planHash and endedAt must be strings";
-  }
-  if (!isArray(v.comments)) return "comments is not an array";
-  const comments: Comment[] = [];
-  for (const [i, raw] of v.comments.entries()) {
-    const c = parseComment(raw);
-    if (typeof c === "string") return `comments[${i}]: ${c}`;
-    comments.push(c);
-  }
-  return {
-    schema: v.schema,
-    mode,
-    planVersion: v.planVersion,
-    planHash: v.planHash,
-    endedAt: v.endedAt,
-    comments,
-  };
-}
-
 function makeSession(root: string, dir: string, anchor: SessionAnchor, diff: Diff): Session {
   const plansDir = join(dir, "plans");
   const splitReviews = join(dir, "reviews");
@@ -401,6 +332,42 @@ function makeSession(root: string, dir: string, anchor: SessionAnchor, diff: Dif
       (a, b) => a.version - b.version,
     );
 
+  const draftVersions = (mode: ReviewMode): PlanVersion[] => {
+    const dir = reviewsDir(mode);
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir).flatMap((name) => {
+      const n = Number(/^v([1-9][0-9]*)\.draft\.json$/.exec(name)?.[1]);
+      return isPlanVersion(n) ? [n] : [];
+    });
+  };
+  const draftReview = (mode: ReviewMode, version: PlanVersion): Review => {
+    const path = join(reviewsDir(mode), `v${version}.draft.json`);
+    const draft = parseDraft(readJson(path));
+    if (typeof draft === "string") throw new SessionFileError(`${path}: ${draft}`);
+    const { comments, concerns, resolved } = draft;
+    return {
+      schema: "follow-me/review@1",
+      mode,
+      planVersion: version,
+      planHash: plans().find((p) => p.version === version)?.hash ?? "",
+      endedAt: statSync(path).mtime.toISOString(),
+      comments,
+      ...(concerns.length === 0 ? {} : { concerns }),
+      ...(resolved.length === 0 ? {} : { resolved }),
+    };
+  };
+  const priorReview = (mode: ReviewMode, before: PlanVersion | null): Review | null => {
+    const below = (v: PlanVersion) => before === null || v < before;
+    const done = (mode === "walk" ? walkReviews() : reviews().filter((r) => r.review.mode === mode))
+      .filter((r) => below(r.version))
+      .at(-1);
+    const unfinished = draftVersions(mode)
+      .filter((v) => below(v) && v > (done?.version ?? 0))
+      .sort((a, b) => a - b)
+      .at(-1);
+    return unfinished === undefined ? (done?.review ?? null) : draftReview(mode, unfinished);
+  };
+
   return {
     root,
     dir,
@@ -412,7 +379,8 @@ function makeSession(root: string, dir: string, anchor: SessionAnchor, diff: Dif
     reviewsDir,
     reviews,
     walkReviews,
-    lastReview: () => reviews().findLast((r) => r.review.mode === "split")?.review ?? null,
+    lastReview: () => priorReview("split", null),
+    priorReview,
     readDraft: () => {
       const draft = readJson(draftPath);
       if (draft === undefined) throw new MissingDraftError(draftPath);

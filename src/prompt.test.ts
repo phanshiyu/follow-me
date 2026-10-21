@@ -1,7 +1,25 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type PromptInput, renderFeedback, renderPrompt } from "./prompt.ts";
+import { type PromptInput, type ReportCommit, renderPrompt, renderReport } from "./prompt.ts";
 import type { Diff, PlanFile, Review } from "./types.ts";
+
+// The plan as validation projects it: explicit lines per unit, in commit order.
+function fixtureCommits(): ReportCommit[] {
+  return JSON.parse(
+    JSON.stringify([
+      {
+        message: "Add parser\n\nbody",
+        refs: [{ unit: "h_aaaaaaaaaaaa", select: { kind: "lines", changes: [0, 1, 2, 3] } }],
+      },
+      {
+        message: "Use it",
+        refs: [{ unit: "h_bbbbbbbbbbbb", select: { kind: "lines", changes: [0] } }],
+      },
+    ]),
+  );
+}
+
+const REPORT = { branch: "feature", responses: [] };
 
 // JSON.parse is the only brand-free way to build branded literals without a cast.
 function fixtureDiff(): Diff {
@@ -202,14 +220,14 @@ test("rendering the same input twice gives identical text", () => {
   const input = { ...first, previousPlan: fixturePlan(), review: fixtureReview() };
   assert.equal(renderPrompt(input), renderPrompt(input));
   assert.equal(
-    renderFeedback(fixtureReview(), fixturePlan(), fixtureDiff().units),
-    renderFeedback(fixtureReview(), fixturePlan(), fixtureDiff().units),
+    renderReport(fixtureReview(), fixtureCommits(), fixtureDiff().units, REPORT),
+    renderReport(fixtureReview(), fixtureCommits(), fixtureDiff().units, REPORT),
   );
 });
 
 test("feedback is a markdown digest grouped by plan, then commit", () => {
   assert.equal(
-    renderFeedback(fixtureReview(), fixturePlan(), fixtureDiff().units),
+    renderReport(fixtureReview(), fixtureCommits(), fixtureDiff().units, REPORT),
     [
       "# Review of plan v2",
       "",
@@ -275,97 +293,250 @@ test("both prompts explain the optional Mermaid diagram and keep narration plain
   }
 });
 
-test("a walk review renders as a code review grouped by file with quoted diff excerpts", () => {
-  const plan: PlanFile = JSON.parse(
+function reportFixture(): { review: Review; commits: ReportCommit[] } {
+  const stamp = "2026-01-01T00:00:00.000Z";
+  const context = { commitMessage: "Add parser", path: "src/a.ts" };
+  return JSON.parse(
     JSON.stringify({
-      schema: "follow-me/plan@1",
-      base: "1".repeat(40),
-      tip: "2".repeat(40),
       commits: [
         {
-          message: "Rename",
-          units: [{ unit: "h_aaaaaaaaaaaa", select: { kind: "lines", changes: [0, 1] } }],
+          message: "Add parser\n\nbody",
+          refs: [{ unit: "h_aaaaaaaaaaaa", select: { kind: "lines", changes: [0, 1, 2, 3] } }],
+          concerns: [
+            {
+              id: "k_0a1b2c3d",
+              unit: "h_aaaaaaaaaaaa",
+              severity: "major",
+              kind: "bug",
+              text: "new2 replaces old2 and drops its guard.",
+              lines: [3],
+            },
+          ],
         },
         {
-          message: "Swap the second line",
-          units: [
-            { unit: "h_aaaaaaaaaaaa", select: { kind: "lines", changes: [2, 3] } },
-            { unit: "h_bbbbbbbbbbbb", select: { kind: "rest" } },
+          message: "Use it",
+          refs: [{ unit: "h_bbbbbbbbbbbb", select: { kind: "lines", changes: [0] } }],
+          concerns: [
+            {
+              id: "k_4e5f6a7b",
+              unit: "h_bbbbbbbbbbbb",
+              severity: "minor",
+              kind: "missing-test",
+              text: "tail has no test.",
+            },
           ],
         },
       ],
-      responses: [],
+      review: {
+        schema: "follow-me/review@1",
+        mode: "walk",
+        planVersion: 1,
+        planHash: "abc",
+        endedAt: stamp,
+        concerns: [
+          { concern: "k_0a1b2c3d", decision: "kept" },
+          { concern: "k_4e5f6a7b", decision: "dismissed" },
+        ],
+        comments: [
+          {
+            id: "c_tailzz",
+            anchor: { kind: "hunk", unit: "h_bbbbbbbbbbbb", commit: 1, changes: null },
+            context: { commitMessage: "Use it", path: "src/a.ts" },
+            body: "Does tail need a newline?",
+            createdAt: stamp,
+          },
+          {
+            id: "c_guardx",
+            anchor: { kind: "hunk", unit: "h_aaaaaaaaaaaa", commit: 0, changes: [3] },
+            context,
+            body: "Agreed, and new1 has the same gap.",
+            severity: "blocker",
+            createdAt: stamp,
+          },
+          {
+            id: "c_whydro",
+            anchor: { kind: "hunk", unit: "h_aaaaaaaaaaaa", commit: 0, changes: [1] },
+            context,
+            body: "Why drop old1?",
+            kind: "question",
+            createdAt: stamp,
+            replies: [
+              {
+                id: "r_abcdef",
+                author: "agent",
+                body: "new1 covers it.",
+                createdAt: stamp,
+              },
+            ],
+          },
+          {
+            id: "c_mnopqr",
+            anchor: { kind: "plan" },
+            context: { commitMessage: "", path: null },
+            body: "Nice and small overall.",
+            createdAt: stamp,
+          },
+        ],
+      },
     }),
   );
-  const review: Review = JSON.parse(
-    JSON.stringify({
-      schema: "follow-me/review@1",
-      mode: "walk",
-      planVersion: 1,
-      planHash: "abc",
-      endedAt: "2026-01-01T00:00:00.000Z",
-      comments: [
-        {
-          id: "c_mnopqr",
-          anchor: { kind: "plan" },
-          context: { commitMessage: "", path: null },
-          body: "Nice and small overall.",
-          createdAt: "2026-01-01T00:00:00.000Z",
-        },
-        {
-          id: "c_tailzz",
-          anchor: { kind: "hunk", unit: "h_bbbbbbbbbbbb", commit: 1, changes: null },
-          context: { commitMessage: "Swap the second line", path: "src/a.ts" },
-          body: "Does tail need a newline?",
-          createdAt: "2026-01-01T00:00:00.000Z",
-        },
-        {
-          id: "c_abcdef",
-          anchor: { kind: "hunk", unit: "h_aaaaaaaaaaaa", commit: 1, changes: [3] },
-          context: { commitMessage: "Swap the second line", path: "src/a.ts" },
-          body: "new2 should be\nnamed for what it holds.",
-          createdAt: "2026-01-01T00:00:00.000Z",
-        },
-      ],
-    }),
+}
+
+test("a walk report merges the reviewer and the agent, orders by line and ends with questions", () => {
+  const { review, commits } = reportFixture();
+  const answer = JSON.parse(
+    JSON.stringify([
+      {
+        comment: "c_whydro",
+        status: "answered",
+        note: "old1 is replaced by new1 on the same line.",
+        at: { commit: 1, unit: "h_aaaaaaaaaaaa" },
+      },
+    ]),
   );
   assert.equal(
-    renderFeedback(review, plan, fixtureDiff().units),
+    renderReport(review, commits, fixtureDiff().units, { branch: "feature", responses: answer }),
     [
-      "# Code review",
-      "",
-      "A reviewer watched this branch being written commit by commit and left 3 comments.",
+      "# Code review: feature (2 commits, 3 issues: 1 blocker, 2 unrated)",
       "",
       "## src/a.ts",
       "",
-      "### c_tailzz, line 21",
+      "### line 3 · blocker · bug · raised by the agent, kept by the reviewer",
       "",
       "```diff",
-      "+tail",
-      "```",
-      "",
-      "Does tail need a newline?",
-      "",
-      "### c_abcdef, line 3",
-      "",
-      "```diff",
-      " new1",
+      "+new1",
       " same",
       "-old2",
       "+new2",
       "```",
       "",
-      "new2 should be",
-      "named for what it holds.",
+      "Agent: new2 replaces old2 and drops its guard.",
+      "Reviewer: Agreed, and new1 has the same gap.",
+      "",
+      "### line 21 · unrated · raised by the reviewer",
+      "",
+      "```diff",
+      "+tail",
+      "```",
+      "",
+      "Reviewer: Does tail need a newline?",
       "",
       "## General",
       "",
-      "### c_mnopqr",
+      "### whole plan · unrated · raised by the reviewer",
       "",
-      "Nice and small overall.",
+      "Reviewer: Nice and small overall.",
       "",
-      "Address each comment above in the code on this branch, then tell the reviewer what you changed and what you chose not to change and why.",
+      "## Questions",
+      "",
+      "### c_whydro · src/a.ts · line 1",
+      "",
+      "```diff",
+      "-old1",
+      "+new1",
+      " same",
+      "-old2",
+      "+new2",
+      "```",
+      "",
+      "Reviewer asked: Why drop old1?",
+      "Agent replied: new1 covers it.",
+      "Answer (answered, explained in commit 1 (h_aaaaaaaaaaaa)): old1 is replaced by new1 on the same line.",
+      "",
+      "Address each issue above in the code on this branch, then tell the reviewer what you changed and what you chose not to change and why.",
       "",
     ].join("\n"),
   );
+});
+
+test("a split report keeps plan feedback for the planner and adds code issues and questions", () => {
+  const { review, commits } = reportFixture();
+  const split: Review = { ...review, mode: "split" };
+  const text = renderReport(split, commits, fixtureDiff().units, REPORT);
+  assert.ok(text.startsWith("# Review of plan v1\n\n## Whole plan\n\n- c_mnopqr: Nice"));
+  assert.ok(text.includes("## Commit 2: Use it\n\n- c_tailzz on h_bbbbbbbbbbbb"));
+  assert.ok(
+    text.includes(
+      "## Code issues (1 issue: 1 blocker)\n\n### src/a.ts\n\n#### line 3 · blocker · bug",
+    ),
+  );
+  assert.ok(text.includes("## Questions\n\n### c_whydro · src/a.ts · line 1"));
+  assert.ok(
+    text.endsWith(
+      "Fix the code issues on the original branch, then run `follow-me extract` again.\n",
+    ),
+  );
+});
+
+test("a review with no comments and no kept concerns says so", () => {
+  const { review, commits } = reportFixture();
+  const empty: Review = { ...review, comments: [], concerns: [] };
+  assert.equal(
+    renderReport(empty, commits, fixtureDiff().units, REPORT),
+    "# Code review: feature (2 commits, no issues)\n\nThe reviewer raised no issues.\n",
+  );
+});
+
+test("the prompts carry the question instruction, and only the walk prompt asks for concerns", () => {
+  const walk = renderPrompt({
+    mode: "walk",
+    diff: fixtureDiff(),
+    draftPath: "/d",
+    checkCommand: "c",
+  });
+  const split = renderPrompt(first);
+  for (const text of [walk, split]) {
+    assert.ok(text.includes("## Questions from the reviewer"));
+    assert.ok(text.includes("A question is not a request to change the plan."));
+    assert.ok(text.includes('`"at"` naming the commit (1-based)'));
+  }
+  assert.ok(walk.includes("## Concerns\n\nYou are also a careful reviewer."));
+  assert.ok(walk.includes("Never write more than one concern per unit."));
+  assert.ok(!split.includes("careful reviewer"));
+});
+
+test("questions are listed apart from change requests, with their lines and replies", () => {
+  const review: Review = JSON.parse(
+    JSON.stringify({
+      schema: "follow-me/review@1",
+      mode: "split",
+      planVersion: 2,
+      planHash: "abc",
+      endedAt: "2026-01-01T00:00:00.000Z",
+      comments: [
+        {
+          id: "c_fixthx",
+          anchor: { kind: "plan" },
+          context: { commitMessage: "", path: null },
+          body: "split it up",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
+        {
+          id: "c_whyyyy",
+          kind: "question",
+          anchor: { kind: "hunk", unit: "h_aaaaaaaaaaaa", commit: 0, changes: [1] },
+          context: { commitMessage: "Add parser", path: "src/a.ts", lines: ["+new1"] },
+          body: "why?",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          replies: [
+            {
+              id: "r_abcdef",
+              author: "agent",
+              body: "because",
+              createdAt: "2026-01-01T00:00:00.000Z",
+            },
+          ],
+        },
+      ],
+    }),
+  );
+  const text = renderPrompt({ ...first, previousPlan: fixturePlan(), review });
+  const questions = text.indexOf("The reviewer asked this question about plan v2.");
+  const changes = text.indexOf("## Open review comments");
+  assert.ok(questions > 0 && changes > questions);
+  assert.ok(text.slice(questions, changes).includes("- c_whyyyy"));
+  assert.ok(text.slice(questions, changes).includes('agent replied: "because"'));
+  assert.ok(text.slice(questions, changes).includes("    +new1"));
+  assert.ok(!text.slice(changes).includes("c_whyyyy"));
+  assert.ok(text.slice(changes).includes("- c_fixthx"));
 });

@@ -70,3 +70,24 @@ plan reviews only.
 - Use unit ids exactly as printed. `h_x:0-3,7` takes change lines 0 to 3 and 7 of that hunk.
   A bare `h_x` takes whatever lines no other commit claimed.
 - `f_` and `m_` units are whole; they never take line lists.
+
+## Interactive loop
+
+While the review page is open the reviewer comments and asks questions live, and you answer without
+closing the page. Everything goes through the review server.
+
+1. `follow-me watch [--since <seq>] [--timeout <seconds>]` blocks until the reviewer does something and
+   prints it (`--json` for one JSON object per line, `--follow` to stream until the review ends). It
+   exits 0 with news, 2 when nothing happened, and prints the `--since` to use next. Run it again in a
+   loop; stop when it reports that the review ended.
+2. Answer a question or comment in place with `follow-me reply <commentId> --body "..."`, adding
+   `--diagram <file>` with Mermaid source when a picture explains it. This needs no new plan.
+3. When the plan itself should change, write a new draft whose `responses` answer the comments
+   (`"status": "answered"` with `"at"` for questions), `follow-me check`, then `follow-me apply`. While the
+   page is open, apply swaps it to the new version at the same URL and keeps the old comments.
+4. At the end, `follow-me report` prints one consolidated report of the issues you and the reviewer
+   raised, by file and line, with questions and answers last. It is also saved as
+   `.follow-me/<slug>/reviews/vN.md`. Give it to the author.
+
+In a walk you may also raise `concerns` (see `follow-me prompt --walk`); the reviewer keeps or dismisses
+each, and only kept ones reach the report.

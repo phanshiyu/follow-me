@@ -5,19 +5,32 @@ import { createServer } from "node:http";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isPlanVersion } from "./plan.ts";
+import {
+  isReplyId,
+  parseComment,
+  parseDraft,
+  parseNewDecision,
+  parseNewReply,
+} from "./comments.ts";
+import { isConcernId, isPlanVersion } from "./plan.ts";
+import { renderReport } from "./prompt.ts";
 import { isLockToken } from "./session.ts";
 import type {
-  Anchor,
   Comment,
   CommentId,
+  ConcernDecision,
+  ConcernId,
   HostedSummary,
   LockToken,
   PlanVersion,
+  PreviousVersion,
   ProjectedCommit,
-  RepoPath,
+  Reply,
+  ReplyId,
   Review,
+  ReviewDraft,
   ReviewMode,
+  ServerEvent,
   SessionAnchor,
   SessionId,
   Unit,
@@ -51,10 +64,19 @@ export type Loaded = {
   readonly reviewsDir: string;
   readonly state: ReviewState;
   readonly release: () => void;
+  /** The review before this version and what this plan answered in it; null at the first. */
+  readonly previous: PreviousVersion | null;
 };
 
-/** Turns a registration into a hosted session. Throws RegistrationError to refuse it. */
-export type Loader = (registration: Registration) => Promise<Loaded>;
+/**
+ * Turns a registration into a hosted session. Throws RegistrationError to refuse it. When the
+ * server already owns the session's lock, as in a version swap, it passes that lock's release in
+ * `held` and the loader takes no lock of its own.
+ */
+export type Loader = (
+  registration: Registration,
+  held: Loaded["release"] | null,
+) => Promise<Loaded>;
 
 export type Registered = {
   readonly summary: HostedSummary;
@@ -116,7 +138,6 @@ const MAX_BODY_BYTES = 1_000_000;
 const BASE32 = "abcdefghijklmnopqrstuvwxyz234567";
 
 const COMMENT_ID = /^c_[a-z2-7]{6}$/;
-const UNIT_ID = /^[hfm]_[0-9a-f]{12}(~\d+)?$/;
 const SESSION_ID = /^[0-9a-f]{12}$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -125,18 +146,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isCommentId(value: unknown): value is CommentId {
   return typeof value === "string" && COMMENT_ID.test(value);
-}
-
-function isUnitId(value: unknown): value is UnitId {
-  return typeof value === "string" && UNIT_ID.test(value);
-}
-
-function isRepoPath(value: unknown): value is RepoPath {
-  return typeof value === "string" && value.length > 0;
-}
-
-function isIndex(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
 export function isSessionId(value: unknown): value is SessionId {
@@ -154,43 +163,6 @@ export function sessionPath(id: SessionId): string {
   return `/s/${id}/`;
 }
 
-function parseAnchor(raw: unknown): Anchor | null {
-  if (!isRecord(raw)) return null;
-  const commit = raw["commit"];
-  switch (raw["kind"]) {
-    case "plan":
-      return { kind: "plan" };
-    case "message":
-      return isIndex(commit) ? { kind: "message", commit } : null;
-    case "position":
-      return isIndex(commit) ? { kind: "position", commit } : null;
-    case "hunk": {
-      const unit = raw["unit"];
-      const changes = raw["changes"];
-      if (!isIndex(commit) || !isUnitId(unit)) return null;
-      if (changes === null) return { kind: "hunk", unit, commit, changes: null };
-      if (!Array.isArray(changes) || !changes.every(isIndex)) return null;
-      return { kind: "hunk", unit, commit, changes };
-    }
-    default:
-      return null;
-  }
-}
-
-/** The one place untrusted JSON becomes a Comment. Returns null when any field is wrong. */
-export function parseComment(raw: unknown): Comment | null {
-  if (!isRecord(raw)) return null;
-  const { id, body, createdAt } = raw;
-  const context = raw["context"];
-  const anchor = parseAnchor(raw["anchor"]);
-  if (!isCommentId(id) || !anchor || !isRecord(context)) return null;
-  const { commitMessage, path } = context;
-  if (typeof commitMessage !== "string" || typeof body !== "string") return null;
-  if (typeof createdAt !== "string") return null;
-  if (path !== null && !isRepoPath(path)) return null;
-  return { id, anchor, context: { commitMessage, path }, body, createdAt };
-}
-
 /** The one place untrusted JSON becomes a Registration. */
 export function parseRegistration(raw: unknown): Registration | null {
   if (!isRecord(raw)) return null;
@@ -206,25 +178,28 @@ function draftPath(reviewsDir: string, version: PlanVersion): string {
   return join(reviewsDir, `v${version}.draft.json`);
 }
 
+/** What an unfinished review of this version autosaved, or nothing. */
+export async function loadDraft(reviewsDir: string, version: PlanVersion): Promise<ReviewDraft> {
+  let text: string;
+  try {
+    text = await readFile(draftPath(reviewsDir, version), "utf8");
+  } catch (error) {
+    if (isRecord(error) && error["code"] === "ENOENT") {
+      return { comments: [], concerns: [], resolved: [] };
+    }
+    throw error;
+  }
+  const draft = parseDraft(JSON.parse(text));
+  if (typeof draft === "string") throw new Error(`malformed review draft for v${version}`);
+  return draft;
+}
+
 /** Comments autosaved by an unfinished review of this version, or none. */
 export async function loadDraftComments(
   reviewsDir: string,
   version: PlanVersion,
 ): Promise<readonly Comment[]> {
-  let text: string;
-  try {
-    text = await readFile(draftPath(reviewsDir, version), "utf8");
-  } catch (error) {
-    if (isRecord(error) && error["code"] === "ENOENT") return [];
-    throw error;
-  }
-  const raw: unknown = JSON.parse(text);
-  const list = isRecord(raw) ? raw["comments"] : null;
-  if (!Array.isArray(list)) throw new Error(`malformed review draft for v${version}`);
-  return list.flatMap((item: unknown) => {
-    const comment = parseComment(item);
-    return comment ? [comment] : [];
-  });
+  return (await loadDraft(reviewsDir, version)).comments;
 }
 
 async function writeAtomic(path: string, text: string): Promise<void> {
@@ -269,6 +244,17 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(body));
+}
+
+/** An integer query parameter within [min, max], else the default when absent; bad is a 400. */
+function queryInt(url: URL, name: string, min: number, max: number, fallback: number): number {
+  const raw = url.searchParams.get(name);
+  if (raw === null) return fallback;
+  const n = Number(raw);
+  if (raw === "" || !Number.isInteger(n) || n < min) {
+    throw new HttpError(400, `${name} must be an integer of at least ${min}`);
+  }
+  return Math.min(n, max);
 }
 
 function sendHtml(res: ServerResponse, status: number, html: string): void {
@@ -382,109 +368,361 @@ async function sendVendor(res: ServerResponse, file: URL): Promise<void> {
   res.end(bytes);
 }
 
-/** One hosted review: its comments, its autosave chain, and how it ends. */
-function hostSession(id: SessionId, registration: Registration, loaded: Loaded) {
+/** What a hosted session shows right now. A version swap replaces it whole. */
+type View = {
+  readonly registration: Registration;
+  readonly loaded: Loaded;
+  readonly comments: Map<string, Comment>;
+  readonly decisions: Map<ConcernId, ConcernDecision>;
+  readonly resolved: Set<CommentId>;
+  readonly unitIds: ReadonlySet<string>;
+  readonly concernIds: ReadonlySet<string>;
+  readonly draftFile: string;
+  readonly reviewFile: string;
+};
+
+function viewOf(registration: Registration, loaded: Loaded, draft: ReviewDraft): View {
   const { state, reviewsDir } = loaded;
+  return {
+    registration,
+    loaded,
+    comments: new Map(state.comments.map((c): [string, Comment] => [c.id, c])),
+    decisions: new Map(draft.concerns.map((d): [ConcernId, ConcernDecision] => [d.concern, d])),
+    resolved: new Set(draft.resolved),
+    unitIds: new Set(state.units.map((u) => u.id)),
+    concernIds: new Set(state.commits.flatMap((c) => (c.concerns ?? []).map((k) => k.id))),
+    draftFile: draftPath(reviewsDir, state.version),
+    reviewFile: join(reviewsDir, `v${state.version}.json`),
+  };
+}
+
+function withReplies(comment: Comment, replies: readonly Reply[] | undefined): Comment {
+  const { replies: _dropped, ...rest } = comment;
+  return replies === undefined || replies.length === 0 ? rest : { ...rest, replies };
+}
+
+function mintReplyId(taken: ReadonlySet<string>): ReplyId {
+  for (;;) {
+    let id = "r_";
+    for (const byte of randomBytes(6)) id += BASE32.charAt(byte % 32);
+    if (isReplyId(id) && !taken.has(id)) return id;
+  }
+}
+
+/** Distributes over the union, so each event type keeps its own fields. */
+type EventBody = ServerEvent extends infer E ? (E extends unknown ? Omit<E, "seq"> : never) : never;
+
+const DEFAULT_POLL_MS = 25_000;
+const MAX_POLL_MS = 60_000;
+const STREAM_PING_MS = 15_000;
+
+/** One hosted review: its comments, its event log, its autosave chain, and how it ends. */
+function hostSession(
+  id: SessionId,
+  registration: Registration,
+  loaded: Loaded,
+  draft: ReviewDraft,
+  load: Loader,
+) {
   const openedAt = Date.now();
-  const comments = new Map<string, Comment>(state.comments.map((c) => [c.id, c]));
-  const unitIds = new Set<string>(state.units.map((u) => u.id));
-  const draftFile = draftPath(reviewsDir, state.version);
-  const reviewFile = join(reviewsDir, `v${state.version}.json`);
+  let view = viewOf(registration, loaded, draft);
   let finish: (review: Review | null) => void = () => {};
   const done = new Promise<Review | null>((resolve) => {
     finish = resolve;
   });
 
+  // The append-only log a watcher long-polls. seq is the position, counted from 1.
+  const events: ServerEvent[] = [];
+  const waiters = new Set<() => void>();
+  const listeners = new Set<() => void>();
+  const emit = (body: EventBody): void => {
+    events.push({ ...body, seq: events.length + 1 });
+    for (const wake of [...waiters]) wake();
+    for (const listener of [...listeners]) listener();
+  };
+  const waitForEvents = (since: number, timeoutMs: number, signal: AbortSignal) =>
+    new Promise<{ readonly seq: number; readonly events: readonly ServerEvent[] }>((resolve) => {
+      const answer = () => resolve({ seq: events.length, events: events.slice(since) });
+      if (events.length > since || timeoutMs === 0 || signal.aborted) return answer();
+      const wake = () => {
+        clearTimeout(timer);
+        waiters.delete(wake);
+        signal.removeEventListener("abort", wake);
+        answer();
+      };
+      const timer = setTimeout(wake, timeoutMs);
+      waiters.add(wake);
+      signal.addEventListener("abort", wake);
+    });
+
   let ending = false;
+  let swapping = false;
+  const open = (): void => {
+    if (ending) throw new HttpError(409, "this review is already ending");
+    if (swapping) throw new HttpError(409, "the session is switching plan versions; try again");
+  };
   // Writes are chained so two rapid edits never race on the same file.
   let writes: Promise<void> = Promise.resolve();
   const saveDraft = (): Promise<void> => {
+    const { state } = view.loaded;
+    const file = view.draftFile;
+    const concerns = [...view.decisions.values()];
+    const resolved = [...view.resolved];
     const snapshot = JSON.stringify(
       {
         schema: "follow-me/review-draft@1",
         planVersion: state.version,
-        comments: [...comments.values()],
+        comments: [...view.comments.values()],
+        ...(concerns.length === 0 ? {} : { concerns }),
+        ...(resolved.length === 0 ? {} : { resolved }),
       },
       null,
       2,
     );
+    const dir = view.loaded.reviewsDir;
     writes = writes.then(async () => {
-      await mkdir(reviewsDir, { recursive: true });
-      await writeAtomic(draftFile, `${snapshot}\n`);
+      await mkdir(dir, { recursive: true });
+      await writeAtomic(file, `${snapshot}\n`);
     });
     return writes;
   };
 
-  const accept = (comment: Comment | null): Comment => {
-    if (!comment) throw new HttpError(400, "malformed comment");
-    const { anchor } = comment;
-    if (anchor.kind !== "plan" && anchor.commit >= state.commits.length) {
+  const accept = (parsed: Comment | string): Comment => {
+    if (typeof parsed === "string") throw new HttpError(400, `malformed comment: ${parsed}`);
+    if (!COMMENT_ID.test(parsed.id)) throw new HttpError(400, "malformed comment: bad id");
+    const { anchor } = parsed;
+    if (anchor.kind !== "plan" && anchor.commit >= view.loaded.state.commits.length) {
       throw new HttpError(400, "anchor commit out of range");
     }
-    if (anchor.kind === "hunk" && !unitIds.has(anchor.unit)) {
+    if (anchor.kind === "hunk" && !view.unitIds.has(anchor.unit)) {
       throw new HttpError(400, "anchor names an unknown unit");
     }
-    return comment;
+    return parsed;
   };
+
+  const review = (): Review => {
+    const concerns = [...view.decisions.values()];
+    const resolved = [...view.resolved];
+    return {
+      schema: "follow-me/review@1",
+      mode: view.loaded.state.mode,
+      planVersion: view.loaded.state.version,
+      planHash: view.loaded.state.planHash,
+      endedAt: new Date().toISOString(),
+      comments: [...view.comments.values()],
+      ...(concerns.length === 0 ? {} : { concerns }),
+      ...(resolved.length === 0 ? {} : { resolved }),
+    };
+  };
+
+  const report = (finished: Review): string => {
+    const { state } = view.loaded;
+    const units = new Map<UnitId, Unit>(state.units.map((u) => [u.id, u]));
+    return renderReport(finished, state.commits, units, {
+      branch: state.anchor.branch,
+      responses: [],
+    });
+  };
+
+  /** Writes reviews/vN.json and its report once, and removes the autosave. */
+  const writeReview = async (finished: Review): Promise<string> => {
+    await writes;
+    await mkdir(view.loaded.reviewsDir, { recursive: true });
+    await writeAtomic(view.reviewFile, `${JSON.stringify(finished, null, 2)}\n`);
+    await writeAtomic(view.reviewFile.replace(/\.json$/, ".md"), report(finished));
+    await rm(view.draftFile, { force: true });
+    return view.reviewFile;
+  };
+
+  const hasWork = (): boolean => view.comments.size > 0 || view.decisions.size > 0;
 
   return {
     id,
-    registration,
     done,
     openedAt,
+    get registration() {
+      return view.registration;
+    },
     summary: (): HostedSummary => ({
       id,
       url: sessionPath(id),
-      repo: loaded.repo,
-      branch: state.anchor.branch,
-      mode: state.mode,
-      version: state.version,
-      comments: comments.size,
+      repo: view.loaded.repo,
+      branch: view.loaded.state.anchor.branch,
+      mode: view.loaded.state.mode,
+      version: view.loaded.state.version,
+      comments: view.comments.size,
     }),
-    snapshot: () => ({ ...state, comments: [...comments.values()] }),
+    snapshot: () => ({
+      ...view.loaded.state,
+      comments: [...view.comments.values()],
+      concerns: [...view.decisions.values()],
+      resolved: [...view.resolved],
+      seq: events.length,
+      previous: view.loaded.previous,
+    }),
+    /** Events after `since`, now and as they happen, until unfollowed or the review ends. */
+    latest: () => events.length,
+    follow: (since: number, send: (event: ServerEvent) => void, stop: () => void) => {
+      if (since > events.length) {
+        throw new HttpError(
+          409,
+          `since ${since} is ahead of this session's log (${events.length})`,
+        );
+      }
+      let last = since;
+      const flush = () => {
+        for (const event of events.slice(last)) {
+          send(event);
+          last = event.seq;
+          if (event.type === "ended") {
+            listeners.delete(flush);
+            stop();
+            return;
+          }
+        }
+      };
+      listeners.add(flush);
+      flush();
+      return () => listeners.delete(flush);
+    },
+    poll: (since: number, timeoutMs: number, signal: AbortSignal) => {
+      if (since > events.length) {
+        throw new HttpError(
+          409,
+          `since ${since} is ahead of this session's log (${events.length})`,
+        );
+      }
+      return waitForEvents(since, timeoutMs, signal);
+    },
+    report: () => report(review()),
     add: async (raw: unknown): Promise<CommentId> => {
+      open();
       if (!isRecord(raw)) throw new HttpError(400, "malformed comment");
-      const commentId = mintCommentId(new Set(comments.keys()));
-      const comment = accept(
-        parseComment({ ...raw, id: commentId, createdAt: new Date().toISOString() }),
+      const commentId = mintCommentId(new Set(view.comments.keys()));
+      const comment = withReplies(
+        accept(parseComment({ ...raw, id: commentId, createdAt: new Date().toISOString() })),
+        undefined,
       );
-      comments.set(commentId, comment);
+      view.comments.set(commentId, comment);
+      emit({ type: "comment", comment });
       await saveDraft();
       return commentId;
     },
     put: async (target: string, raw: unknown): Promise<Comment> => {
-      const comment = accept(parseComment(raw));
-      if (comment.id !== target) throw new HttpError(400, "comment id does not match the URL");
-      comments.set(comment.id, comment);
+      open();
+      const parsed = withReplies(accept(parseComment(raw)), undefined);
+      if (parsed.id !== target) throw new HttpError(400, "comment id does not match the URL");
+      // Replies belong to the conversation, not to the page's copy of the comment.
+      const comment = withReplies(parsed, view.comments.get(target)?.replies);
+      view.comments.set(comment.id, comment);
+      emit({ type: "comment-updated", comment });
       await saveDraft();
       return comment;
     },
     remove: async (target: string): Promise<void> => {
-      if (!comments.delete(target)) throw new HttpError(404, "no such comment");
+      open();
+      const gone = view.comments.get(target);
+      if (gone === undefined) throw new HttpError(404, "no such comment");
+      view.comments.delete(target);
+      emit({ type: "comment-deleted", id: gone.id });
       await saveDraft();
     },
-    /** Writes reviews/vN.json exactly once and releases the session's lock. */
-    end: async (): Promise<{ review: Review; file: string }> => {
-      if (ending) throw new HttpError(409, "this review is already ending");
-      ending = true;
-      await writes;
-      const review: Review = {
-        schema: "follow-me/review@1",
-        mode: state.mode,
-        planVersion: state.version,
-        planHash: state.planHash,
-        endedAt: new Date().toISOString(),
-        comments: [...comments.values()],
+    reply: async (target: string, raw: unknown): Promise<ReplyId> => {
+      open();
+      const comment = view.comments.get(target);
+      if (comment === undefined) throw new HttpError(404, "no such comment");
+      const parsed = parseNewReply(raw);
+      if (typeof parsed === "string") throw new HttpError(400, `malformed reply: ${parsed}`);
+      const taken = new Set(
+        [...view.comments.values()].flatMap((c) => c.replies ?? []).map((r) => r.id),
+      );
+      const reply: Reply = {
+        id: mintReplyId(taken),
+        ...parsed,
+        createdAt: new Date().toISOString(),
       };
-      await mkdir(reviewsDir, { recursive: true });
-      await writeAtomic(reviewFile, `${JSON.stringify(review, null, 2)}\n`);
-      await rm(draftFile, { force: true });
-      loaded.release();
-      return { review, file: reviewFile };
+      view.comments.set(comment.id, { ...comment, replies: [...(comment.replies ?? []), reply] });
+      emit({ type: "reply", commentId: comment.id, reply });
+      await saveDraft();
+      return reply.id;
     },
-    finish: (review: Review | null) => finish(review),
+    decide: async (target: string, raw: unknown): Promise<ConcernDecision> => {
+      open();
+      if (!isConcernId(target) || !view.concernIds.has(target)) {
+        throw new HttpError(404, "no such concern in this plan");
+      }
+      const decision = parseNewDecision(target, raw);
+      if (typeof decision === "string") throw new HttpError(400, `malformed decision: ${decision}`);
+      view.decisions.set(target, decision);
+      const { concern: concernId, ...rest } = decision;
+      emit({ type: "concern", concernId, ...rest });
+      await saveDraft();
+      return decision;
+    },
+    resolve: async (raw: unknown): Promise<readonly CommentId[]> => {
+      open();
+      const body = isRecord(raw) ? raw : {};
+      const target = body["comment"];
+      const asked = view.loaded.previous?.comments.find((c) => c.id === target);
+      if (asked === undefined || typeof body["resolved"] !== "boolean") {
+        throw new HttpError(
+          400,
+          "expected { comment: <id of a question of the previous version>, resolved }",
+        );
+      }
+      if (body["resolved"]) view.resolved.add(asked.id);
+      else view.resolved.delete(asked.id);
+      emit({ type: "resolved", commentId: asked.id, resolved: body["resolved"] });
+      await saveDraft();
+      return [...view.resolved];
+    },
+    /**
+     * Moves the session to a newer frozen plan under the same id and URL. The new version loads
+     * first, so a plan that no longer fits leaves the old one untouched; then the old version's
+     * review is finalized if anything was said, and the comment set starts fresh.
+     */
+    swap: async (version: PlanVersion, hash: string): Promise<void> => {
+      open();
+      const { state } = view.loaded;
+      if (version === state.version) {
+        if (hash === state.planHash) return;
+        throw new HttpError(409, `plan v${version} is already open with another hash`);
+      }
+      if (version < state.version) {
+        throw new HttpError(409, `plan v${version} is older than the open v${state.version}`);
+      }
+      swapping = true;
+      try {
+        await writes;
+        const next = await load(
+          { ...view.registration, version, hash, lockToken: null },
+          view.loaded.release,
+        );
+        if (hasWork()) await writeReview(review());
+        else await rm(view.draftFile, { force: true });
+        view = viewOf(
+          { ...view.registration, version, hash },
+          next,
+          await loadDraft(next.reviewsDir, version),
+        );
+        emit({ type: "version", version, hash });
+      } finally {
+        swapping = false;
+      }
+    },
+    /** Writes reviews/vN.json and vN.md exactly once and releases the session's lock. */
+    end: async (): Promise<{ review: Review; file: string }> => {
+      open();
+      ending = true;
+      const finished = review();
+      const file = await writeReview(finished);
+      view.loaded.release();
+      emit({ type: "ended", review: file });
+      return { review: finished, file };
+    },
+    finish: (finished: Review | null) => finish(finished),
     abandon: () => {
-      loaded.release();
+      view.loaded.release();
       finish(null);
     },
   };
@@ -555,7 +793,17 @@ export function startServer(opts: HostOptions): Promise<Host> {
       return { summary: existing.summary(), done: existing.done };
     }
     clearTimeout(idleTimer);
-    const loading = opts.load(registration).then((loaded) => hostSession(id, registration, loaded));
+    const loading = opts
+      .load(registration, null)
+      .then(async (loaded) =>
+        hostSession(
+          id,
+          registration,
+          loaded,
+          await loadDraft(loaded.reviewsDir, loaded.state.version),
+          opts.load,
+        ),
+      );
     pending.set(id, loading);
     try {
       const session = await loading;
@@ -583,7 +831,8 @@ export function startServer(opts: HostOptions): Promise<Host> {
     if (origin !== undefined && origin !== `http://${host}`) throw new HttpError(403, "bad origin");
 
     const method = req.method ?? "GET";
-    const path = new URL(req.url ?? "/", "http://localhost").pathname;
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const path = url.pathname;
 
     const asset = method === "GET" ? STATIC_FILE.exec(path)?.[1] : undefined;
     if (asset !== undefined) {
@@ -641,6 +890,63 @@ export function startServer(opts: HostOptions): Promise<Host> {
 
     const session = hosted(rawId);
     if (method === "GET" && rest === "/api/state") return sendJson(res, 200, session.snapshot());
+    if (method === "GET" && rest === "/api/events/stream") {
+      const header = Number(req.headers["last-event-id"]);
+      const resume = Number.isInteger(header) && header > 0 ? header : 0;
+      const since = Math.max(queryInt(url, "since", 0, Number.MAX_SAFE_INTEGER, 0), resume);
+      if (since > session.latest())
+        throw new HttpError(409, "since is ahead of this session's log");
+      res.writeHead(200, {
+        "content-type": "text/event-stream; charset=utf-8",
+        "cache-control": "no-cache",
+        connection: "keep-alive",
+      });
+      res.write(": follow-me\n\n");
+      const ping = setInterval(() => res.write(": ping\n\n"), STREAM_PING_MS);
+      const unfollow = session.follow(
+        since,
+        (event) => res.write(`id: ${event.seq}\ndata: ${JSON.stringify(event)}\n\n`),
+        () => res.end(),
+      );
+      res.on("close", () => {
+        clearInterval(ping);
+        unfollow();
+      });
+      return;
+    }
+    if (method === "GET" && rest === "/api/events") {
+      const abort = new AbortController();
+      res.on("close", () => abort.abort());
+      const since = queryInt(url, "since", 0, Number.MAX_SAFE_INTEGER, 0);
+      const timeout = queryInt(url, "timeout", 0, MAX_POLL_MS, DEFAULT_POLL_MS);
+      return sendJson(res, 200, await session.poll(since, timeout, abort.signal));
+    }
+    if (method === "GET" && rest === "/api/report") {
+      res.writeHead(200, { "content-type": "text/markdown; charset=utf-8" });
+      res.end(session.report());
+      return;
+    }
+    if (method === "POST" && rest === "/api/version") {
+      const body = await readJson(req);
+      const version = isRecord(body) ? body["version"] : undefined;
+      const hash = isRecord(body) ? body["hash"] : undefined;
+      if (!isPlanVersion(version) || typeof hash !== "string" || hash === "") {
+        throw new HttpError(400, "expected { version, hash }");
+      }
+      await session.swap(version, hash);
+      return sendJson(res, 200, session.summary());
+    }
+    if (method === "POST" && rest === "/api/resolved") {
+      return sendJson(res, 200, { resolved: await session.resolve(await readJson(req)) });
+    }
+    const replies = /^\/api\/comments\/([^/]+)\/replies$/.exec(rest ?? "")?.[1];
+    if (replies !== undefined && method === "POST") {
+      return sendJson(res, 201, { id: await session.reply(replies, await readJson(req)) });
+    }
+    const concern = /^\/api\/concerns\/([^/]+)$/.exec(rest ?? "")?.[1];
+    if (concern !== undefined && method === "POST") {
+      return sendJson(res, 200, await session.decide(concern, await readJson(req)));
+    }
     if (method === "POST" && rest === "/api/comments") {
       return sendJson(res, 201, { id: await session.add(await readJson(req)) });
     }
