@@ -6,7 +6,7 @@ import type { Carried, State } from "./wire.ts";
 function carry(entry: Partial<Carried>): Carried {
   return JSON.parse(
     JSON.stringify({
-      comment: "c_aaaaaa",
+      comment: aComment({ kind: undefined, body: "Guard both in one call" }),
       unit: HUNK,
       offsets: [3, 4],
       changed: false,
@@ -21,11 +21,7 @@ function carry(entry: Partial<Carried>): Carried {
 function v3(entry: Partial<Carried>): State {
   return aState({
     version: JSON.parse("3"),
-    previous: {
-      version: JSON.parse("2"),
-      comments: [aComment({ kind: undefined, body: "Guard both in one call" })],
-      responses: [],
-    },
+    previous: { version: JSON.parse("2"), comments: [], responses: [] },
     carried: [carry(entry)],
   });
 }
@@ -45,13 +41,22 @@ describe("placeCarried", () => {
     expect(second).toMatchObject({ kind: "changed", commit: 0, row: 5 });
   });
 
+  test("a changed hunk arrives with only a tip line; the card sits at the row nearest it", () => {
+    const [placed] = placeCarried(v3({ changed: true, offsets: null, newLine: 5 }));
+    expect(placed).toMatchObject({ kind: "changed", commit: 1, unit: HUNK, row: 4 });
+    const [far] = placeCarried(v3({ changed: true, offsets: null, newLine: 40 }));
+    expect(far).toMatchObject({ row: 6 });
+  });
+
   test("code that is gone sits under the commit that last held the path", () => {
     const [placed] = placeCarried(v3({ unit: null, offsets: null, changed: true }));
     expect(placed).toMatchObject({ kind: "gone", commit: 1, unit: null, row: null });
   });
 
   test("gone code on a path no commit holds falls to the branch discussion", () => {
-    const [placed] = placeCarried(v3({ unit: null, offsets: null, path: "src/old.js" }));
+    const [placed] = placeCarried(
+      v3({ unit: null, offsets: null, path: JSON.parse('"src/old.js"') }),
+    );
     expect(placed).toMatchObject({ kind: "gone", commit: null });
   });
 

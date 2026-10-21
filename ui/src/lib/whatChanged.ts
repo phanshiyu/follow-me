@@ -14,6 +14,15 @@ export function newRows(body: readonly HunkLine[], offsets: readonly number[]): 
   });
 }
 
+/**
+ * The rows around a place when the new plan names only the place: `count` rows, centred on it,
+ * without removed rows.
+ */
+export function nearRows(body: readonly HunkLine[], row: number, count: number): number[] {
+  const start = Math.max(0, Math.min(row - Math.floor((count - 1) / 2), body.length - count));
+  return body.flatMap((line, i) => (i >= start && i < start + count && line.op !== "-" ? [i] : []));
+}
+
 /** A line diff by longest common subsequence, ignoring trailing space. */
 function lineDiff(before: readonly string[], after: readonly string[]): DiffLine[] {
   const same = (a: string | undefined, b: string | undefined) => a?.trimEnd() === b?.trimEnd();

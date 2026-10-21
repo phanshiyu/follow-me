@@ -1,6 +1,6 @@
 import { cn } from "@/lib/utils";
 import type { Placement } from "../lib/carried.ts";
-import { newRows, whatChanged } from "../lib/whatChanged.ts";
+import { nearRows, newRows, whatChanged } from "../lib/whatChanged.ts";
 import { useReview } from "../store.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { ThreadCard } from "./Thread.tsx";
@@ -23,7 +23,11 @@ export function CarriedCard({
   const was = state.previous?.version;
   const lines = comment.context.lines ?? [];
   const unit = state.units.find((u) => u.id === placement.carried.unit);
-  const now = unit?.kind === "hunk" ? newRows(unit.body, placement.carried.offsets ?? []) : [];
+  const { row } = placement;
+  const picked =
+    placement.carried.offsets ??
+    (unit?.kind === "hunk" && row !== null ? nearRows(unit.body, row, lines.length) : []);
+  const now = unit?.kind === "hunk" ? newRows(unit.body, picked) : [];
   const diff = kind === "changed" ? whatChanged(lines, now) : null;
   const response = state.previous?.responses.find((r) => r.comment === comment.id);
   return (

@@ -1,8 +1,16 @@
 // Where the previous version's threads sit in the current plan. Pure.
 
-import { ownership, ownersOf, rowsOf } from "./rows.ts";
+import { type LineNumber, lineNumbers, ownership, ownersOf, rowsOf } from "./rows.ts";
 import { lastShown } from "./selection.ts";
-import type { Carried, ProjectedCommit, State, Unit, UnitId, WireComment } from "./wire.ts";
+import type {
+  Carried,
+  HunkLine,
+  ProjectedCommit,
+  State,
+  Unit,
+  UnitId,
+  WireComment,
+} from "./wire.ts";
 
 export type CarriedKind = "same" | "changed" | "gone";
 
@@ -26,10 +34,34 @@ function holders(commits: readonly ProjectedCommit[], unit: UnitId): number[] {
 function lastHolder(
   commits: readonly ProjectedCommit[],
   units: ReadonlyMap<UnitId, Unit>,
-  path: string,
+  path: string | null,
 ): number | null {
+  if (path === null) return null;
   const at = commits.filter((c) => c.refs.some((r) => units.get(r.unit)?.path === path));
   return at.at(-1)?.index ?? null;
+}
+
+/**
+ * The row of a hunk nearest a line of the branch tip. A changed hunk arrives without offsets, only
+ * the tip line the comment now points at; a removed row has no tip line and is never chosen.
+ */
+export function rowsAtLine(
+  body: readonly HunkLine[],
+  numbers: readonly LineNumber[],
+  line: number | null,
+): number[] {
+  if (line === null) return [];
+  let best = -1;
+  let nearest = Number.POSITIVE_INFINITY;
+  for (const [i, row] of body.entries()) {
+    const at = numbers[i]?.new;
+    if (row.op === "-" || at === null || at === undefined) continue;
+    if (Math.abs(at - line) < nearest) {
+      best = i;
+      nearest = Math.abs(at - line);
+    }
+  }
+  return best === -1 ? [] : [best];
 }
 
 /**
@@ -40,13 +72,12 @@ function lastHolder(
  * - Code gone: the commit that last held the path, else the branch discussion.
  */
 export function placeCarried(state: State): Placement[] {
-  const { previous, carried = [], commits } = state;
-  if (previous === null) return [];
+  const { carried = [], commits } = state;
   const units = new Map(state.units.map((u) => [u.id, u]));
   const owners = ownership(commits);
+  const numbers = lineNumbers(state.units);
   return carried.flatMap((entry): Placement[] => {
-    const comment = previous.comments.find((c) => c.id === entry.comment);
-    if (comment === undefined) return [];
+    const { comment } = entry;
     const unit = entry.unit === null ? undefined : units.get(entry.unit);
     if (entry.unit === null || unit === undefined) {
       const commit = lastHolder(commits, units, entry.path);
@@ -58,7 +89,8 @@ export function placeCarried(state: State): Placement[] {
       const commit = shown[0] ?? lastHolder(commits, units, entry.path);
       return [{ comment, carried: entry, kind, commit, unit: null, row: null }];
     }
-    const offsets = entry.offsets ?? [];
+    const offsets =
+      entry.offsets ?? rowsAtLine(unit.body, numbers.get(unit.id) ?? [], entry.newLine);
     const own = ownersOf(unit, owners);
     const owning = shown.find((index) =>
       offsets.some((i) => {

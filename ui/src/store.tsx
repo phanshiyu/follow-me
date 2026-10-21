@@ -175,7 +175,8 @@ export function useAnswers(): readonly AnswerCard[] {
   const { state } = useReview();
   const { previous, resolved, commits, carried } = state;
   return useMemo(
-    () => answerCards(previous, resolved, commits, new Set((carried ?? []).map((c) => c.comment))),
+    () =>
+      answerCards(previous, resolved, commits, new Set((carried ?? []).map((c) => c.comment.id))),
     [previous, resolved, commits, carried],
   );
 }

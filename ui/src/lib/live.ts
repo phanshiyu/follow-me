@@ -37,6 +37,9 @@ export function applyEvent(state: State, event: ServerEvent): State {
         ...(state.previous === null
           ? {}
           : { previous: { ...state.previous, comments: state.previous.comments.map(reply) } }),
+        ...(state.carried === undefined
+          ? {}
+          : { carried: state.carried.map((c) => ({ ...c, comment: reply(c.comment) })) }),
       });
     }
     case "concern": {

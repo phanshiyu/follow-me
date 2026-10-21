@@ -20,33 +20,30 @@ function v3() {
         }),
       ),
     ],
-    previous: {
-      version: JSON.parse("2"),
-      comments: [
-        aComment({
+    previous: { version: JSON.parse("2"), comments: [], responses: [] },
+    carried: [
+      {
+        comment: aComment({
           kind: undefined,
           body: "Guard both in one call",
           replies: [aReply({ body: "Done, both are checked in one call." })],
         }),
-        aComment({ id: JSON.parse('"c_gone00"'), kind: undefined, body: "Drop the helper" }),
-      ],
-      responses: [],
-    },
-    carried: [
-      {
-        comment: JSON.parse('"c_aaaaaa"'),
         unit: JSON.parse(JSON.stringify(HUNK)),
-        offsets: [3, 4],
+        offsets: null,
         changed: true,
-        path: "src/lib.js",
+        path: JSON.parse('"src/lib.js"'),
         newLine: 5,
       },
       {
-        comment: JSON.parse('"c_gone00"'),
+        comment: aComment({
+          id: JSON.parse('"c_gone00"'),
+          kind: undefined,
+          body: "Drop the helper",
+        }),
         unit: null,
         offsets: null,
         changed: true,
-        path: "src/lib.js",
+        path: JSON.parse('"src/lib.js"'),
         newLine: null,
       },
     ],
@@ -62,7 +59,12 @@ test("a new plan version shows its banner, keeps the commit in place and carries
   const before = top();
 
   server.on("GET", "/api/state", () => v3());
-  server.push({ type: "version", version: JSON.parse("3"), hash: "h3" });
+  server.push({
+    type: "version",
+    version: JSON.parse("3"),
+    hash: "h3",
+    carried: v3().carried ?? [],
+  });
 
   await expect
     .element(page.getByText("Plan v3 arrived: 2 threads moved to changed code"))
@@ -75,10 +77,10 @@ test("a new plan version shows its banner, keeps the commit in place and carries
   const changed = page.getByRole("article", { name: "Thread" }).first();
   await expect.element(changed.getByText("Code changed since you asked")).toBeVisible();
   await expect.element(changed.getByText("What you commented on, in v2")).toBeVisible();
-  // The v2 quote is one guard; the new rows hold two, so one line is added.
+  // The v2 quote is the first guard; the rows now at that place hold the second.
   await expect
     .element(changed.getByRole("region", { name: "What changed" }))
-    .toHaveTextContent("assertNumber(a);+ assertNumber(b);");
+    .toHaveTextContent("- assertNumber(a);+ assertNumber(b);");
   await expect.element(changed.getByText("Done, both are checked in one call.")).toBeVisible();
   await expect.element(page.getByText("This code is gone in v3")).toBeVisible();
 

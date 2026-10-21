@@ -2,6 +2,7 @@
 // the fields the server owner is landing beside this page (exclusions, the report).
 
 import type {
+  CarriedComment,
   Comment,
   CommentId,
   ConcernDecision,
@@ -10,15 +11,14 @@ import type {
   PreviousVersion,
   ProjectedCommit,
   ReviewMode,
-  ServerEvent as ServerEventBase,
   SessionAnchor,
   Severity,
   Unit,
-  UnitId,
 } from "../../../src/types.ts";
 
 export type {
   Anchor,
+  CarriedComment as Carried,
   Comment,
   CommentId,
   CommentResponse,
@@ -29,6 +29,7 @@ export type {
   PreviousVersion,
   ProjectedCommit,
   Reply,
+  ServerEvent,
   Severity,
   TextHunk,
   Unit,
@@ -38,28 +39,6 @@ export type {
 
 /** Every comment reaches the agent as it is saved, so the page ignores any `pending` mark. */
 export type WireComment = Omit<Comment, "pending">;
-
-/**
- * Where one comment of the previous plan version landed in this one. unit and offsets name rows of
- * the new plan; changed says the code under them is not what the reviewer commented on.
- */
-export type Carried = {
-  readonly comment: CommentId;
-  /** null when the code is gone from the new plan. */
-  readonly unit: UnitId | null;
-  /** Rows of the unit's body, 0-based; null when the unit has none to point at. */
-  readonly offsets: readonly number[] | null;
-  readonly changed: boolean;
-  readonly path: string;
-  readonly newLine: number | null;
-};
-
-/** The version event, with what the swap did to the previous version's comments. */
-export type VersionEvent = Extract<ServerEventBase, { type: "version" }> & {
-  readonly carried?: readonly Carried[];
-};
-
-export type ServerEvent = Exclude<ServerEventBase, { type: "version" }> | VersionEvent;
 
 /** GET api/state. */
 export type State = {
@@ -75,7 +54,7 @@ export type State = {
   readonly seq: number;
   readonly previous: PreviousVersion | null;
   /** One entry per comment of `previous`, absent from a server that does not carry threads. */
-  readonly carried?: readonly Carried[];
+  readonly carried?: readonly CarriedComment[];
   /** Hand-off items the reviewer left out of the merge request. */
   readonly excluded?: {
     readonly comments: readonly CommentId[];
