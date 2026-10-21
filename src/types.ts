@@ -252,6 +252,11 @@ export type Anchor =
       readonly unit: UnitId;
       readonly commit: number;
       readonly changes: readonly number[] | null;
+      /**
+       * Rows of the unit's body the reviewer picked, 0-based and strictly ascending, context rows
+       * included. changes then holds the change indices among them and may be empty.
+       */
+      readonly offsets?: readonly number[];
     }
   | { readonly kind: "message"; readonly commit: number }
   | { readonly kind: "position"; readonly commit: number }
@@ -271,7 +276,7 @@ export type Reply = {
 /**
  * Comments snapshot what they pointed at, so a later reader need not load the old plan. Absent
  * kind is a change request; "question" asks for an explanation. context.lines holds the selected
- * change lines as text, for when the unit no longer exists.
+ * rows as text, for when the unit no longer exists.
  */
 export type Comment = {
   readonly id: CommentId;

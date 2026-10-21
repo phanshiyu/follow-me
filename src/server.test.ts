@@ -890,3 +890,68 @@ test("a reconnecting stream resumes after Last-Event-ID, and a cursor ahead is r
   assert.equal((await fetch(new URL("api/events/stream?since=9", run.url))).status, 409);
   assert.equal((await fetch(new URL("api/events/stream?since=x", run.url))).status, 400);
 });
+
+const rowsAnchor = (offsets: readonly number[], changes: readonly number[]) => ({
+  kind: "hunk",
+  unit: HUNK_A,
+  commit: 0,
+  changes,
+  offsets,
+});
+
+test("row offsets, context rows included, survive POST, PUT, state, autosave and the review file", async (t) => {
+  const run = await start(t, twoCommitState());
+  const mixed = {
+    ...newComment("why is same untouched?"),
+    anchor: rowsAnchor([1, 2], [1]),
+    context: { commitMessage: "add parser", path: "src/a.ts", lines: ["+new1", " same"] },
+  };
+  const contextOnly = { ...mixed, anchor: rowsAnchor([2], []), body: "what is same for?" };
+  const a = await jsonOf(await post(run.url, "api/comments", mixed));
+  const b = await jsonOf(await post(run.url, "api/comments", contextOnly));
+
+  const put = await fetch(new URL(`api/comments/${a.id}`, run.url), {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ...mixed, id: a.id, createdAt: "2026-01-01T00:00:00.000Z" }),
+  });
+  assert.equal(put.status, 200);
+
+  const state = await jsonOf(await fetch(new URL("api/state", run.url)));
+  assert.deepEqual(state.comments[0].anchor.offsets, [1, 2]);
+  assert.deepEqual(state.comments[1].anchor, rowsAnchor([2], []));
+  assert.deepEqual(state.comments[1].context.lines, ["+new1", " same"]);
+  const draft = JSON.parse(await readFile(join(run.dir, "v3.draft.json"), "utf8"));
+  assert.deepEqual(draft.comments[0].anchor.offsets, [1, 2]);
+  assert.deepEqual(draft.comments[1].anchor, rowsAnchor([2], []));
+
+  await post(run.url, "api/end", {});
+  await run.done;
+  const saved = JSON.parse(await readFile(join(run.dir, "v3.json"), "utf8"));
+  assert.deepEqual(saved.comments[0].anchor, rowsAnchor([1, 2], [1]));
+  assert.deepEqual(saved.comments[1].anchor, rowsAnchor([2], []));
+  assert.equal(saved.comments[1].id, b.id);
+});
+
+test("offsets outside the hunk body, unsorted or on a file unit are refused and change nothing", async (t) => {
+  const run = await start(t, twoCommitState());
+  await post(run.url, "api/comments", newComment("kept"));
+  const before = await readFile(join(run.dir, "v3.draft.json"), "utf8");
+  const bad = [
+    rowsAnchor([5], []),
+    rowsAnchor([0, 99], [0]),
+    rowsAnchor([2, 1], []),
+    rowsAnchor([1, 1], []),
+    rowsAnchor([-1], []),
+    rowsAnchor([], []),
+    { ...rowsAnchor([0], []), unit: FILE_C },
+    { ...rowsAnchor([0], []), changes: null },
+  ];
+  for (const anchor of bad) {
+    const res = await post(run.url, "api/comments", { ...newComment("x"), anchor });
+    assert.equal(res.status, 400, JSON.stringify(anchor));
+  }
+  assert.equal(await readFile(join(run.dir, "v3.draft.json"), "utf8"), before);
+  const state = await jsonOf(await fetch(new URL("api/state", run.url)));
+  assert.equal(state.comments.length, 1);
+});

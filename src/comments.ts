@@ -40,18 +40,32 @@ function isIndex(v: unknown): v is number {
 }
 
 function parseAnchor(v: unknown): Anchor | string {
-  if (!isFields<"kind" | "unit" | "commit" | "changes">(v)) return "anchor is not an object";
+  if (!isFields<"kind" | "unit" | "commit" | "changes" | "offsets">(v)) {
+    return "anchor is not an object";
+  }
   if (v.kind === "plan") return { kind: "plan" };
   if (!isIndex(v.commit)) return "anchor.commit is not a commit index";
   const commit = v.commit;
   if (v.kind === "message" || v.kind === "position") return { kind: v.kind, commit };
   if (v.kind !== "hunk") return "anchor.kind is unknown";
   if (typeof v.unit !== "string" || !isUnitId(v.unit)) return "anchor.unit is not a unit id";
-  if (v.changes === null) return { kind: "hunk", unit: v.unit, commit, changes: null };
+  if (v.changes === null) {
+    if (v.offsets !== undefined) return "anchor.offsets needs anchor.changes to be a list";
+    return { kind: "hunk", unit: v.unit, commit, changes: null };
+  }
   if (!isArray(v.changes) || !v.changes.every(isIndex)) {
     return "anchor.changes is not null or a list of change indices";
   }
-  return { kind: "hunk", unit: v.unit, commit, changes: v.changes.filter(isIndex) };
+  const changes = v.changes.filter(isIndex);
+  if (v.offsets === undefined) return { kind: "hunk", unit: v.unit, commit, changes };
+  if (!isArray(v.offsets) || v.offsets.length === 0 || !v.offsets.every(isIndex)) {
+    return "anchor.offsets is not a non-empty list of row indices";
+  }
+  const offsets = v.offsets.filter(isIndex);
+  if (!offsets.every((o, i) => i === 0 || o > (offsets[i - 1] ?? 0))) {
+    return "anchor.offsets is not strictly ascending";
+  }
+  return { kind: "hunk", unit: v.unit, commit, changes, offsets };
 }
 
 /** A stored reply. Replies a client posts go through parseNewReply, which mints id and time. */
