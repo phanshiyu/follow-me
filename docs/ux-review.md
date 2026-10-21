@@ -450,3 +450,214 @@ What to build first:
 6. `follow-me explain` with `Comment.author`, so the agent can explain unprompted.
 7. Diagram expand, long-reply collapse, the breakpoints and the drawer.
 8. `ConcernDecision.decidedAt`, and rebuilding the timeline after a restart.
+
+## 9. Simplify
+
+The owner tried the page at `a4a57c7` and rejected the direction: "the play function is not practical … extremely clunky all around." This section replaces sections 1 and 8.2 and the playback parts of 7.2 and 7.3. The product is now four verbs: read the commits in order, flag things, ask questions, get answers. Anything that does not serve one of them goes.
+
+### 9.1 Cut list
+
+- Playback goes entirely:
+  - the Play/Show all toggle, the player bar (Play, ⏮ Commit, ◀ Chunk, Chunk ▶, Commit ⏭, Speed, Voice, Mute, `?`) and the progress strip;
+  - the stage header with chunk counters, the outro countdown, the intro cards and the ▶/✓ watched marks;
+  - pausing for concerns and answers, and the chunk highlight and type-in styles;
+  - `ui/playback.js` (591 lines) and its tests.
+
+  Nothing replaces it. Reading order comes from the document itself (9.2).
+- Speech goes: `speechSynthesis`, the voice picker, mute and the `m` key. Nothing replaces it.
+- The right-hand conversation column goes: the Now card, the timeline, the new-messages pill, the unread count, "threads here", the pinned composer, the panel tab and drawer, the toast, the `t` key, and `ui/timeline.js` (575 lines). Threads move back inline under their lines (9.2). Unanchored questions move to a popover. Diagrams move inline at full width.
+- The inline thread chips go. The full thread returns inline, where the chip used to be.
+- The sidebar goes: the commit list, the 56px rail and its tooltip, the Commits toggle, the Answers section and the Plan note section. The commit list is replaced by a sticky header with a stack popover. Answers sit inline where they belong, plus a branch discussion block at the top. The plan note becomes "Flag" in the branch popover.
+- The answers banner ("The agent answered 3 of 4") goes. It becomes one line in the branch summary at the top of the page, linking to the first unread answer.
+- Keys go: Space, ← → h l, Shift+arrows, `r`, `m`, `t`, `y`, `x`, and the "press `p` twice" restart. Section 9.3 gives the keys that remain.
+- In the CLI:
+  - `walk` merges into `review` (9.5).
+  - `--walk` disappears from `prompt`, `plan` and `feedback`.
+  - `report` and `feedback` become one command. `report` is the name, `feedback` an alias, and `report --json` is the export.
+  - `split`, `extract`, `prompt`, `plan`, `check`, `apply`, `review`, `feedback`, `watch`, `reply`, `explain`, `status`, `server`, `install`, `uninstall`, `upgrade` and `clean` stay.
+- Narration earns its place only as plain text, and only once:
+  - A commit's `narration` renders as one paragraph under the commit message, labelled "Agent's note". It is hidden when it repeats the message body.
+  - A unit's narration renders as one muted line above its hunk.
+  - The prompt stops asking for first-person "thinking aloud". For the author, the why belongs in the commit message body, which ships with the commit. For a reviewer reading someone else's branch, the prompt asks for a short third-person note on what to look at in each commit.
+
+### 9.2 The interaction model: one document, everything inline
+
+Navigation: one scrolling document of commits, not a list beside a pane. Reading in order is the product, and scrolling down is reading in order. Browser find works across the whole branch, and nothing is stored about which commit is "selected". It also frees the 240 to 300px the sidebar took, so code gets the width. Long branches stay usable through the stack popover, the `j`/`k` keys, per-commit "Viewed" collapse, and `content-visibility: auto` on commit sections.
+
+Page structure, top to bottom:
+
+1. A sticky header, 44px tall, which absorbs the old topbar:
+   - on the left, "follow-me · feature · plan v2";
+   - in the centre, the stack button "Commit 3 of 8 · Guard add and mul ▾", which tracks the commit at the top of the viewport;
+   - on the right, "Ask about the branch", the pending count "Review · 3 pending" and "Submit review".
+2. A branch summary: commits, files and lines changed, and "v2 answers 3 of your 4 questions → first answer". Below it, the branch discussion threads (unanchored questions and agent explanations).
+3. Each commit as a section:
+   - A commit header: number, title, a Viewed checkbox and a ⋯ menu ("Comment on message", "Move this commit…"; split only). It sticks under the page header while its commit is on screen.
+   - The message body, the Agent's note, and the commit diagram if there is one.
+   - Unanchored agent explanations (`follow-me explain` without `--unit`).
+   - Then files, each with a path line and its hunks.
+4. The end-of-review report is a separate page (9.4).
+
+A hunk reads as one diff:
+
+- The header shows `@@` and the enclosing function. Hunk ids are only in the tooltip.
+- Old and new line numbers, syntax highlighting, and removals in red. Lines from earlier commits render as plain context. Lines from later commits fold into one row, "4 lines arrive in commit 5", which links down the page.
+- A unit diagram, if any, sits full-width above its hunk.
+
+Selection and commenting happen under the lines, and nowhere else:
+
+- A pick can include any row (8.1 offsets). The selection model is in "Borrowed patterns" below.
+- Once rows are picked, a floating pair of buttons, **Flag** and **Ask**, appears at the right edge of the last picked row.
+- Either opens a box inserted directly under that row. Flag offers optional severity chips (blocker, major, minor) and saves a change request. Ask saves a question.
+- Cmd+Enter saves and Escape cancels.
+
+Threads, concerns and explanations are all cards in the same column:
+
+- A thread is a card inline under its last anchored row. It shows the reviewer's text, then the agent's replies indented with an "Agent" label and any diagram at full card width, then "Reply" and "Resolve".
+- A resolved thread collapses in place to one muted line, "✓ Resolved · why does div…", with Reopen.
+- An agent concern is the same card shape, labelled "Agent flagged · major · bug", with **Keep** and **Dismiss** buttons and a severity chip. Keep turns it into a flag in the review. Dismiss collapses it like a resolved thread.
+- An agent explanation anchored to lines reads exactly like a thread that the agent started.
+
+Unanchored questions are asked from "Ask about the branch" in the header. It opens a 420px popover anchored to the button, with a textarea, a Flag/Ask toggle and Send. The thread then appears in the branch discussion block, and the popover closes. A commit-level question uses "Comment on message" in the commit's ⋯ menu, and the box opens under the message.
+
+Diagrams are inline, at full content width:
+
+- A commit diagram sits under the message. A unit diagram sits above its hunk. A reply diagram sits inside the reply.
+- Each renders fit-to-width with a maximum height of 480px at 1280px and 360px at 1024px.
+- Clicking opens the existing `diagram-dialog` as a lightbox at 95vw by 90vh, with Fit and Actual size.
+
+Sizes:
+
+- At 1280px: no side columns. The content column is 1232px wide (24px gutters). Diffs use the full width. Prose (message, note, comments, replies) is capped at 72ch, about 640px. Comment and thread cards are indented to the code column, start about 96px in, and are up to 760px wide.
+- At 1024px: the same layout with a 992px column and the same caps.
+- Below 900px: the header drops the centre title to "3/8 ▾", and nothing else changes.
+
+### 9.3 Borrowed patterns
+
+Sources checked on 2026-10-21: GitHub Docs (commenting on and reviewing pull requests), GitLab Docs (merge request commits), Google Docs Help (comments), Gerrit's review UI docs, Reviewable's docs and Graphite's review docs. Phabricator's docs did not load (503 and 403 responses), so nothing below relies on Phabricator.
+
+**Selection and the comment affordance.** We copy three things:
+
+- From GitHub: hover a line and click the blue comment icon. For a range, "click the line number of the first line … then either drag down to the final line, or hold down Shift and click on the last line number". Our gutter `+` appears on hover and focus of every row. A gutter drag or Shift-click selects a range within one hunk.
+- From Graphite: commenting "anywhere, not just on lines that have changed". This is our context-line picking.
+- From Google Docs: the comment attaches to the highlighted selection and is shown next to it. The help page only documents the toolbar "Add comment" button, so the floating Flag/Ask pair beside the selection is our own choice, not something that page confirms.
+
+Text selection also counts: selecting text inside the code with the mouse picks the rows it spans and shows the floating buttons. No toolbar or right-click step is involved.
+
+**Sending comments to the agent.** Copy GitHub's two paths: "Add single comment" posts immediately, while "Start a review" batches comments until "Submit review". GitHub notes that batching "stops the assistant from acting on individual comments prematurely". Gerrit also keeps comments as drafts until the reviewer clicks Reply.
+
+Recommendation: questions send on save, because the reviewer wants the answer while still reading and `watch` delivers it live. Flags are pending until **Submit review**. The header shows "Review · 3 pending", and pending cards carry a "Pending" tag. The box's primary button follows the kind ("Ask now" or "Add to review"), with the other path as a secondary button.
+
+Submit review replaces End review. It opens a dialog with an optional summary and the undecided agent concerns (Keep all, Dismiss all, Go back). Then it sends the batch, ends the review for this plan version, and navigates to the report page.
+
+**The per-commit Viewed mark.** Copy GitHub's Viewed checkbox: marking a file viewed collapses it, and "if the file changes after you view the file, it will be unmarked". Gerrit offers a per-file Reviewed checkbox, with a preference to check it automatically on viewing. Reviewable's `n` key cycles to the next unreviewed file.
+
+Our version works per commit:
+
+- The checkbox is in the commit header. Checking it collapses the commit to its header and jumps to the next unviewed commit.
+- A new plan version keeps the mark only if the commit's units and line selections are unchanged (same refs). Otherwise it clears the mark.
+- `v` toggles the mark on the commit at the top of the viewport.
+
+**The stack overview.** Copy Graphite's "Show stack" button, with `S` as its shortcut, which shows where the current PR sits and lets you jump to any other. Also copy GitLab's Prev/Next commit buttons and their `X`/`C` keys.
+
+Our version is the centre header button "Commit 3 of 8 ▾" (and `s`). It opens a popover listing every commit with:
+
+- its number and full title, wrapped and never truncated;
+- a Viewed tick;
+- an open-thread count (red when one is waiting on the reviewer, as Reviewable shows discussions that are waiting or unresolved), a pending-flag count and an undecided-concern dot.
+
+Clicking a commit scrolls to it. Prev and Next arrows sit beside the button.
+
+**Resolve in place.** Copy GitHub's resolve-conversation behaviour: a thread collapses where it is. Gerrit marks a comment "Done" in a later patch set. An answer arriving in a new plan version appears inline at its placed location (7.2), with Resolve and Ask again. Resolved threads stay collapsed across versions.
+
+**Revision comparison.** Gerrit and Reviewable both diff one revision against another. We copy only the minimum: when version N+1 opens, commits whose refs changed get a "changed in v2" tag in the stack popover and in their header. A full version-to-version diff is out of scope.
+
+**The keyboard model.** Copy Reviewable's `n` (next unreviewed) and its `?` sheet, which Gerrit also has. Copy GitLab's commit stepping.
+
+- Commits: `j` or `c` goes to the next commit, `k` or `x` to the previous one, `n` to the next unviewed commit, `v` toggles Viewed, `s` opens the stack.
+- Rows inside a focused hunk: ↑ and ↓ move, Shift+↑ and Shift+↓ extend the pick, Space toggles a row, `f` flags, `a` asks, Escape clears.
+- Threads: `u` goes to the next unresolved thread (Reviewable's `⇧J`, simplified) and `r` replies to the focused thread.
+- Review: Cmd+Enter saves a box, and Cmd+Shift+Enter submits the review.
+- Every key is listed on the `?` sheet.
+
+### 9.4 End of review: the hand-off to the merge request
+
+follow-me is always driven from a coding agent's harness and never holds an API key or a forge token. The working tree has already removed the API planner, leaving only `plan --naive`. The end of the review is therefore a hand-off: review locally, ask, understand, consolidate, then carry the result to the GitLab merge request or GitHub pull request.
+
+**The report page.** Submit review navigates to `/s/<id>/report`. It has the same header, without Submit, and with "Back to review" while the session is still open. Each item is one card:
+
+- The location is given on the original branch, not the split branch, for example `src/lib.js:17-18 (new)` or `:12 (old)` for a removed line. The split's last tree equals the tip (the apply proof), so new-side line numbers are the tip's own, and old-side numbers are the base's. These are exactly the lines a merge request shows when it diffs the same base.
+- The card also shows:
+  - the severity chip and kind (flag, question, or kept concern);
+  - the quoted hunk lines;
+  - the reviewer's words;
+  - the agent's answer, for a question;
+  - the rest of the thread, collapsed;
+  - the resolved state.
+- Each item has an **Include** checkbox. By default, flags and kept concerns are included. Questions are excluded, because most were asked to understand the code locally; tick one to ask the author too. An unresolved question shows "still open" next to its checkbox.
+- Items are grouped by file in diff order, then by line, with general items (message, position, branch) last.
+- Each card has one **Copy comment** button. It copies the body markdown: a severity line, the reviewer's text, and the agent's answer in a `<details>` block. It also has **Copy path:line** for pasting by hand. GitLab and GitHub both render that markdown and `<details>` the same way, so separate "GitLab" and "GitHub" copy buttons would only differ in name. Use one button and two separate exports instead.
+- The top of the page carries the counts ("6 included · 2 excluded"), **Copy all as markdown**, and the exact command for the agent: `follow-me report --json`.
+
+**The export, `follow-me report --json`.** It prints the included items. `--all` adds the excluded ones, marked `"included": false`.
+
+```json
+{ "schema": "follow-me/report@1", "branch": "feature", "base": "<sha>", "head": "<original tip sha>",
+  "summary": "<review summary text>",
+  "items": [ { "id": "c_8k2pqa", "path": "src/lib.js", "oldPath": "src/lib.js",
+    "newLine": 18, "oldLine": null, "startNewLine": 17, "startOldLine": null,
+    "severity": "major", "kind": "flag", "body": "<markdown, ready to post>",
+    "thread": [ { "author": "reviewer", "body": "..." }, { "author": "agent", "body": "...", "diagram": "..." } ],
+    "resolved": false } ] }
+```
+
+The fields:
+
+- `kind` is `"flag" | "question" | "concern"`.
+- `severity` is null for unrated items.
+- `newLine` and `oldLine` are the last line of the range. For a context row both are set, for an added row only `newLine`, and for a removed row only `oldLine`.
+- `start*` are null for a single line.
+- `path` is null for an item with no lines.
+- `body` is the same markdown that Copy comment produces.
+
+The include and exclude decisions are stored as one new optional field, `Review.excluded?: string[]` (item ids). The page writes it, and `report --json` reads it.
+
+**What the skill tells the agent.** A new section, "Porting a review", says:
+
+1. Run `follow-me report --json`. Show the user how many items there are and their titles. Ask which merge request or pull request to post to, and whether to post. Never post without a yes.
+2. Find the target with the user's own CLI:
+   - GitLab: `glab mr view <iid> --output json`, which gives `diff_refs`.
+   - GitHub: `gh pr view <n> --json headRefOid,baseRefName`.
+   - If the merge request's head is not the report's `head`, say so and stop. The line numbers would be wrong.
+3. GitHub: build one review and post it once, with `gh api repos/{owner}/{repo}/pulls/<n>/reviews --input review.json` and `"event": "COMMENT"`. Put each item in `comments[]` as:
+   - `path`;
+   - `line` = `newLine` with `side` = `"RIGHT"`, or `oldLine` with `side` = `"LEFT"`;
+   - `start_line` and `start_side` for a range;
+   - `body`.
+
+   Items with no line go into the review `body`. Never use `APPROVE` or `REQUEST_CHANGES` unless the user asks.
+4. GitLab: post one discussion per item, with `glab api --method POST projects/:id/merge_requests/<iid>/discussions` and `position[position_type]=text`. Take `base_sha`, `start_sha` and `head_sha` from `diff_refs`, and set `new_path`, `old_path`, `new_line` and `old_line` from the item: `new_line` for an added line, `old_line` for a removed line, and both for a context line. Post items with no line with `glab mr note`.
+5. Report what was posted, with links, and anything that failed. Do not retry blindly.
+
+Credentials stay entirely with `gh` and `glab`. follow-me never stores, reads or asks for a token.
+
+### 9.5 The wire format and the CLI
+
+- The plan format keeps everything. `narration`, `diagram` and `concerns` are text and cost nothing when absent. Removing them would break the hashes of existing plans. Only the prompt changes (9.1).
+- The review format keeps comments (`kind`, `severity`, `follows`, `replies`, `author`, `offsets`), concern decisions and `resolved`. It adds one optional field, `Comment.pending?: true`, for flags not yet submitted. It is cleared on submit and never written to `reviews/vN.json`.
+- `decidedAt` stays but is now unused. Events stay, because `watch` needs them.
+- Merge `walk` into `review`. Without playback the two modes differ only in who reads the result. The author's review offers "Comment on message" and "Move this commit…". Someone else's review hides them and writes a code review. Decide by whether this session has applied a split branch, not by a flag.
+- `follow-me review` on a branch with no plan plans one, exactly as `walk` does now. Keep `walk` as an alias that prints "walk is now review" for one minor release, then delete it. `Review.mode` keeps being written for the report's sake, but no UI branches on it beyond those two menu items.
+
+### 9.6 Build order, deletions first
+
+1. Delete playback, speech, the player bar, the strip, the stage, their keys, `ui/playback.js` and its tests. S to M.
+2. Delete the conversation column, `ui/timeline.js`, the chips, the toast and `t`. Restore inline threads (`commentView` and `replyView` still exist). M.
+3. Delete the sidebar, the rail and the Answers and Plan note sections. Render all commits as one document with sticky commit headers. M.
+4. Add the sticky page header with the stack popover, Prev and Next, and the Viewed checkbox with its collapse and reset rule. M.
+5. Add the floating Flag and Ask buttons on the selection, the box under the lines, text-selection picking, and the keyboard model. M.
+6. Make questions send immediately and flags pending, with the pending count, Submit review and its dialog. Add `Comment.pending`. M.
+7. Render concerns, answers and resolved threads inline in the new card shape, and show narration as the Agent's note. S.
+8. Show diagrams inline at full width with the lightbox. Add the "Ask about the branch" popover and the branch discussion block. S.
+9. Add the report page at `/s/<id>/report` with Include toggles and Copy comment, sharing the `feedback` renderer. Add `report --json` and `Review.excluded`. Add the skill's "Porting a review" section. M.
+10. CLI: merge `walk` into `review`, drop `--walk`, keep `report` (it now owns `--json`) and make `feedback` its alias, and change the prompt to ask for the why in the message body rather than first-person narration. S.
