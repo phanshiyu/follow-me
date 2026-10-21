@@ -169,9 +169,9 @@ code. Nothing is applied and no branch is written. `walk` is an old name for `re
 A reviewer's plan has no new format. A commit and any unit ref may carry `narration`, which the page
 shows as the agent's note, and validation passes it through to `ProjectedCommit`. A unit entry with a
 note serializes as `{ "unit": "h_x:0-3", "narration": … }`; without it the entry stays a plain string,
-so older plans and their hashes are unchanged. The reviewer prompt shares the unit dump and the rules
-with the split prompt and differs only in its goal: it asks for the why in each commit body first and
-for a note only where it adds to that body.
+so older plans and their hashes are unchanged. Both prompts carry the same session data and name the
+same skill section; the section says what each mode is for, and reviewer mode adds a note only where
+it adds to the commit body, and concerns.
 
 `Review.mode` is `split` or `walk` (the wire name of the reviewer's mode), and a file without it reads
 as `split`. A reviewer's review is a code review for the author, not plan feedback, so `lastReview`
@@ -303,6 +303,20 @@ read. A repeated call prints only what is new; after a restart it reads the new 
 what `seen` holds, so renumbered events are neither replayed nor skipped. The agent's own replies and
 version swaps are not news. A `submitted` or `ended` event ends the loop with the report.
 
+## What the agent reads
+
+Everything follow-me prints or writes for the agent costs tokens on every call, so fixed text lives
+in the skill, which a harness loads once: "Writing the draft" holds the format, the rules, the
+top-down order, the question protocol and the concern guidance, and `porting.md` beside it holds the
+posting steps, read only when asked. `prompt.md` keeps session data (draft path, base, tip, check
+command, units, open comments) and one line naming that section and the skill file. Anything the agent
+already read travels as a ref (`h_`, `c_`, `k_`, `path:line@n`) that `follow-me show` expands, as the
+split writes it rather than as the tip does. A comment the agent has not seen keeps a quote of at most
+six rows of 160 characters, because without it the agent reads a file, and may read the tip instead of
+the commit. `scripts/measure-tokens.ts` drives a whole session on the fixture and on a pinned real
+branch and prints bytes and estimated tokens per step; `docs/token-budget.md` has the numbers before
+and after each cut and the blind check that the agent's work did not get worse.
+
 ## Reconnect
 
 A server can die under an open page and a listening agent. The page autosaves every comment, reply and
@@ -328,8 +342,9 @@ edits the original branch, commits, and runs `follow-me`. The tip has moved, so:
    units are dropped, a commit left with none is dropped, responses start empty. It returns the
    draft, the vanished units with the old commits that took them, and the added units.
 3. If `draft.json` is not already for this tip, the carried draft is written. While it does not
-   validate, `prompt.md` gains "Changes since v<N>" (vanished units with their old commit and
-   message, new units with their bodies, and the reviewer's comments on vanished hunks quoted), and
+   validate, `prompt.md` is the short re-plan form: vanished units with their old commit, new units
+   with their bodies, unchanged units one line each with their commit in the draft, and every open
+   comment by id, quoted (at most six rows) only when the hunk it was on changed; and
    the entry prints `next: assign the new units in draft.json, then run follow-me again`.
 4. Once it validates (at once when nothing vanished or appeared), the entry checks syntax, applies
    under the server's lock (only freezes for a walk), swaps the open page with `api/version` and
@@ -359,4 +374,4 @@ excluded }` in file order. Line numbers are the original branch's: the tip's for
 row, the base's for a removed one, computed from the hunk and the projected commit as the quoting code
 does. The split's last tree equals the tip, so the numbers are the ones a merge request shows for the
 same base. The agent, not follow-me, then posts the non-excluded items with `glab` or `gh`, after
-checking that the merge request head is the tip (see the skill's "Porting a review").
+checking that the merge request head is the tip (see `skills/follow-me/porting.md`).
