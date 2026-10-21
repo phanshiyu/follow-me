@@ -1,4 +1,5 @@
 import { componentsForAll, highlightBody, languageFor } from "/highlight.js";
+import { applyEvent, backoffMs, bannerText, decisionsById, keepCommit, nextSince } from "/live.js";
 import {
   beatAt,
   beatStart,
@@ -115,13 +116,20 @@ function spansOf(unit) {
   return highlighted.get(unit.id);
 }
 
-async function api(method, path, body) {
+const RETRY_MS = 400;
+
+/** A write during a plan swap or an end answers 409; it is safe to repeat once a moment later. */
+async function api(method, path, body, retried = false) {
   const res = await fetch(`${sessionPrefix}${path}`, {
     method,
     headers: { "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const payload = await res.json().catch(() => ({}));
+  if (res.status === 409 && method !== "GET" && !retried) {
+    await new Promise((resolve) => setTimeout(resolve, RETRY_MS));
+    return api(method, path, body, true);
+  }
   if (!res.ok) throw new Error(payload.error ?? `${method} ${path} failed with ${res.status}`);
   return payload;
 }
@@ -704,13 +712,28 @@ function renderMain() {
   rovingLines();
 }
 
+/** The textarea being typed in, so a re-render caused by someone else's event keeps the caret. */
+function typingPlace() {
+  const area = document.activeElement;
+  if (!(area instanceof HTMLTextAreaElement)) return null;
+  const key = area.closest("[data-box]")?.getAttribute("data-box");
+  return key ? { key, start: area.selectionStart, end: area.selectionEnd } : null;
+}
+
 function render() {
+  const typing = typingPlace();
   renderList();
   renderPlanNote();
   renderMain();
   if (focusKey !== null) {
     document.querySelector(`[data-box="${focusKey}"] textarea`)?.focus();
     focusKey = null;
+  } else if (typing !== null) {
+    const area = document.querySelector(`[data-box="${typing.key}"] textarea`);
+    if (area instanceof HTMLTextAreaElement) {
+      area.focus();
+      area.setSelectionRange(typing.start, typing.end);
+    }
   }
 }
 
@@ -1228,10 +1251,17 @@ function loadVoices() {
   picker.value = player.voice ?? "";
 }
 
-function setUpPlayer() {
+/** The beats and steps of the plan on screen; again whenever a new plan version replaces it. */
+function buildPlayback() {
   beats = buildScript(state.commits, state.units);
   narrated = hasNarration(state.commits);
-  setSpeed(parseSpeed(stored("speed")));
+  steps = schedule(beats, player.speed);
+  for (const id of ["voice-label", "mute"]) $(id).hidden = !narrated;
+}
+
+function setUpPlayer() {
+  player.speed = parseSpeed(stored("speed"));
+  buildPlayback();
   player.muted = stored("muted") === "true";
   const speed = $("speed");
   speed.replaceChildren(...SPEEDS.map((s) => el("option", { value: String(s), text: `${s}x` })));
@@ -1243,7 +1273,6 @@ function setUpPlayer() {
     player.voice = picker.value || null;
     store("voice", picker.value);
   });
-  for (const id of ["voice-label", "mute"]) $(id).hidden = !narrated;
   synth?.addEventListener("voiceschanged", loadVoices);
   loadVoices();
   $("play").addEventListener("click", () => (player.playing ? pause() : play()));
@@ -1395,17 +1424,155 @@ for (const type of ["mouseout", "focusout"]) $("commits").addEventListener(type,
 window.addEventListener("focus", () => renderSwitcher());
 renderSwitcher();
 
-guarded(async () => {
-  state = await api("GET", "/api/state");
-  indexOwnership();
+function renderHeader() {
   const walk = isWalk();
   document.title = walk ? "follow-me code review" : "follow-me review";
   $("summary").textContent = walk
     ? `${state.anchor.branch} · Code review`
     : `${state.anchor.branch} · Review of plan v${state.version}`;
   $("end").textContent = walk ? "Finish code review" : "End review";
+}
+
+/** Makes a fetched state the page's own: indexes, highlighting and header. */
+async function adopt(fresh) {
+  state = {
+    ...fresh,
+    decisions: decisionsById(fresh.concerns ?? []),
+    resolved: fresh.resolved ?? [],
+    previous: fresh.previous ?? null,
+  };
+  indexOwnership();
+  highlighted.clear();
   await loadHighlighting(state.units);
-  setUpPlayer();
-  if (walk) enterPlay();
+  renderHeader();
+}
+
+function showBanner(text) {
+  $("banner-text").textContent = text;
+  $("banner").hidden = false;
+}
+
+/** A newer plan arrived: swap it in place and stay on the commit being read when it survives. */
+async function swapVersion() {
+  const fresh = await api("GET", "/api/state");
+  if (fresh.version <= state.version) return;
+  const title = state.commits[selected] ? firstLine(state.commits[selected].message) : null;
+  const was = selected;
+  await adopt(fresh);
+  buildPlayback();
+  selected = keepCommit(title, was, state.commits);
+  watched.clear();
+  showBanner(bannerText(state.version, 0));
+  if (player.view === "play") seek(beatStart(steps, introOf(beats, selected)));
   else render();
+}
+
+function showEnded() {
+  if (!$("done").hidden) return;
+  player.generation += 1;
+  synth?.cancel();
+  $("done").replaceChildren(
+    el(
+      "section",
+      { class: "done-card", "aria-labelledby": "done-title" },
+      el("h1", { id: "done-title", text: "Review ended" }),
+      el("p", { class: "muted", text: "This review was ended in another window. It is saved." }),
+      el("p", {}, el("a", { href: "/", text: "All sessions" })),
+    ),
+  );
+  $("done").hidden = false;
+}
+
+async function receive(event) {
+  const { state: next, effect } = applyEvent(state, event);
+  state = next;
+  if (effect === "refetch") await swapVersion();
+  else if (effect === "ended") showEnded();
+  else render();
+}
+
+const sleep_ = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** The page's whole state again, after the server's log no longer matches what we followed. */
+async function resync() {
+  const fresh = await api("GET", "/api/state");
+  const title = state.commits[selected] ? firstLine(state.commits[selected].message) : null;
+  const was = selected;
+  await adopt(fresh);
+  buildPlayback();
+  selected = keepCommit(title, was, state.commits);
+  render();
+  return fresh.seq ?? 0;
+}
+
+/** Reads the push stream until it fails twice in a row, resolving with the last seq seen. */
+function followStream(since, onEvent) {
+  return new Promise((resolve) => {
+    let last = since;
+    let failures = 0;
+    const source = new EventSource(`${sessionPrefix}/api/events/stream?since=${since}`);
+    const stop = () => {
+      source.close();
+      resolve(last);
+    };
+    source.addEventListener("message", async (message) => {
+      failures = 0;
+      try {
+        const event = JSON.parse(message.data);
+        last = Math.max(last, event.seq ?? 0);
+        await onEvent(event);
+      } catch {
+        // A malformed event is skipped; the next one still applies.
+      }
+      if (!$("done").hidden) stop();
+    });
+    source.addEventListener("error", () => {
+      failures += 1;
+      if (failures >= 2 || source.readyState === EventSource.CLOSED) stop();
+    });
+  });
+}
+
+/** Long-polls for what others changed, reconnecting with backoff after an error. */
+async function pollEvents(from) {
+  let since = from;
+  let failures = 0;
+  while ($("done").hidden) {
+    try {
+      const res = await fetch(`${sessionPrefix}/api/events?since=${since}&timeout=25000`);
+      // A server without live updates answers 404; the page then works as it always did.
+      if (res.status === 404) return;
+      if (res.status === 409) {
+        since = await resync();
+        continue;
+      }
+      if (!res.ok) throw new Error(`events failed with ${res.status}`);
+      const reply = await res.json();
+      failures = 0;
+      since = nextSince(since, reply);
+      for (const event of reply.events ?? []) await receive(event);
+    } catch {
+      failures += 1;
+      await sleep_(backoffMs(failures));
+    }
+  }
+}
+
+/** Follows the server from the seq of the state we hold, so nothing between is missed. */
+async function followEvents() {
+  let since = state.seq ?? 0;
+  if ("EventSource" in window) since = await followStream(since, receive);
+  if ($("done").hidden) await pollEvents(since);
+}
+
+$("banner-close").addEventListener("click", () => {
+  $("banner").hidden = true;
+});
+
+guarded(async () => {
+  await adopt(await api("GET", "/api/state"));
+  setUpPlayer();
+  if (isWalk()) enterPlay();
+  else render();
+  followEvents();
 });

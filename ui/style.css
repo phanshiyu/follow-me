@@ -83,6 +83,23 @@ body {
   background: var(--panel);
 }
 
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--comment-bg);
+}
+
+.banner[hidden] {
+  display: none;
+}
+
+.banner span {
+  flex: 1;
+}
+
 .sessions {
   display: flex;
   gap: 8px;
