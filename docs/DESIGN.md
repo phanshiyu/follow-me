@@ -165,3 +165,41 @@ the commit's own change lines appears or fades out. The UI holds a position into
 every line's look is a pure function of the position (`ui/playback.js`), so seeking, pausing and
 re-rendering never disagree. Speech uses the browser's `speechSynthesis`; muting keeps the timing
 without audio, and a timeout bounds engines that never report the end of an utterance.
+
+## Interactive loop
+
+A review is a conversation, so the agent talks to the review server, not to files. The server
+holds each hosted session's state in memory and appends everything that happens to an event log;
+files stay the durable record written as it goes (`reviews/vN.draft.json`) and at the end.
+
+- **Event log.** `seq` counts from 1 at registration and never repeats. `GET api/events?since=&timeout=`
+  long-polls it (default 25 s, at most 60 s) and returns `{ seq, events }` at once when there is news,
+  else `{ seq, events: [] }` at the timeout. `GET api/events/stream` serves the same log as
+  Server-Sent Events: it replays after `since` (or `Last-Event-ID`), pushes each new event, pings every
+  15 s and closes after `ended`. Every mutation emits one event: `comment`, `comment-updated`,
+  `comment-deleted`, `reply`, `concern`, `resolved`, `version`, `ended`. `since` beyond the log is a 409,
+  because a restarted server restarts the count. `api/state` carries the current `seq`, so a page
+  that reads state and then polls from it misses nothing.
+- **Replies.** `Comment.replies` holds the conversation under a comment, posted to
+  `POST api/comments/<cid>/replies` by the agent (`follow-me reply`) or the reviewer. They are
+  autosaved and written into the review. A page's `PUT` of a comment never overwrites them.
+- **In-place swap.** `POST api/version { version, hash }` moves the hosted session to a newer frozen
+  plan under the same id and URL. The new plan loads first through the same loader as a fresh
+  registration, with the lock the server already holds, so a plan that no longer fits changes nothing.
+  Then the old version's review is finalized to `reviews/vN.json` (and `vN.md`) if anything was said,
+  and the comment set starts empty. `api/state.previous` is `{ version, comments, responses }`: the
+  comments of the review before this version, finished or still an autosave, and what this plan
+  answered. `follow-me apply` does this when the server hosts the session, writing the branch under the
+  server's lock. Walk sessions can be swapped through the endpoint, but no command does it yet.
+- **Validation sees live comments.** `session.priorReview` returns the autosave of an unfinished
+  review when it is newer than every finished one, so `check` and `apply` accept responses to comments
+  that exist only on the open page.
+- **Report.** `renderReport` in `prompt.ts` is the one renderer: reviewer comments and the agent's kept
+  concerns by file in diff order and by line, severity in each heading, the hunk quoted as that commit
+  writes it, both voices, replies under their comment, questions and their answers last. Undecided and
+  dismissed concerns are left out. `follow-me feedback` and `report`, `GET api/report` and the `vN.md`
+  written on end all call it.
+- **Concerns and questions.** A plan may carry `concerns` on commits and unit refs; validation derives
+  `k_` ids, allows one per unit, and the reviewer's decisions live in `Review.concerns`. A comment of
+  `kind: "question"` is answered by a response with status `answered` whose `at` points at narration or a
+  diagram in the new plan; validation rejects an answer that points at nothing.
