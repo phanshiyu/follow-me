@@ -330,6 +330,13 @@ export type Review = {
   readonly excluded?: Excluded;
   /** Replies to comments of earlier versions, which keep their own review file as written. */
   readonly earlierReplies?: readonly EarlierReplies[];
+  /**
+   * Present when this version was swapped into an open review: every comment said on its earlier
+   * versions, by id, and where it points on this one. Absent means the review began here.
+   */
+  readonly carried?: readonly CarriedRef[];
+  /** Concerns kept on an earlier version of the same open review that this plan no longer has. */
+  readonly carriedConcerns?: readonly CarriedConcern[];
 };
 
 /** Comments and agent concerns kept out of the report's main list and of `report --json`. */
@@ -345,6 +352,9 @@ export type ReviewDraft = {
   readonly resolved: readonly CommentId[];
   readonly excluded: Excluded;
   readonly earlierReplies: readonly EarlierReplies[];
+  /** Null when the review began on this version; see Review.carried. */
+  readonly carried: readonly CarriedRef[] | null;
+  readonly carriedConcerns: readonly CarriedConcern[];
 };
 
 /** The version before a swap or a fresh open: its comments and what the new plan answered. */
@@ -355,19 +365,50 @@ export type PreviousVersion = {
 };
 
 /**
- * A comment of the previous version placed on this version's diff. A unit whose hunk is unchanged
- * keeps its id and the picked rows. When the hunk changed, unit is the hunk of the same path whose
- * tip lines cover or come closest to where the comment pointed, changed is true and offsets is
+ * Where something said on an earlier version points on this version's diff. A unit whose hunk is
+ * unchanged keeps its id and the picked rows. When the hunk changed, unit is the hunk of the same
+ * path whose tip lines cover or come closest to where it pointed, changed is true and offsets is
  * null. unit is null when nothing on that path is left, and for comments not on a hunk. newLine
- * is the 1-based line of the branch tip the comment now points at, or null when there is none.
+ * is the 1-based line of the branch tip it now points at, or null when there is none. Once
+ * changed, always changed: a later swap moves it again but never marks it unchanged.
  */
-export type CarriedComment = {
-  readonly comment: Comment;
+export type Placement = {
   readonly unit: UnitId | null;
   readonly offsets: readonly number[] | null;
   readonly changed: boolean;
   readonly path: RepoPath | null;
   readonly newLine: number | null;
+};
+
+/** A comment of an earlier version placed on this version's diff. */
+export type CarriedComment = Placement & { readonly comment: Comment };
+
+/**
+ * A comment said on an earlier version of the open review, as the session keeps it: the version
+ * whose review file holds it and since, the last version whose code it still matched (null while
+ * its code is unchanged).
+ */
+export type SessionComment = CarriedComment & {
+  readonly version: PlanVersion;
+  readonly since: PlanVersion | null;
+};
+
+/** SessionComment on disk: the comment by id, since reviews/v<version>.json holds it. */
+export type CarriedRef = Placement & {
+  readonly version: PlanVersion;
+  readonly comment: CommentId;
+  readonly since: PlanVersion | null;
+};
+
+/**
+ * A concern the reviewer kept on an earlier version that the open plan no longer has, with its
+ * decision. commit is its 0-based commit in the last plan that had it.
+ */
+export type CarriedConcern = Placement & {
+  readonly concern: PlacedConcern;
+  readonly commit: number;
+  readonly decision: ConcernDecision;
+  readonly since: PlanVersion | null;
 };
 
 /** Replies posted during this review to a comment of an earlier version. */

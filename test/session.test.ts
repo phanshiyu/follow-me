@@ -306,6 +306,8 @@ test("a review and its autosave keep excluded and resolved ids", () => {
     comments: [],
     concerns: [],
     earlierReplies: [],
+    carried: null,
+    carriedConcerns: [],
     ...ids,
   });
 });

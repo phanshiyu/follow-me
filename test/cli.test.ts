@@ -1657,6 +1657,222 @@ test("a fix the agent commits while the page is open swaps in with the threads c
   );
 });
 
+test("the report of a review that swapped twice lists everything said on every version, on the final tip", async (t) => {
+  const skillHome = mkdtempSync(join(tmpdir(), "follow-me-skillhome-"));
+  t.after(() => rmSync(skillHome, { recursive: true, force: true }));
+  const { home, run } = cliIn(t, { HOME: skillHome });
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  git(repo.dir, "config", "user.email", "fixture@example.com");
+  const sub = join(repo.dir, ".follow-me", "feature");
+  const v1 = await loadDiff(repo.dir, "main", "feature");
+  const units = [...v1.units.values()];
+  const [head, guarded] = units.filter((u) => u.path === "src/lib.js");
+  const readme = units.find((u) => u.path === "README.md");
+  const notes = units.find((u) => u.path === "notes.txt");
+  assert.ok(head && guarded && readme && notes);
+  run(repo.dir, "extract");
+  // The agent's concern sits on the first change of notes.txt, the reviewer's later flag on its last.
+  const refs = units.map((u) =>
+    u.id === notes.id
+      ? {
+          unit: u.id,
+          concerns: [
+            { severity: "major", kind: "risk", text: "the last line has no newline", lines: [0] },
+          ],
+        }
+      : u.id,
+  );
+  writeFileSync(
+    join(sub, "draft.json"),
+    JSON.stringify({
+      schema: "follow-me/plan@1",
+      base: repo.base,
+      tip: repo.branch,
+      commits: [{ message: "feat: everything", units: refs }],
+      responses: [],
+    }),
+  );
+  const opened = run(repo.dir, "--no-open", "--wait", "0");
+  const [, url] = SESSION_URL.exec(opened.out) ?? [];
+  assert.ok(url, opened.out);
+  const api = async (path: string, body?: object) => {
+    const res = await fetch(new URL(path, url), {
+      method: body === undefined ? "GET" : "POST",
+      headers: { "content-type": "application/json" },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    const text = await res.text();
+    assert.equal(res.ok, true, `${path}: ${text}`);
+    return JSON.parse(text);
+  };
+  const flag = async (unit: string, offset: number, path: string, body: string, severity: string) =>
+    (
+      await api("api/comments", {
+        anchor: { kind: "hunk", unit, commit: 0, changes: [], offsets: [offset] },
+        context: { commitMessage: "feat: everything", path },
+        body,
+        severity,
+      })
+    ).id;
+  /** Commits the fix, lets follow-me carry the draft over, assigns the new units and swaps. */
+  const fix = async (edit: () => void, version: number) => {
+    const before = await loadDiff(repo.dir, "main", "feature");
+    edit();
+    run(repo.dir, "--wait", "0");
+    const after = await loadDiff(repo.dir, "main", "feature");
+    const draft = JSON.parse(readFileSync(join(sub, "draft.json"), "utf8"));
+    draft.commits[0].units.push(...[...after.units.keys()].filter((id) => !before.units.has(id)));
+    writeFileSync(join(sub, "draft.json"), JSON.stringify(draft));
+    const swapped = run(repo.dir, "--wait", "0");
+    assert.match(swapped.out, new RegExp(`swapped the open page to plan v${version};`));
+  };
+
+  // v1: a flag on the guard the agent will change, one on the README it leaves, a question, and
+  // the agent's concern the reviewer keeps.
+  const concern = (await api("api/state")).commits[0].concerns[0].id;
+  const guard =
+    guarded.kind === "hunk" ? guarded.body.findIndex((r) => r.text.includes("zero")) : -1;
+  const changed = await flag(guarded.id, guard, "src/lib.js", "name the failure", "minor");
+  const unchanged = await flag(readme.id, 3, "README.md", "reword the intro", "minor");
+  const question = (
+    await api("api/comments", {
+      anchor: { kind: "plan" },
+      context: { commitMessage: "feat: everything", path: null },
+      body: "why one commit?",
+      kind: "question",
+    })
+  ).id;
+  await api(`api/concerns/${concern}`, { decision: "kept" });
+  assert.equal(run(repo.dir, "reply", changed, "--body", "on it").code, 0);
+  run(repo.dir, "--wait", "0");
+
+  await fix(() => editLib(repo.dir, "division by zero", "cannot divide by zero"), 2);
+  assert.equal(run(repo.dir, "reply", changed, "--body", "Changed the message.").code, 0);
+
+  // The server dies on v2; the one that comes back keeps v1's threads in the session.
+  const dead = serverRecord(home);
+  assert.ok(dead);
+  process.kill(dead.pid, "SIGKILL");
+  await eventually("the server is gone", () => !isAlive(dead.pid));
+  assert.equal(
+    run(repo.dir, "--wait", "0").out.split("\n")[0],
+    "review server restarted, nothing lost",
+  );
+  const restarted = await api("api/state");
+  assert.deepEqual(
+    restarted.carried.map((c: { comment: { id: string; replies?: unknown[] } }) => [
+      c.comment.id,
+      c.comment.replies?.length ?? 0,
+    ]),
+    [
+      [changed, 2],
+      [unchanged, 0],
+      [question, 0],
+    ],
+  );
+
+  // v2: a flag on lines no edit touches, and one on notes.txt, which the next fix reverts.
+  const later = await flag(head.id, 3, "src/lib.js", "name the guard", "major");
+  const doomed = await flag(notes.id, 3, "notes.txt", "end the file with a newline", "minor");
+  await fix(() => {
+    writeFileSync(join(repo.dir, "notes.txt"), "line one\nline two");
+    editLib(repo.dir, "return a ** b;", "return Math.pow(a, b);");
+  }, 3);
+
+  // v3: the reviewer leaves a v1 flag out, resolves the v1 question and answers a v2 thread.
+  await api("api/excluded", { comment: unchanged, excluded: true });
+  await api("api/resolved", { comment: question, resolved: true });
+  await api(`api/comments/${doomed}/replies`, { author: "reviewer", body: "never mind" });
+
+  const flagged = (id: string, path: string | null, newLine: number | null, body: string) => ({
+    id,
+    path,
+    oldPath: path,
+    newLine,
+    oldLine: null,
+    startNewLine: null,
+    startOldLine: null,
+    kind: "flag",
+    resolved: false,
+    excluded: false,
+    body,
+  });
+  const expected = [
+    {
+      ...flagged(unchanged, "README.md", 3, "**minor**\n\nreword the intro"),
+      severity: "minor",
+      thread: [],
+      excluded: true,
+    },
+    {
+      ...flagged(later, "src/lib.js", 4, "**major**\n\nname the guard"),
+      severity: "major",
+      thread: [],
+    },
+    {
+      ...flagged(changed, "src/lib.js", 20, "**minor**\n\nname the failure"),
+      severity: "minor",
+      thread: [
+        { author: "agent", body: "on it" },
+        { author: "agent", body: "Changed the message." },
+      ],
+      changed: { since: 1, gone: false },
+    },
+    {
+      ...flagged(concern, "notes.txt", null, "**major**\n\nthe last line has no newline"),
+      kind: "concern",
+      severity: "major",
+      thread: [],
+      changed: { since: 2, gone: true },
+    },
+    {
+      ...flagged(doomed, "notes.txt", null, "**minor**\n\nend the file with a newline"),
+      severity: "minor",
+      thread: [{ author: "reviewer", body: "never mind" }],
+      changed: { since: 2, gone: true },
+    },
+    {
+      ...flagged(question, null, null, "why one commit?"),
+      kind: "question",
+      severity: null,
+      thread: [],
+      resolved: true,
+    },
+  ];
+  assert.deepEqual(await api("api/report?format=json"), expected);
+  assert.deepEqual(JSON.parse(run(repo.dir, "report", "--json").out), expected);
+
+  await api("api/end", {});
+  const ended = run(repo.dir, "--wait", "0");
+  assert.equal(ended.code, 0, ended.err);
+  const saved = run(repo.dir, "report");
+  assert.equal(ended.out.includes(saved.out), true, ended.out);
+  for (const body of [
+    "reword the intro",
+    "name the guard",
+    "name the failure",
+    "the last line has no newline",
+    "end the file with a newline",
+    "why one commit?",
+    "Changed the message.",
+    "never mind",
+  ]) {
+    assert.equal(saved.out.split(body).length, 2, `${body} once in:\n${saved.out}`);
+  }
+  assert.match(saved.out, /line 20 · the code changed after v1/);
+  assert.equal(saved.out.split("the code is gone after v2").length, 3, saved.out);
+  assert.deepEqual(JSON.parse(run(repo.dir, "report", "--json").out), expected);
+  // Each version's review file holds what was said on it, and v1's stays as written at the swap.
+  const v1Review = JSON.parse(readFileSync(join(sub, "reviews", "v1.json"), "utf8"));
+  assert.deepEqual(
+    v1Review.comments.map((c: { id: string }) => c.id),
+    [changed, unchanged, question],
+  );
+  const v3Review = JSON.parse(readFileSync(join(sub, "reviews", "v3.json"), "utf8"));
+  assert.deepEqual(v3Review.comments, []);
+});
+
 test("follow-me brings a killed server back on its port and prints only what the agent has not read", async (t) => {
   const skillHome = mkdtempSync(join(tmpdir(), "follow-me-skillhome-"));
   t.after(() => rmSync(skillHome, { recursive: true, force: true }));

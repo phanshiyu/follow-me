@@ -83,6 +83,7 @@ import {
   SessionFileError,
   SessionLockedError,
   type StoredReview,
+  sessionComments,
   sinceLastPlan,
 } from "./session.ts";
 import { checkSyntax, type SyntaxReport } from "./syntax.ts";
@@ -1075,7 +1076,9 @@ function reviewedPlan(session: Session): StoredReview | null {
 function finished(session: Session, stored: StoredReview): number {
   const text = renderStored(session, stored);
   if (text === null) return 1;
-  say(`review v${stored.version} ended with ${plural(stored.review.comments.length, "comment")}`);
+  // A review that swapped versions holds what its earlier versions said too.
+  const said = stored.review.comments.length + (stored.review.carried?.length ?? 0);
+  say(`review v${stored.version} ended with ${plural(said, "comment")}`);
   process.stdout.write(text);
   say();
   next("done; the user can port it with follow-me report --json");
@@ -1431,7 +1434,20 @@ function renderStored(
     .plans()
     .filter((p) => p.version > stored.version)
     .flatMap((p) => p.file.responses);
-  const opts = { branch: session.anchor.branch, responses };
+  const { carried } = stored.review;
+  const said = reviewsOf(session)
+    .filter((r) => r.version <= stored.version)
+    .map((r) => r.review);
+  const earlier =
+    carried === undefined
+      ? {}
+      : {
+          earlier: {
+            comments: sessionComments(carried, said),
+            concerns: stored.review.carriedConcerns ?? [],
+          },
+        };
+  const opts = { branch: session.anchor.branch, responses, ...earlier };
   if (format === "json") {
     const items = reportItems(stored.review, verdict.plan.commits, session.diff.units, opts);
     return `${JSON.stringify(items, null, 2)}\n`;

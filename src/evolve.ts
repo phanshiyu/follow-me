@@ -5,11 +5,19 @@
  */
 import { tipStartOf } from "./diff.ts";
 import type {
+  Anchor,
   CarriedComment,
+  CarriedConcern,
   Comment,
+  ConcernDecision,
+  ConcernId,
   Diff,
+  PlacedConcern,
+  Placement,
   PlanFile,
   PlannedCommit,
+  PlanVersion,
+  SessionComment,
   TextHunk,
   Unit,
   UnitId,
@@ -109,6 +117,87 @@ function distance(hunk: TextHunk, units: Units, line: number): number {
   return line < from ? from - line : line > to ? line - to : 0;
 }
 
+/** The body row whose tip line is `line`; a kept row before a removal at the same line. */
+function rowAt(hunk: TextHunk, units: Units, line: number | null): number {
+  if (line === null) return 0;
+  const lines = tipLines(hunk, units);
+  const row = hunk.body.findIndex((r, i) => r.op !== "-" && lines[i] === line);
+  return row === -1 ? 0 : row;
+}
+
+/** What a placement needs from the thing placed: whether it names no line, and its first row. */
+type Pinned = { readonly whole: boolean; readonly row: (hunk: TextHunk) => number };
+
+function pinnedComment(comment: Comment): Pinned {
+  const { anchor } = comment;
+  // A comment on a whole hunk has no line; inventing one moves its card off the hunk's end.
+  const whole = anchor.kind === "hunk" && anchor.changes === null && anchor.offsets === undefined;
+  return { whole, row: (hunk) => firstRow(comment, hunk) };
+}
+
+function pinnedConcern(concern: PlacedConcern): Pinned {
+  const { lines } = concern;
+  if (lines === undefined) return { whole: true, row: () => 0 };
+  return {
+    whole: false,
+    row: (hunk) => {
+      const row = hunk.body.findIndex((r) => r.op !== " " && lines.includes(r.change));
+      return row === -1 ? 0 : row;
+    },
+  };
+}
+
+/** Where a comment points on the version it was made on. */
+function placedOwn(comment: Comment): Placement {
+  const { anchor } = comment;
+  return {
+    unit: anchor.kind === "hunk" ? anchor.unit : null,
+    offsets: anchor.kind === "hunk" ? (anchor.offsets ?? null) : null,
+    changed: false,
+    path: comment.context.path,
+    newLine: null,
+  };
+}
+
+/**
+ * Pure. Moves a placement on the old diff to the new one: a unit the new diff still has keeps its
+ * place, else the hunk of the same path nearest its old tip line takes it, marked changed. A
+ * placement on no unit stays as it is.
+ */
+function move(at: Placement, pinned: Pinned, oldUnits: Units, newUnits: Units): Placement {
+  if (at.unit === null) return at;
+  const kept = newUnits.get(at.unit);
+  const old = oldUnits.get(at.unit);
+  if (kept !== undefined) {
+    let newLine: number | null = null;
+    if (kept.kind === "hunk" && !pinned.whole) {
+      if (!at.changed) newLine = tipLines(kept, newUnits)[pinned.row(kept)] ?? null;
+      else if (at.newLine !== null && old?.kind === "hunk") {
+        newLine = at.newLine - tipStartOf(old, oldUnits) + tipStartOf(kept, newUnits);
+      } else newLine = at.newLine;
+    }
+    return { ...at, path: kept.path, newLine };
+  }
+  const path = old?.path ?? at.path;
+  const onPath = [...newUnits.values()].filter((u) => u.path === path);
+  const first = onPath[0];
+  const moved = { offsets: null, changed: true, path };
+  if (first === undefined) return { ...moved, unit: null, newLine: null };
+  const hunks = onPath.filter((u) => u.kind === "hunk");
+  if (old?.kind !== "hunk" || hunks.length === 0)
+    return { ...moved, unit: first.id, newLine: null };
+  const row = at.changed ? rowAt(old, oldUnits, at.newLine) : pinned.row(old);
+  const oldLine = tipLines(old, oldUnits)[row] ?? tipStartOf(old, oldUnits);
+  const nearest = hunks.reduce((a, b) =>
+    distance(b, newUnits, oldLine) < distance(a, newUnits, oldLine) ? b : a,
+  );
+  return {
+    ...moved,
+    unit: nearest.id,
+    newLine: pinned.whole ? null : landing(nearest, newUnits, oldLine, old.body[row]?.text),
+  };
+}
+
 /**
  * Pure. Places each comment of the previous version on the new diff: on its own unit when that
  * hunk is unchanged, else on the hunk of the same path nearest its old tip line.
@@ -118,47 +207,100 @@ export function carryComments(
   oldUnits: Units,
   newUnits: Units,
 ): CarriedComment[] {
-  return comments.map((comment) => carry(comment, oldUnits, newUnits));
+  return comments.map((comment) => ({
+    comment,
+    ...move(placedOwn(comment), pinnedComment(comment), oldUnits, newUnits),
+  }));
 }
 
-function carry(comment: Comment, oldUnits: Units, newUnits: Units): CarriedComment {
-  const { anchor } = comment;
-  const nowhere = { comment, unit: null, offsets: null, newLine: null };
-  if (anchor.kind !== "hunk") return { ...nowhere, changed: false, path: comment.context.path };
-  // A comment on a whole hunk has no line; inventing one moves its card off the hunk's end.
-  const whole = anchor.changes === null && anchor.offsets === undefined;
-  const kept = newUnits.get(anchor.unit);
-  if (kept !== undefined) {
-    const newLine =
-      kept.kind === "hunk" && !whole
-        ? (tipLines(kept, newUnits)[firstRow(comment, kept)] ?? null)
-        : null;
-    return {
-      comment,
-      unit: kept.id,
-      offsets: anchor.offsets ?? null,
-      changed: false,
-      path: kept.path,
-      newLine,
-    };
+/** since stays once set; a first change records the version the code still matched. */
+function sinceOf(before: Placement, after: Placement, since: PlanVersion | null, at: PlanVersion) {
+  return since ?? (after.changed && !before.changed ? at : null);
+}
+
+/**
+ * Pure. What an open review carries from version `at` into the next: what it carried already,
+ * moved again, then the comments said on `at`. Nothing is dropped, so a comment of v1 is still
+ * there after the second swap.
+ */
+export function carrySession(
+  carried: readonly SessionComment[],
+  said: readonly Comment[],
+  at: PlanVersion,
+  oldUnits: Units,
+  newUnits: Units,
+): SessionComment[] {
+  const again = carried.map((c) => {
+    const moved = move(c, pinnedComment(c.comment), oldUnits, newUnits);
+    return { ...c, ...moved, since: sinceOf(c, moved, c.since, at) };
+  });
+  const fresh = said.map((comment) => {
+    const own = placedOwn(comment);
+    const moved = move(own, pinnedComment(comment), oldUnits, newUnits);
+    return { comment, version: at, ...moved, since: sinceOf(own, moved, null, at) };
+  });
+  return [...again, ...fresh];
+}
+
+/**
+ * Pure. Kept concerns of version `at` that the next plan no longer has, plus those carried before,
+ * placed on the new diff. A concern the next plan has again keeps its decision there instead, so
+ * it is left out here.
+ */
+export function carryConcerns(
+  carried: readonly CarriedConcern[],
+  kept: readonly {
+    readonly concern: PlacedConcern;
+    readonly commit: number;
+    readonly decision: ConcernDecision;
+  }[],
+  inNext: ReadonlySet<ConcernId>,
+  at: PlanVersion,
+  oldUnits: Units,
+  newUnits: Units,
+): CarriedConcern[] {
+  const fresh = kept.map((k): CarriedConcern => {
+    const unit = k.concern.unit ?? null;
+    const path = unit === null ? null : (oldUnits.get(unit)?.path ?? null);
+    return { ...k, unit, offsets: null, changed: false, path, newLine: null, since: null };
+  });
+  return [...carried, ...fresh]
+    .filter((c) => !inNext.has(c.concern.id))
+    .map((c) => {
+      const moved = move(c, pinnedConcern(c.concern), oldUnits, newUnits);
+      return { ...c, ...moved, since: sinceOf(c, moved, c.since, at) };
+    });
+}
+
+/**
+ * Pure. Where a carried hunk comment points on the diff it was carried to, as an anchor of that
+ * diff: its own rows when the hunk is unchanged, the row at its new line when it changed, the
+ * whole hunk when it has no line. Null when the code is gone or the comment is not on a hunk.
+ */
+export function anchorOn(carried: CarriedComment, units: Units, commit: number): Anchor | null {
+  const { anchor } = carried.comment;
+  if (anchor.kind !== "hunk" || carried.unit === null) return null;
+  if (!carried.changed) return { ...anchor, commit };
+  const hunk = units.get(carried.unit);
+  if (hunk?.kind !== "hunk" || carried.newLine === null) {
+    return { kind: "hunk", unit: carried.unit, commit, changes: null };
   }
-  const old = oldUnits.get(anchor.unit);
-  const path = old?.path ?? comment.context.path;
-  const onPath = [...newUnits.values()].filter((u) => u.path === path);
-  const first = onPath[0];
-  if (first === undefined) return { ...nowhere, changed: true, path };
-  const moved = { comment, offsets: null, changed: true, path };
-  const hunks = onPath.filter((u) => u.kind === "hunk");
-  if (old?.kind !== "hunk" || hunks.length === 0)
-    return { ...moved, unit: first.id, newLine: null };
-  const row = firstRow(comment, old);
-  const oldLine = tipLines(old, oldUnits)[row] ?? tipStartOf(old, oldUnits);
-  const nearest = hunks.reduce((a, b) =>
-    distance(b, newUnits, oldLine) < distance(a, newUnits, oldLine) ? b : a,
-  );
-  return {
-    ...moved,
-    unit: nearest.id,
-    newLine: whole ? null : landing(nearest, newUnits, oldLine, old.body[row]?.text),
-  };
+  const row = rowAt(hunk, units, carried.newLine);
+  const at = hunk.body[row];
+  const changes = at === undefined || at.op === " " ? [] : [at.change];
+  return { kind: "hunk", unit: carried.unit, commit, changes, offsets: [row] };
+}
+
+/** Pure. A carried concern as a concern of the diff it was carried to; see anchorOn. */
+export function concernOn(carried: CarriedConcern, units: Units): PlacedConcern {
+  const { concern } = carried;
+  if (carried.unit === null) return concern;
+  if (!carried.changed) return { ...concern, unit: carried.unit };
+  const { lines: _old, ...rest } = concern;
+  const hunk = units.get(carried.unit);
+  if (hunk?.kind !== "hunk" || carried.newLine === null) return { ...rest, unit: carried.unit };
+  const at = hunk.body[rowAt(hunk, units, carried.newLine)];
+  return at === undefined || at.op === " "
+    ? { ...rest, unit: carried.unit }
+    : { ...rest, unit: carried.unit, lines: [at.change] };
 }

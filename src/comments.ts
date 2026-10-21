@@ -7,16 +7,21 @@ import {
   isFields,
   isPlanVersion,
   isSeverity,
+  parsePlacedConcern,
 } from "./plan.ts";
 import type {
   Anchor,
   CarriedComment,
+  CarriedConcern,
+  CarriedRef,
   Comment,
   CommentId,
   ConcernDecision,
   ConcernId,
   EarlierReplies,
   Excluded,
+  Placement,
+  PlanVersion,
   Reply,
   ReplyAuthor,
   ReplyId,
@@ -288,12 +293,9 @@ function isLine(v: unknown): v is number {
   return typeof v === "number" && Number.isInteger(v) && v >= 1;
 }
 
-export function parseCarried(v: unknown): CarriedComment | string {
-  if (!isFields<"comment" | "unit" | "offsets" | "changed" | "path" | "newLine">(v)) {
-    return "not an object";
-  }
-  const comment = parseComment(v.comment);
-  if (typeof comment === "string") return comment;
+type PlacementFields = "unit" | "offsets" | "changed" | "path" | "newLine";
+
+function parsePlacement(v: { readonly [K in PlacementFields]?: unknown }): Placement | string {
   const { unit, offsets, changed, path, newLine } = v;
   if (unit !== null && !(typeof unit === "string" && isUnitId(unit)))
     return "unit is not a unit id";
@@ -304,13 +306,53 @@ export function parseCarried(v: unknown): CarriedComment | string {
   if (path !== null && !(typeof path === "string" && isRepoPath(path))) return "path is not a path";
   if (newLine !== null && !isLine(newLine)) return "newLine is not null or a line";
   return {
-    comment,
     unit,
     offsets: offsets === null ? null : offsets.filter(isIndex),
     changed,
     path,
     newLine,
   };
+}
+
+export function parseCarried(v: unknown): CarriedComment | string {
+  if (!isFields<"comment" | PlacementFields>(v)) return "not an object";
+  const comment = parseComment(v.comment);
+  if (typeof comment === "string") return comment;
+  const placement = parsePlacement(v);
+  return typeof placement === "string" ? placement : { comment, ...placement };
+}
+
+function parseSince(v: unknown): PlanVersion | null | string {
+  if (v === null) return null;
+  return isPlanVersion(v) ? v : "since is not null or a plan version";
+}
+
+function parseCarriedRef(v: unknown): CarriedRef | string {
+  if (!isFields<"comment" | "version" | "since" | PlacementFields>(v)) return "not an object";
+  const comment = asCommentId(v.comment);
+  if (comment === null) return "comment is not a comment id";
+  if (!isPlanVersion(v.version)) return "version is not a plan version";
+  const since = parseSince(v.since);
+  if (typeof since === "string") return since;
+  const placement = parsePlacement(v);
+  if (typeof placement === "string") return placement;
+  return { ...placement, comment, version: v.version, since };
+}
+
+function parseCarriedConcern(v: unknown): CarriedConcern | string {
+  if (!isFields<"concern" | "commit" | "decision" | "since" | PlacementFields>(v)) {
+    return "not an object";
+  }
+  const concern = parsePlacedConcern(v.concern);
+  if (typeof concern === "string") return `concern: ${concern}`;
+  if (!isIndex(v.commit)) return "commit is not a commit index";
+  const decision = parseDecision(v.decision);
+  if (typeof decision === "string") return `decision: ${decision}`;
+  const since = parseSince(v.since);
+  if (typeof since === "string") return since;
+  const placement = parsePlacement(v);
+  if (typeof placement === "string") return placement;
+  return { ...placement, concern, commit: v.commit, decision, since };
 }
 
 /** Boundary parse of reviews/vN.json. Files written before walk mode existed have no mode. */
@@ -327,6 +369,8 @@ export function parseReview(v: unknown): Review | string {
       | "resolved"
       | "excluded"
       | "earlierReplies"
+      | "carried"
+      | "carriedConcerns"
     >(v)
   ) {
     return "not an object";
@@ -350,6 +394,10 @@ export function parseReview(v: unknown): Review | string {
   const anyExcluded = excluded.comments.length + excluded.concerns.length > 0;
   const earlier = parseList(v.earlierReplies, parseEarlierReplies, "earlierReplies");
   if (typeof earlier === "string") return earlier;
+  const carried = v.carried === undefined ? null : parseList(v.carried, parseCarriedRef, "carried");
+  if (typeof carried === "string") return carried;
+  const concernsCarried = parseList(v.carriedConcerns, parseCarriedConcern, "carriedConcerns");
+  if (typeof concernsCarried === "string") return concernsCarried;
   return {
     schema: v.schema,
     mode,
@@ -361,6 +409,8 @@ export function parseReview(v: unknown): Review | string {
     ...(resolved.length === 0 ? {} : { resolved }),
     ...(anyExcluded ? { excluded } : {}),
     ...(earlier.length === 0 ? {} : { earlierReplies: earlier }),
+    ...(carried === null ? {} : { carried }),
+    ...(concernsCarried.length === 0 ? {} : { carriedConcerns: concernsCarried }),
   };
 }
 
@@ -377,7 +427,14 @@ function lenient<T extends object>(items: unknown, parse: (item: unknown) => T |
  * item that does not parse is dropped, so one bad entry never loses the rest of an autosave.
  */
 export function parseDraft(v: unknown): ReviewDraft | string {
-  type Fields = "comments" | "concerns" | "resolved" | "excluded" | "earlierReplies";
+  type Fields =
+    | "comments"
+    | "concerns"
+    | "resolved"
+    | "excluded"
+    | "earlierReplies"
+    | "carried"
+    | "carriedConcerns";
   if (!isFields<Fields>(v) || !isArray(v.comments)) {
     return "not a review draft";
   }
@@ -388,6 +445,8 @@ export function parseDraft(v: unknown): ReviewDraft | string {
     resolved: lenientIds(v.resolved, isCommentIdValue),
     excluded: typeof excluded === "string" ? { comments: [], concerns: [] } : excluded,
     earlierReplies: lenient(v.earlierReplies, parseEarlierReplies),
+    carried: v.carried === undefined ? null : lenient(v.carried, parseCarriedRef),
+    carriedConcerns: lenient(v.carriedConcerns, parseCarriedConcern),
   };
 }
 

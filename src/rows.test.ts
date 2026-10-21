@@ -282,6 +282,7 @@ test("report items give a flag on an added line and a context-line question thei
   const items = reportItems(reviewOf([question, flag]), commits(), diff().units, opts);
   assert.deepEqual(items, [
     {
+      id: "c_questa",
       path: "src/lib.js",
       oldPath: "src/lib.js",
       newLine: 2,
@@ -296,6 +297,7 @@ test("report items give a flag on an added line and a context-line question thei
       excluded: false,
     },
     {
+      id: "c_flagaa",
       path: "src/lib.js",
       oldPath: "src/lib.js",
       newLine: 3,

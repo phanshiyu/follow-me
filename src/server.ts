@@ -12,11 +12,14 @@ import {
   parseNewDecision,
   parseNewReply,
 } from "./comments.ts";
+import { carryConcerns, carrySession } from "./evolve.ts";
 import { isConcernId, isPlanVersion } from "./plan.ts";
-import { renderReport, reportItems } from "./prompt.ts";
+import { type Earlier, renderReport, reportItems } from "./prompt.ts";
 import { isLockToken } from "./session.ts";
 import type {
   CarriedComment,
+  CarriedConcern,
+  CarriedRef,
   Comment,
   CommentId,
   ConcernDecision,
@@ -34,6 +37,7 @@ import type {
   ReviewMode,
   ServerEvent,
   SessionAnchor,
+  SessionComment,
   SessionId,
   Unit,
   UnitId,
@@ -70,6 +74,11 @@ export type Loaded = {
   readonly previous: PreviousVersion | null;
   /** Each comment of `previous` placed on this version's diff, in the same order. */
   readonly carried: readonly CarriedComment[];
+  /**
+   * What earlier versions of this open review said, read back from the draft after a restart;
+   * null when the review began on this version. A swap passes its own instead.
+   */
+  readonly earlier: Earlier | null;
 };
 
 /**
@@ -194,6 +203,8 @@ export async function loadDraft(reviewsDir: string, version: PlanVersion): Promi
         resolved: [],
         excluded: { comments: [], concerns: [] },
         earlierReplies: [],
+        carried: null,
+        carriedConcerns: [],
       };
     }
     throw error;
@@ -362,8 +373,15 @@ type View = {
   readonly resolved: Set<CommentId>;
   readonly excludedComments: Set<CommentId>;
   readonly excludedConcerns: Set<ConcernId>;
-  /** Replies posted during this version to comments of `previous`. */
+  /** Replies posted during this version to comments of `previous` or of `earlier`. */
   readonly earlierReplies: Map<CommentId, readonly Reply[]>;
+  /**
+   * Every comment said on an earlier version of this open review, with its replies up to this
+   * version, placed on this version's diff; null when the review began here.
+   */
+  readonly earlier: readonly SessionComment[] | null;
+  /** Concerns kept on an earlier version that this plan no longer has. */
+  readonly earlierConcerns: readonly CarriedConcern[];
   readonly unitIds: ReadonlySet<string>;
   /** Body length of each hunk, the bound for an anchor's row offsets. */
   readonly hunkRows: ReadonlyMap<string, number>;
@@ -372,7 +390,12 @@ type View = {
   readonly reviewFile: string;
 };
 
-function viewOf(registration: Registration, loaded: Loaded, draft: ReviewDraft): View {
+function viewOf(
+  registration: Registration,
+  loaded: Loaded,
+  draft: ReviewDraft,
+  earlier: Earlier | null = loaded.earlier,
+): View {
   const { state, reviewsDir } = loaded;
   return {
     registration,
@@ -383,6 +406,8 @@ function viewOf(registration: Registration, loaded: Loaded, draft: ReviewDraft):
     excludedComments: new Set(draft.excluded.comments),
     excludedConcerns: new Set(draft.excluded.concerns),
     earlierReplies: new Map(draft.earlierReplies.map((e) => [e.comment, e.replies])),
+    earlier: earlier === null ? null : earlier.comments,
+    earlierConcerns: earlier === null ? [] : earlier.concerns,
     unitIds: new Set(state.units.map((u) => u.id)),
     hunkRows: new Map(
       state.units.flatMap((u): [string, number][] =>
@@ -400,7 +425,7 @@ function withReplies(comment: Comment, replies: readonly Reply[] | undefined): C
   return replies === undefined || replies.length === 0 ? rest : { ...rest, replies };
 }
 
-/** A comment of the previous version with the replies it got during this one. */
+/** A comment of an earlier version with the replies it got during this one. */
 function withEarlier(view: View, comment: Comment): Comment {
   const later = view.earlierReplies.get(comment.id) ?? [];
   return later.length === 0
@@ -414,8 +439,42 @@ function previousOf(view: View): PreviousVersion | null {
   return { ...previous, comments: previous.comments.map((c) => withEarlier(view, c)) };
 }
 
+/** The session's earlier comments with this version's replies, or null outside a session. */
+function sessionOf(view: View): SessionComment[] | null {
+  return view.earlier === null
+    ? null
+    : view.earlier.map((c) => ({ ...c, comment: withEarlier(view, c.comment) }));
+}
+
+/**
+ * What the page shows carried: the session's earlier comments, then those of the review before
+ * this version that the session does not hold (a review that ended before this one began).
+ */
 function carriedOf(view: View): CarriedComment[] {
-  return view.loaded.carried.map((c) => ({ ...c, comment: withEarlier(view, c.comment) }));
+  const session = sessionOf(view) ?? [];
+  const held = new Set(session.map((c) => c.comment.id));
+  const before = view.loaded.carried
+    .filter((c) => !held.has(c.comment.id))
+    .map((c) => ({ ...c, comment: withEarlier(view, c.comment) }));
+  return [...session, ...before];
+}
+
+/** The session as stored beside this version: comments by id, concerns whole. */
+function carriedRefs(view: View): { carried?: CarriedRef[]; carriedConcerns?: CarriedConcern[] } {
+  if (view.earlier === null) return {};
+  const carried = view.earlier.map(({ comment, ...at }) => ({ ...at, comment: comment.id }));
+  const concerns = view.earlierConcerns;
+  return { carried, ...(concerns.length === 0 ? {} : { carriedConcerns: [...concerns] }) };
+}
+
+/** A comment said on this version or carried into it, which replies and decisions may name. */
+function findSaid(view: View, id: unknown): Comment | undefined {
+  if (typeof id !== "string") return undefined;
+  return (
+    view.comments.get(id) ??
+    view.loaded.previous?.comments.find((c) => c.id === id) ??
+    view.earlier?.find((c) => c.comment.id === id)?.comment
+  );
 }
 
 function earlierOf(view: View) {
@@ -535,6 +594,7 @@ function hostSession(
         ...(resolved.length === 0 ? {} : { resolved }),
         ...(excluded === null ? {} : { excluded }),
         ...(earlierReplies.length === 0 ? {} : { earlierReplies }),
+        ...carriedRefs(view),
       },
       null,
       2,
@@ -583,17 +643,22 @@ function hostSession(
       ...(resolved.length === 0 ? {} : { resolved }),
       ...(excluded === null ? {} : { excluded }),
       ...(earlierReplies.length === 0 ? {} : { earlierReplies }),
+      ...carriedRefs(view),
     };
   };
 
-  const report = (finished: Review): string => {
-    const { state } = view.loaded;
-    const units = new Map<UnitId, Unit>(state.units.map((u) => [u.id, u]));
-    return renderReport(finished, state.commits, units, {
-      branch: state.anchor.branch,
+  const reportOptions = () => {
+    const comments = sessionOf(view);
+    return {
+      branch: view.loaded.state.anchor.branch,
       responses: [],
-    });
+      ...(comments === null ? {} : { earlier: { comments, concerns: view.earlierConcerns } }),
+    };
   };
+  const unitsOf = (): Map<UnitId, Unit> =>
+    new Map(view.loaded.state.units.map((u): [UnitId, Unit] => [u.id, u]));
+  const report = (finished: Review): string =>
+    renderReport(finished, view.loaded.state.commits, unitsOf(), reportOptions());
 
   /** Writes reviews/vN.json and its report once, and removes the autosave. */
   const writeReview = async (finished: Review): Promise<string> => {
@@ -670,18 +735,13 @@ function hostSession(
       return waitForEvents(since, timeoutMs, signal);
     },
     report: () => report(review()),
-    reportItems: () => {
-      const { state } = view.loaded;
-      const units = new Map<UnitId, Unit>(state.units.map((u) => [u.id, u]));
-      return reportItems(review(), state.commits, units, {
-        branch: state.anchor.branch,
-        responses: [],
-      });
-    },
+    reportItems: () => reportItems(review(), view.loaded.state.commits, unitsOf(), reportOptions()),
     add: async (raw: unknown): Promise<CommentId> => {
       open();
       if (!isRecord(raw)) throw new HttpError(400, "malformed comment");
-      const commentId = mintCommentId(new Set(view.comments.keys()));
+      const commentId = mintCommentId(
+        new Set([...view.comments.keys(), ...(view.earlier ?? []).map((c) => c.comment.id)]),
+      );
       const comment = withReplies(
         accept(parseComment({ ...raw, id: commentId, createdAt: new Date().toISOString() })),
         undefined,
@@ -711,17 +771,21 @@ function hostSession(
       emit({ type: "comment-deleted", id: gone.id });
       await saveDraft();
     },
-    /** Replies under a comment of this version, or of the previous one, as after a swap. */
+    /** Replies under a comment of this version, or of an earlier one, as after a swap. */
     reply: async (target: string, raw: unknown): Promise<ReplyId> => {
       open();
       const comment = view.comments.get(target);
-      const earlier = view.loaded.previous?.comments.find((c) => c.id === target);
-      const owner = comment ?? earlier;
+      const owner = findSaid(view, target);
+      const earlier = comment === undefined ? owner : undefined;
       if (owner === undefined) throw new HttpError(404, "no such comment");
       const parsed = parseNewReply(raw);
       if (typeof parsed === "string") throw new HttpError(400, `malformed reply: ${parsed}`);
       const taken = new Set(
-        [...view.comments.values(), ...(previousOf(view)?.comments ?? [])]
+        [
+          ...view.comments.values(),
+          ...(previousOf(view)?.comments ?? []),
+          ...carriedOf(view).map((c) => c.comment),
+        ]
           .flatMap((c) => c.replies ?? [])
           .map((r) => r.id),
       );
@@ -763,13 +827,14 @@ function hostSession(
         throw new HttpError(400, "expected { comment } or { concern }, and { excluded: boolean }");
       }
       if (comment !== undefined) {
-        if (!isCommentId(comment) || !view.comments.has(comment)) {
-          throw new HttpError(404, "no such comment");
-        }
+        const said = (id: CommentId) =>
+          view.comments.has(id) || (view.earlier ?? []).some((c) => c.comment.id === id);
+        if (!isCommentId(comment) || !said(comment)) throw new HttpError(404, "no such comment");
         if (excluded) view.excludedComments.add(comment);
         else view.excludedComments.delete(comment);
       } else {
-        if (!isConcernId(concern) || !view.concernIds.has(concern)) {
+        const carried = view.earlierConcerns.some((c) => c.concern.id === concern);
+        if (!isConcernId(concern) || !(view.concernIds.has(concern) || carried)) {
           throw new HttpError(404, "no such concern in this plan");
         }
         if (excluded) view.excludedConcerns.add(concern);
@@ -791,11 +856,11 @@ function hostSession(
       open();
       const body = isRecord(raw) ? raw : {};
       const target = body["comment"];
-      const asked = view.loaded.previous?.comments.find((c) => c.id === target);
+      const asked = view.comments.has(String(target)) ? undefined : findSaid(view, target);
       if (asked === undefined || typeof body["resolved"] !== "boolean") {
         throw new HttpError(
           400,
-          "expected { comment: <id of a question of the previous version>, resolved }",
+          "expected { comment: <id of a question of an earlier version>, resolved }",
         );
       }
       if (body["resolved"]) view.resolved.add(asked.id);
@@ -807,7 +872,9 @@ function hostSession(
     /**
      * Moves the session to a newer frozen plan under the same id and URL. The new version loads
      * first, so a plan that no longer fits leaves the old one untouched; then the old version's
-     * review is finalized if anything was said, and the comment set starts fresh.
+     * review is finalized if anything was said, and the comment set starts fresh. Everything
+     * said so far is carried onto the new diff and saved with the new draft at once, so a restart
+     * keeps it; decisions, resolutions and exclusions go on applying to what they named.
      */
     swap: async (version: PlanVersion, hash: string): Promise<void> => {
       open();
@@ -826,13 +893,37 @@ function hostSession(
           { ...view.registration, version, hash, lockToken: null },
           view.loaded.release,
         );
+        const earlier = continued(view, next);
         if (hasWork()) await writeReview(review());
         else await rm(view.draftFile, { force: true });
+        const nextIds = new Set<string>(
+          next.state.commits.flatMap((c) => (c.concerns ?? []).map((k) => k.id)),
+        );
+        const stillNamed = (id: string) =>
+          nextIds.has(id) || earlier.concerns.some((c) => c.concern.id === id);
+        const draft = await loadDraft(next.reviewsDir, version);
         view = viewOf(
           { ...view.registration, version, hash },
           next,
-          await loadDraft(next.reviewsDir, version),
+          {
+            ...draft,
+            concerns: [...view.decisions.values()].filter((d) => nextIds.has(d.concern)),
+            resolved: [...view.resolved],
+            excluded: {
+              comments: [...view.excludedComments],
+              concerns: [...view.excludedConcerns].filter(stillNamed),
+            },
+          },
+          earlier,
         );
+        const carrying =
+          earlier.comments.length +
+          earlier.concerns.length +
+          view.decisions.size +
+          view.resolved.size +
+          view.excludedComments.size +
+          view.excludedConcerns.size;
+        if (carrying > 0) await saveDraft();
         emit({ type: "version", version, hash, carried: carriedOf(view) });
       } finally {
         swapping = false;
@@ -854,6 +945,39 @@ function hostSession(
       finish(null);
     },
   };
+}
+
+/**
+ * What the session carries from the open view into the next version: what it carried already and
+ * what was said on this version, and the kept concerns the next plan lost, all on the next diff.
+ */
+function continued(view: View, next: Loaded): Earlier {
+  const { state } = view.loaded;
+  const oldUnits = new Map(state.units.map((u): [UnitId, Unit] => [u.id, u]));
+  const newUnits = new Map(next.state.units.map((u): [UnitId, Unit] => [u.id, u]));
+  const comments = carrySession(
+    sessionOf(view) ?? [],
+    [...view.comments.values()],
+    state.version,
+    oldUnits,
+    newUnits,
+  );
+  const kept = state.commits.flatMap((commit, k) =>
+    (commit.concerns ?? []).flatMap((concern) => {
+      const decision = view.decisions.get(concern.id);
+      return decision?.decision === "kept" ? [{ concern, commit: k, decision }] : [];
+    }),
+  );
+  const inNext = new Set(next.state.commits.flatMap((c) => (c.concerns ?? []).map((k) => k.id)));
+  const concerns = carryConcerns(
+    view.earlierConcerns,
+    kept,
+    inNext,
+    state.version,
+    oldUnits,
+    newUnits,
+  );
+  return { comments, concerns };
 }
 
 type HostedSession = ReturnType<typeof hostSession>;

@@ -129,6 +129,7 @@ function fixedLoader(states: ReadonlyMap<string, ReviewState>, released: string[
       release: () => released.push(r.dir),
       previous: null,
       carried: [],
+      earlier: null,
     };
   };
 }
@@ -593,6 +594,7 @@ function versionedLoader(released: string[], refuse = 0): Loader {
       release: held ?? (() => released.push(r.dir)),
       previous,
       carried,
+      earlier: null,
     };
   };
 }
@@ -862,14 +864,17 @@ test("a version swap keeps the URL, finalizes the old draft and starts a fresh c
   assert.ok((await readFile(join(run.reviews, "v3.md"), "utf8")).startsWith("# Review of plan v3"));
   await assert.rejects(stat(join(run.reviews, "v3.draft.json")), { code: "ENOENT" });
 
+  // What v3 said comes first, then the loader's earlier review the session does not hold.
   const events = await eventsOf(run.url, 2, 10);
   assert.deepEqual(
-    events.events.map((e: { type: string; version: number; carried: unknown[] }) => [
-      e.type,
-      e.version,
-      e.carried.length,
-    ]),
-    [["version", 4, 1]],
+    events.events.map(
+      (e: { type: string; version: number; carried: { comment: { id: string } }[] }) => [
+        e.type,
+        e.version,
+        e.carried.map((c) => c.comment.id),
+      ],
+    ),
+    [["version", 4, [id, "c_abcdef"]]],
   );
 
   // New comments belong to v4, and a swap with nothing said writes no review.

@@ -1,7 +1,8 @@
 import { tipStartOf } from "./diff.ts";
-import type { Evolution } from "./evolve.ts";
+import { anchorOn, concernOn, type Evolution } from "./evolve.ts";
 import type {
   Anchor,
+  CarriedConcern,
   Comment,
   CommentResponse,
   Diff,
@@ -12,6 +13,7 @@ import type {
   Review,
   Selection,
   ServerEvent,
+  SessionComment,
   Severity,
   TextHunk,
   Unit,
@@ -512,13 +514,32 @@ type Item = {
 export type Context = {
   readonly commits: readonly ReportCommit[];
   readonly units: ReadonlyMap<UnitId, Unit>;
+  /** Comments and concerns of earlier versions whose code changed since, by id. */
+  readonly marks?: ReadonlyMap<string, Mark>;
 };
+
+/** The code an earlier version's comment or concern was on changed after v<since>, or is gone. */
+type Mark = { readonly since: PlanVersion; readonly gone: boolean; readonly path: string | null };
+
+/** Marks the label of what was said before its code changed, and places what lost its code. */
+function marked(ctx: Context, id: string, where: Where, quote: readonly string[]): Where {
+  const mark = ctx.marks?.get(id);
+  if (mark === undefined) return where;
+  if (mark.gone) {
+    return { path: mark.path, line: null, label: `the code is gone after v${mark.since}`, quote };
+  }
+  return { ...where, label: `${where.label} · the code changed after v${mark.since}` };
+}
 
 function lineLabel(line: number | null, fallback: string): string {
   return line === null ? fallback : `line ${line}`;
 }
 
 function whereComment(ctx: Context, c: Comment): Where {
+  return marked(ctx, c.id, whereOnTip(ctx, c), c.context.lines ?? []);
+}
+
+function whereOnTip(ctx: Context, c: Comment): Where {
   const { anchor } = c;
   switch (anchor.kind) {
     case "plan":
@@ -562,6 +583,10 @@ function whereComment(ctx: Context, c: Comment): Where {
 }
 
 function whereConcern(ctx: Context, kept: KeptConcern): Where {
+  return marked(ctx, kept.concern.id, concernOnTip(ctx, kept), []);
+}
+
+function concernOnTip(ctx: Context, kept: KeptConcern): Where {
   const { concern, commit } = kept;
   if (concern.unit === undefined) {
     return { path: null, line: null, label: `commit ${commit + 1}`, quote: [] };
@@ -902,6 +927,8 @@ export type ReportThreadEntry = { readonly author: "agent" | "reviewer"; readonl
 
 /** One thing to carry to the merge request. Line numbers are the original branch's. */
 export type ReportItem = Span & {
+  /** The comment or concern the item came from, so the page can toggle it. */
+  readonly id: string;
   readonly path: string | null;
   readonly oldPath: string | null;
   readonly severity: Severity | null;
@@ -910,6 +937,8 @@ export type ReportItem = Span & {
   readonly thread: readonly ReportThreadEntry[];
   readonly resolved: boolean;
   readonly excluded: boolean;
+  /** Present when the code changed after v<since> (or is gone): the lines are its carried place. */
+  readonly changed?: { readonly since: PlanVersion; readonly gone: boolean };
 };
 
 /** The item with the label the markdown uses to point at it. */
@@ -923,13 +952,17 @@ function withSeverity(severity: Severity | null, text: string): string {
   return severity === null ? text : `**${severity}**\n\n${text}`;
 }
 
+function changedOf(ctx: Context, id: string): Pick<ReportItem, "changed"> {
+  const mark = ctx.marks?.get(id);
+  return mark === undefined ? {} : { changed: { since: mark.since, gone: mark.gone } };
+}
+
 function collectItems(
   review: Review,
-  commits: readonly ReportCommit[],
-  units: ReadonlyMap<UnitId, Unit>,
+  ctx: Context,
   responses: readonly CommentResponse[],
 ): Collected[] {
-  const ctx: Context = { commits, units };
+  const { commits, units } = ctx;
   const fromReviewer = review.comments.filter((c) => c.author !== "agent");
   const walk = review.mode === "walk";
   const rest = fromReviewer.filter((c) => c.kind !== "question");
@@ -949,6 +982,7 @@ function collectItems(
       return {
         where: it.where,
         item: {
+          id: kept.concern.id,
           ...concernSpan(ctx, kept.concern),
           path: it.where.path,
           oldPath: it.where.path,
@@ -958,6 +992,7 @@ function collectItems(
           thread,
           resolved: false,
           excluded: noConcerns.has(kept.concern.id),
+          ...changedOf(ctx, kept.concern.id),
         },
       };
     }
@@ -965,6 +1000,7 @@ function collectItems(
     return {
       where: it.where,
       item: {
+        id: first.id,
         ...commentSpan(ctx, first),
         path: it.where.path,
         oldPath: it.where.path,
@@ -974,6 +1010,7 @@ function collectItems(
         thread: threadOf(first),
         resolved: resolved.has(first.id),
         excluded: noComments.has(first.id),
+        ...changedOf(ctx, first.id),
       },
     };
   });
@@ -987,6 +1024,7 @@ function collectItems(
     out.push({
       where,
       item: {
+        id: q.id,
         ...commentSpan(ctx, q),
         path: where.path,
         oldPath: where.path,
@@ -996,6 +1034,7 @@ function collectItems(
         thread: threadOf(q),
         resolved: resolved.has(q.id),
         excluded: noComments.has(q.id),
+        ...changedOf(ctx, q.id),
       },
     });
   }
@@ -1012,7 +1051,8 @@ export function reportItems(
   units: ReadonlyMap<UnitId, Unit>,
   opts: ReportOptions,
 ): ReportItem[] {
-  return collectItems(review, commits, units, opts.responses).map((c) => c.item);
+  const session = folded(review, commits, units, opts.earlier);
+  return collectItems(session.review, session.ctx, opts.responses).map((c) => c.item);
 }
 
 /** A short list of what the reviewer left out, so nothing vanishes without a trace. */
@@ -1035,7 +1075,74 @@ export type ReportOptions = {
   readonly branch: string;
   /** Responses from plans after the review, which answer its questions. */
   readonly responses: readonly CommentResponse[];
+  /** What earlier versions of the same open review said, placed on this version's diff. */
+  readonly earlier?: Earlier;
 };
+
+export type Earlier = {
+  readonly comments: readonly SessionComment[];
+  readonly concerns: readonly CarriedConcern[];
+};
+
+/**
+ * The review of the whole session on this version's diff: the earlier versions' comments on
+ * their carried anchors, the concerns kept there that this plan lost added to the commit now
+ * taking their unit, and a mark on each whose code changed. Each id appears once; this
+ * version's own copy wins.
+ */
+function folded(
+  review: Review,
+  commits: readonly ReportCommit[],
+  units: ReadonlyMap<UnitId, Unit>,
+  earlier: Earlier | undefined,
+): { readonly review: Review; readonly ctx: Context } {
+  if (earlier === undefined) return { review, ctx: { commits, units } };
+  const marks = new Map<string, Mark>();
+  const mark = (id: string, at: SessionComment | CarriedConcern): void => {
+    if (at.since !== null)
+      marks.set(id, { since: at.since, gone: at.unit === null, path: at.path });
+  };
+  const owner = (unit: UnitId | null, fallback: number): number => {
+    const k = commits.findIndex((c) => c.refs.some((r) => r.unit === unit));
+    return k === -1 ? Math.min(fallback, Math.max(commits.length - 1, 0)) : k;
+  };
+  const own = new Set<string>(review.comments.map((c) => c.id));
+  const comments = earlier.comments
+    .filter((c) => !own.has(c.comment.id))
+    .map((c): Comment => {
+      mark(c.comment.id, c);
+      const { anchor } = c.comment;
+      if (anchor.kind !== "hunk") return c.comment;
+      const moved = anchorOn(c, units, owner(c.unit, anchor.commit));
+      return moved === null ? c.comment : { ...c.comment, anchor: moved };
+    });
+  const inPlan = new Set<string>(commits.flatMap((c) => (c.concerns ?? []).map((k) => k.id)));
+  const lost = earlier.concerns.filter((c) => !inPlan.has(c.concern.id));
+  for (const c of lost) mark(c.concern.id, c);
+  const decided = new Set<string>((review.concerns ?? []).map((d) => d.concern));
+  return {
+    review: {
+      ...review,
+      comments: [...comments, ...review.comments],
+      concerns: [
+        ...lost.filter((c) => !decided.has(c.concern.id)).map((c) => c.decision),
+        ...(review.concerns ?? []),
+      ],
+    },
+    ctx: {
+      units,
+      marks,
+      commits: commits.map((commit, k) => {
+        const mine = lost.filter((c) => owner(c.unit, c.commit) === k);
+        if (mine.length === 0) return commit;
+        return {
+          ...commit,
+          concerns: [...(commit.concerns ?? []), ...mine.map((c) => concernOn(c, units))],
+        };
+      }),
+    },
+  };
+}
 
 /**
  * The consolidated report of a review, in the voices of both the reviewer and the agent: the
@@ -1050,27 +1157,24 @@ export function renderReport(
   units: ReadonlyMap<UnitId, Unit>,
   opts: ReportOptions,
 ): string {
-  const excluded = full.excluded;
-  if (excluded === undefined) return renderIncluded(full, commits, units, opts);
+  const session = folded(full, commits, units, opts.earlier);
+  const { ctx } = session;
+  const excluded = session.review.excluded;
+  if (excluded === undefined) return renderIncluded(session.review, ctx, opts);
   const noComments = new Set<string>(excluded.comments);
   const noConcerns = new Set<string>(excluded.concerns);
   const review: Review = {
-    ...full,
-    comments: full.comments.filter((c) => !noComments.has(c.id)),
-    concerns: (full.concerns ?? []).filter((d) => !noConcerns.has(d.concern)),
+    ...session.review,
+    comments: session.review.comments.filter((c) => !noComments.has(c.id)),
+    concerns: (session.review.concerns ?? []).filter((d) => !noConcerns.has(d.concern)),
   };
-  const tail = renderExcluded(collectItems(full, commits, units, opts.responses));
-  const main = renderIncluded(review, commits, units, opts);
+  const tail = renderExcluded(collectItems(session.review, ctx, opts.responses));
+  const main = renderIncluded(review, ctx, opts);
   return tail.length === 0 ? main : `${main}${main.endsWith("\n") ? "" : "\n"}${tail.join("\n")}`;
 }
 
-function renderIncluded(
-  review: Review,
-  commits: readonly ReportCommit[],
-  units: ReadonlyMap<UnitId, Unit>,
-  opts: ReportOptions,
-): string {
-  const ctx: Context = { commits, units };
+function renderIncluded(review: Review, ctx: Context, opts: ReportOptions): string {
+  const { commits, units } = ctx;
   const walk = review.mode === "walk";
   const fromReviewer = review.comments.filter((c) => c.author !== "agent");
   // A thread the agent started matters to it only once the reviewer has answered.

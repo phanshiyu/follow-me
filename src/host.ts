@@ -25,7 +25,7 @@ import {
   type Host,
   isSessionId,
   type Loaded,
-  loadDraftComments,
+  loadDraft,
   PortInUseError,
   type Registration,
   RegistrationError,
@@ -38,6 +38,7 @@ import {
   openSessionAt,
   SessionFileError,
   SessionLockedError,
+  sessionComments,
 } from "./session.ts";
 import type {
   CarriedComment,
@@ -169,7 +170,19 @@ async function loadHosted(
       throw new RegistrationError(`plan v${version} no longer fits ${branch}; check it again`);
     }
     const reviewsDir = session.reviewsDir();
-    const comments = await loadDraftComments(reviewsDir, version);
+    const draft = await loadDraft(reviewsDir, version);
+    const { comments } = draft;
+    // A restart in the middle of a review that swapped: the draft names what was said before.
+    const earlier =
+      draft.carried === null
+        ? null
+        : {
+            comments: sessionComments(
+              draft.carried,
+              reviewed.filter((r) => r.version < version).map((r) => r.review),
+            ),
+            concerns: draft.carriedConcerns,
+          };
     const prior = session.priorReview(mode, version);
     const previous =
       prior === null || prior.comments.length === 0
@@ -196,6 +209,7 @@ async function loadHosted(
       release,
       previous,
       carried,
+      earlier,
       state: {
         mode,
         anchor: session.anchor,

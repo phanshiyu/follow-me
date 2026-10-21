@@ -150,6 +150,18 @@ function parseConcern(v: unknown, onUnit: boolean): Concern | string {
   return { severity, kind, text, lines: [...new Set(indices)].sort((a, b) => a - b) };
 }
 
+/** A concern as validation placed it, stored beside a review: with its id and its unit. */
+export function parsePlacedConcern(v: unknown): PlacedConcern | string {
+  if (!isFields<"id" | "unit">(v)) return "expected an object";
+  if (!isConcernId(v.id)) return "id: expected a concern id";
+  if (v.unit !== undefined && !(typeof v.unit === "string" && isUnitId(v.unit))) {
+    return "unit: expected a unit id";
+  }
+  const concern = parseConcern(v, v.unit !== undefined);
+  if (typeof concern === "string") return concern;
+  return { ...concern, id: v.id, ...(v.unit === undefined ? {} : { unit: v.unit }) };
+}
+
 /** Absent, null and [] all mean no concerns, so a planner may always write the field. */
 function parseConcerns(v: unknown, onUnit: boolean): readonly Concern[] | string {
   if (v === undefined || v === null) return [];

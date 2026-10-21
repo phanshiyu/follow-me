@@ -4,9 +4,15 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseComment } from "../src/comments.ts";
-import { carryComments, evolvePlan } from "../src/evolve.ts";
+import { carryComments, carrySession, evolvePlan } from "../src/evolve.ts";
 import { loadDiff } from "../src/git.ts";
-import { isCommentId, PLAN_SCHEMA, serializePlanFile, validatePlan } from "../src/plan.ts";
+import {
+  isCommentId,
+  isPlanVersion,
+  PLAN_SCHEMA,
+  serializePlanFile,
+  validatePlan,
+} from "../src/plan.ts";
 import type { Comment, Diff, PlanFile, Unit, UnitId } from "../src/types.ts";
 import { type FixtureRepo, makeFixtureRepo } from "./fixture-repo.ts";
 
@@ -234,6 +240,44 @@ test("comments follow the agent's edit: an edited hunk's thread moves and is mar
     ],
   );
   assert.notEqual(replacement, second);
+});
+
+test("a second swap carries the first swap's comments again and remembers when their code changed", async (t) => {
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  const v1 = await loadDiff(repo.dir, "main", "feature");
+  const [first, second] = idsOn(v1, "src/lib.js");
+  assert.ok(first && second);
+  const guard = "  if (b === 0) throw new RangeError('division by zero');\n";
+  const onGuard = commentOn("c_aaaaaa", second, [rowOf(v1.units.get(second), guard)], "src/lib.js");
+  const onAdd = commentOn(
+    "c_bbbbbb",
+    first,
+    [rowOf(v1.units.get(first), "  assertNumber(a);\n")],
+    "src/lib.js",
+  );
+  const [one, two] = [1, 2].filter(isPlanVersion);
+  assert.ok(one && two);
+  const where = (carried: ReturnType<typeof carrySession>) =>
+    carried.map((c) => [c.comment.id, c.version, c.changed, c.since, c.newLine]);
+
+  // v2 rewrites the guard; v3 adds a line above everything, which moves the guard's new hunk
+  // down one line without changing it, and changes the first hunk.
+  commitEdit(repo, "src/lib.js", "division by zero", "cannot divide by zero");
+  const v2 = await loadDiff(repo.dir, "main", "feature");
+  const atTwo = carrySession([], [onGuard, onAdd], one, v1.units, v2.units);
+  assert.deepEqual(where(atTwo), [
+    ["c_aaaaaa", 1, true, 1, 20],
+    ["c_bbbbbb", 1, false, null, 4],
+  ]);
+  commitEdit(repo, "src/lib.js", "import {", "// numbers only\nimport {");
+  const v3 = await loadDiff(repo.dir, "main", "feature");
+  const atThree = carrySession(atTwo, [], two, v2.units, v3.units);
+  assert.deepEqual(where(atThree), [
+    ["c_aaaaaa", 1, true, 1, 21],
+    ["c_bbbbbb", 1, true, 2, 5],
+  ]);
+  assert.equal(atThree[0]?.unit, atTwo[0]?.unit, "the guard's v2 hunk survives into v3");
 });
 
 test("a comment on a whole hunk keeps no line when its hunk is kept or replaced", async (t) => {

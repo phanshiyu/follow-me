@@ -35,6 +35,7 @@ import {
 } from "./plan.ts";
 import type {
   Applied,
+  CarriedRef,
   Diff,
   LockToken,
   PlanFile,
@@ -42,6 +43,7 @@ import type {
   Review,
   ReviewMode,
   SessionAnchor,
+  SessionComment,
   Sha,
 } from "./types.ts";
 
@@ -558,6 +560,32 @@ export async function sinceLastPlan(
   if (latest === undefined || latest.file.tip === session.anchor.tip) return null;
   const oldDiff = await loadDiff(session.root, latest.file.base, latest.file.tip);
   return { since: latest.version, ...evolvePlan(latest.file, oldDiff, session.diff) };
+}
+
+/**
+ * Pure. The comments a review's `carried` names, whole, from the reviews that hold them: each
+ * from the review of its version, its thread completed with the replies later versions stored
+ * as earlierReplies. `reviews` are the session's reviews up to the one asking; a ref whose review
+ * is missing is skipped, so a damaged session still reports the rest.
+ */
+export function sessionComments(
+  refs: readonly CarriedRef[],
+  reviews: readonly Review[],
+): SessionComment[] {
+  return refs.flatMap(({ comment: id, ...at }) => {
+    const comment = reviews
+      .find((r) => r.planVersion === at.version)
+      ?.comments.find((c) => c.id === id);
+    if (comment === undefined) return [];
+    const later = reviews
+      .filter((r) => r.planVersion > at.version)
+      .sort((a, b) => a.planVersion - b.planVersion)
+      .flatMap((r) => (r.earlierReplies ?? []).filter((e) => e.comment === id))
+      .flatMap((e) => e.replies);
+    const seen = new Set((comment.replies ?? []).map((r) => r.id));
+    const replies = [...(comment.replies ?? []), ...later.filter((r) => !seen.has(r.id))];
+    return [{ ...at, comment: replies.length === 0 ? comment : { ...comment, replies } }];
+  });
 }
 
 /** "<name>.<pid>.<random>.tmp" as written by writeJson, the lock and the review server. */
