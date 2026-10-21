@@ -927,6 +927,8 @@ function renderEvent(event: ServerEvent, ctx: Context | null): string[] {
       return [`- question ${event.commentId} marked ${event.resolved ? "resolved" : "open again"}`];
     case "version":
       return [`- plan v${event.version} is now open`];
+    case "submitted":
+      return ["- the reviewer submitted the review; the held flags follow as new comments"];
     case "ended":
       return [`- the reviewer ended the review; the report is next to ${event.review}`];
     default: {

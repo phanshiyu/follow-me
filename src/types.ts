@@ -292,6 +292,11 @@ export type Comment = {
   /** The question this one asks again. */
   readonly follows?: CommentId;
   readonly severity?: Severity;
+  /**
+   * A flag made on the page and not yet submitted. It is stored and autosaved, but the agent does
+   * not see it until the reviewer submits. A question is never pending.
+   */
+  readonly pending?: true;
   readonly replies?: readonly Reply[];
   /** Absent means the reviewer. "agent" is a thread the agent started, for example an explanation. */
   readonly author?: "agent";
@@ -357,6 +362,8 @@ export type ServerEvent = { readonly seq: number } & (
     }
   | { readonly type: "resolved"; readonly commentId: CommentId; readonly resolved: boolean }
   | { readonly type: "version"; readonly version: PlanVersion; readonly hash: string }
+  /** The reviewer released every pending flag; the comment events that follow carry them. */
+  | { readonly type: "submitted" }
   | { readonly type: "ended"; readonly review: string }
 );
 
