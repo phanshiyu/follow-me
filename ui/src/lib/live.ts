@@ -1,7 +1,7 @@
 // Folds the server's events into the page state. Replaying an event is harmless, because the
 // stream replays everything after the seq the page last read. Pure.
 
-import type { ServerEvent, State, WireComment } from "./wire.ts";
+import type { Comment, ServerEvent, State, WireComment } from "./wire.ts";
 
 function upsert<T extends { readonly id: string }>(list: readonly T[], item: T): T[] {
   const at = list.findIndex((x) => x.id === item.id);
@@ -28,12 +28,17 @@ export function applyEvent(state: State, event: ServerEvent): State {
     }
     case "comment-deleted":
       return next({ comments: state.comments.filter((c) => c.id !== event.id) });
-    case "reply":
+    case "reply": {
+      // A thread carried over from the previous version stays live: replies land on its old id.
+      const reply = (c: Comment) =>
+        c.id === event.commentId ? { ...c, replies: upsert(c.replies ?? [], event.reply) } : c;
       return next({
-        comments: state.comments.map((c) =>
-          c.id === event.commentId ? { ...c, replies: upsert(c.replies ?? [], event.reply) } : c,
-        ),
+        comments: state.comments.map(reply),
+        ...(state.previous === null
+          ? {}
+          : { previous: { ...state.previous, comments: state.previous.comments.map(reply) } }),
       });
+    }
     case "concern": {
       const { concernId, seq: _seq, type: _type, ...decision } = event;
       const others = state.concerns.filter((d) => d.concern !== concernId);

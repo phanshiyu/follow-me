@@ -27,8 +27,9 @@ import {
 import { useSpans } from "../lib/useSpans.ts";
 import type { HunkLine, ProjectedCommit, TextHunk } from "../lib/wire.ts";
 import { scrollToCommit, usePage } from "../page.tsx";
-import { useDerived, useReview } from "../store.tsx";
+import { useDerived, usePlacements, useReview } from "../store.tsx";
 import { ConcernCard } from "./Cards.tsx";
+import { CarriedCard } from "./Carried.tsx";
 import { type BoxAction, CommentBox } from "./CommentBox.tsx";
 import { ThreadCard } from "./Thread.tsx";
 
@@ -89,6 +90,7 @@ export function Hunk({
 }) {
   const { state, run } = useReview();
   const { owners, numbers } = useDerived();
+  const placements = usePlacements();
   const { pick: pagePick, setPick, box, setBox } = usePage();
   const spans = useSpans(hunk);
   const own = ownersOf(hunk, owners);
@@ -113,6 +115,12 @@ export function Hunk({
     const row = lastShown(rowsOfAnchor(anchor, hunk.body), shownSet);
     if (row === null) loose.push(card);
     else threads.set(row, [...(threads.get(row) ?? []), card]);
+  }
+  for (const placed of placements) {
+    if (placed.commit !== commit.index || placed.unit !== hunk.id) continue;
+    const card = <CarriedCard key={placed.comment.id} placement={placed} />;
+    if (placed.row === null) loose.push(card);
+    else threads.set(placed.row, [...(threads.get(placed.row) ?? []), card]);
   }
   const ownRows = rows.flatMap((r) => (r.kind === "line" && r.mine ? [r.line] : []));
   for (const concern of commit.concerns ?? []) {

@@ -4,12 +4,15 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 import { type AnswerCard, answerCards } from "./lib/answers.ts";
 import { api, sessionPrefix } from "./lib/api.ts";
+import { arrival, type Placement, placeCarried } from "./lib/carried.ts";
+import { titleOf } from "./lib/commit.ts";
 import { applyEvent } from "./lib/live.ts";
 import { type LineNumber, lineNumbers, ownership } from "./lib/rows.ts";
 import type { ServerEvent, State, Unit, UnitId } from "./lib/wire.ts";
@@ -21,6 +24,9 @@ type Store = {
   /** Runs one API call, shows its failure, and says whether it went through. */
   run(action: () => Promise<unknown>): Promise<boolean>;
   refresh(): Promise<void>;
+  /** The one-line notice that a new plan version arrived, until the reviewer dismisses it. */
+  readonly arrived: string | null;
+  dismissArrived(): void;
 };
 
 const ReviewContext = createContext<Store | null>(null);
@@ -32,6 +38,28 @@ export function useReview(): Store {
 }
 
 const RECONNECT_MS = 2000;
+const HEADER_PX = 44;
+
+/** The commit at the top of the viewport by title, and how far below the header its section starts. */
+function topCommit(state: State): { title: string; offset: number } | null {
+  let found: { title: string; offset: number } | null = null;
+  for (const section of document.querySelectorAll<HTMLElement>("section[data-commit]")) {
+    const top = section.getBoundingClientRect().top;
+    const commit = state.commits[Number(section.dataset["commit"])];
+    if (commit === undefined) continue;
+    if (found !== null && top > HEADER_PX + 1) break;
+    found = { title: titleOf(commit.message), offset: top - HEADER_PX };
+  }
+  return found;
+}
+
+function restoreTop(state: State, at: { title: string; offset: number }): void {
+  const commit = state.commits.find((c) => titleOf(c.message) === at.title);
+  if (commit === undefined) return;
+  const section = document.getElementById(`commit-${commit.index + 1}`);
+  if (section === null) return;
+  window.scrollBy(0, section.getBoundingClientRect().top - HEADER_PX - at.offset);
+}
 
 /**
  * Holds the session state and keeps it live over the event stream. Writes go through `run` and
@@ -41,8 +69,12 @@ export function ReviewProvider({ initial, children }: { initial: State; children
   const [state, setState] = useState(initial);
   const [ended, setEnded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [arrived, setArrived] = useState<string | null>(null);
   const seq = useRef(initial.seq);
   seq.current = state.seq;
+  const latest = useRef(state);
+  latest.current = state;
+  const keep = useRef<{ title: string; offset: number } | null>(null);
 
   const refresh = useCallback(async () => {
     const fresh = await api.state();
@@ -59,7 +91,10 @@ export function ReviewProvider({ initial, children }: { initial: State; children
       source.onmessage = (message: MessageEvent<string>) => {
         const event: ServerEvent = JSON.parse(message.data);
         setState((current) => applyEvent(current, event));
-        if (event.type === "version") void refresh();
+        if (event.type === "version") {
+          keep.current = topCommit(latest.current);
+          void refresh().then(() => setArrived(`v${event.version}`));
+        }
         if (event.type === "ended") setEnded(true);
       };
       source.onerror = () => {
@@ -80,6 +115,15 @@ export function ReviewProvider({ initial, children }: { initial: State; children
     };
   }, [ended, refresh]);
 
+  // The page shows the swapped plan in the same place: the commit that was at the top stays there.
+  const version = state.version;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs when the plan version changes
+  useLayoutEffect(() => {
+    const at = keep.current;
+    keep.current = null;
+    if (at !== null) restoreTop(latest.current, at);
+  }, [version]);
+
   const run = useCallback(async (action: () => Promise<unknown>) => {
     try {
       setError(null);
@@ -92,8 +136,16 @@ export function ReviewProvider({ initial, children }: { initial: State; children
   }, []);
 
   const store = useMemo(
-    () => ({ state, ended, error, run, refresh }),
-    [state, ended, error, run, refresh],
+    () => ({
+      state,
+      ended,
+      error,
+      run,
+      refresh,
+      arrived: arrived === null ? null : arrival(state.version, state.carried ?? []),
+      dismissArrived: () => setArrived(null),
+    }),
+    [state, ended, error, run, refresh, arrived],
   );
   return <ReviewContext value={store}>{children}</ReviewContext>;
 }
@@ -121,6 +173,19 @@ export function useDerived(): Derived {
 /** The previous version's questions, each placed where its answer now lives. */
 export function useAnswers(): readonly AnswerCard[] {
   const { state } = useReview();
-  const { previous, resolved, commits } = state;
-  return useMemo(() => answerCards(previous, resolved, commits), [previous, resolved, commits]);
+  const { previous, resolved, commits, carried } = state;
+  return useMemo(
+    () => answerCards(previous, resolved, commits, new Set((carried ?? []).map((c) => c.comment))),
+    [previous, resolved, commits, carried],
+  );
+}
+
+/** The previous version's threads, each placed in the current plan. */
+export function usePlacements(): readonly Placement[] {
+  const { state } = useReview();
+  // biome-ignore lint/correctness/useExhaustiveDependencies: placement reads these parts of state
+  return useMemo(
+    () => placeCarried(state),
+    [state.previous, state.carried, state.commits, state.units],
+  );
 }

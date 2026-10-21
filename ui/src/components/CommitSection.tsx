@@ -13,8 +13,9 @@ import { bodyOf, filesOf, noteOf, titleOf } from "../lib/commit.ts";
 import { type BoxKind, composeComment, type Draft } from "../lib/compose.ts";
 import type { ProjectedCommit, Unit } from "../lib/wire.ts";
 import { usePage } from "../page.tsx";
-import { useAnswers, useDerived, useReview } from "../store.tsx";
+import { useAnswers, useDerived, usePlacements, useReview } from "../store.tsx";
 import { AnswerCard, ConcernCard } from "./Cards.tsx";
+import { CarriedCard } from "./Carried.tsx";
 import { Check } from "./Check.tsx";
 import { CommentBox } from "./CommentBox.tsx";
 import { Diagram } from "./Diagram.tsx";
@@ -31,6 +32,7 @@ export function CommitSection({ commit }: { commit: ProjectedCommit }) {
   const { state, run } = useReview();
   const { units } = useDerived();
   const answers = useAnswers();
+  const placements = usePlacements();
   const shownUnits = commit.refs.map((r) => r.unit);
   const [box, setBox] = useState<{ anchor: "message" | "position"; kind: BoxKind } | null>(null);
   const said = state.comments.filter(
@@ -120,6 +122,11 @@ export function CommitSection({ commit }: { commit: ProjectedCommit }) {
             .filter((k) => k.unit === undefined || units.get(k.unit)?.kind !== "hunk")
             .map((concern) => (
               <ConcernCard key={concern.id} concern={concern} className="ml-0" />
+            ))}
+          {placements
+            .filter((p) => p.commit === commit.index && p.unit === null)
+            .map((placed) => (
+              <CarriedCard key={placed.comment.id} placement={placed} className="ml-0" />
             ))}
           {said.map((comment) => (
             <ThreadCard key={comment.id} comment={comment} className="ml-0" />

@@ -54,15 +54,19 @@ export function placeAnswer(
   return first === undefined ? null : { commit: first, unit: anchor.unit, continues: later };
 }
 
-/** One card per question of the previous version, in the order they were asked. */
+/**
+ * One card per question of the previous version, in the order they were asked. A question the
+ * server carried over is a live thread instead, so it has no answer card.
+ */
 export function answerCards(
   previous: PreviousVersion | null,
   resolved: readonly CommentId[],
   commits: readonly ProjectedCommit[],
+  carried: ReadonlySet<CommentId> = new Set(),
 ): AnswerCard[] {
   if (previous === null) return [];
   return previous.comments
-    .filter((c) => c.kind === "question")
+    .filter((c) => c.kind === "question" && !carried.has(c.id))
     .map((comment) => {
       const response = previous.responses.find((r) => r.comment === comment.id) ?? null;
       return {

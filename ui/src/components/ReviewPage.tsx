@@ -96,7 +96,7 @@ function usePageKeys(openStack: () => void, openSheet: () => void, openSubmit: (
 }
 
 function Page() {
-  const { state, error, ended } = useReview();
+  const { state, error, ended, arrived, dismissArrived } = useReview();
   const [stackOpen, setStackOpen] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [submitOpen, setSubmitOpen] = useState(false);
@@ -124,6 +124,17 @@ function Page() {
             </Button>
           </div>
         </div>
+        {arrived === null ? null : (
+          <div
+            role="status"
+            className="flex items-center justify-center gap-3 border-b bg-sky-500/10 px-6 py-1 text-sky-900 text-sm dark:text-sky-100"
+          >
+            <span>{arrived}</span>
+            <Button variant="ghost" size="xs" onClick={dismissArrived}>
+              Dismiss
+            </Button>
+          </div>
+        )}
         {error === null && !ended ? null : (
           <div
             role="alert"

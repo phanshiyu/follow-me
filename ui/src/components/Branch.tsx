@@ -6,8 +6,9 @@ import { answeredCount } from "../lib/answers.ts";
 import { api } from "../lib/api.ts";
 import { composeComment, type Draft } from "../lib/compose.ts";
 import { commitStats } from "../lib/rows.ts";
-import { useAnswers, useDerived, useReview } from "../store.tsx";
+import { useAnswers, useDerived, usePlacements, useReview } from "../store.tsx";
 import { AnswerCard } from "./Cards.tsx";
+import { CarriedCard } from "./Carried.tsx";
 import { CommentBox } from "./CommentBox.tsx";
 import { boxActions } from "./Hunk.tsx";
 import { ThreadCard } from "./Thread.tsx";
@@ -64,6 +65,7 @@ export function BranchSummary() {
   const { answered, asked } = answeredCount(state.previous);
   const general = state.comments.filter((c) => c.anchor.kind === "plan");
   const homeless = answers.filter((a) => a.place === null);
+  const lost = usePlacements().filter((p) => p.commit === null);
   const firstOpen = () =>
     document
       .querySelector('[aria-label="Answer to your question"]')
@@ -84,11 +86,14 @@ export function BranchSummary() {
           </>
         )}
       </p>
-      {general.length + homeless.length === 0 ? null : (
+      {general.length + homeless.length + lost.length === 0 ? null : (
         <div className="space-y-2">
           <h2 className="font-medium text-sm">Branch discussion</h2>
           {homeless.map((card) => (
             <AnswerCard key={card.id} card={card} className="ml-0" />
+          ))}
+          {lost.map((placed) => (
+            <CarriedCard key={placed.comment.id} placement={placed} className="ml-0" />
           ))}
           {general.map((comment) => (
             <ThreadCard key={comment.id} comment={comment} className="ml-0" />

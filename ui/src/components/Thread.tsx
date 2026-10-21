@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { api } from "../lib/api.ts";
@@ -20,17 +20,21 @@ export function Card({
   className,
   label,
   open = false,
+  threadId,
 }: {
   children: React.ReactNode;
   className?: string;
   label: string;
   /** An unresolved thread, which `u` steps through. */
   open?: boolean;
+  /** The comment this card shows, so a notification can find and flash it. */
+  threadId?: string;
 }) {
   return (
     <article
       aria-label={label}
       data-open-thread={open ? "" : undefined}
+      data-thread-id={threadId}
       className={cn(
         "my-2 ml-24 max-w-[760px] rounded-lg border bg-card p-3 font-sans text-sm shadow-xs",
         className,
@@ -51,7 +55,19 @@ function who(comment: WireComment): string {
 }
 
 /** A thread inline under its lines: the opening words, the replies, Reply and Resolve. */
-export function ThreadCard({ comment, className }: { comment: WireComment; className?: string }) {
+export function ThreadCard({
+  comment,
+  className,
+  chip,
+  extra,
+}: {
+  comment: WireComment;
+  className?: string;
+  /** A tag beside the author, such as "Code changed since you asked". */
+  chip?: ReactNode;
+  /** Shown under the opening words, above the replies. */
+  extra?: ReactNode;
+}) {
   const { run } = useReview();
   const { resolved, setLocallyResolved } = usePage();
   const [replying, setReplying] = useState(false);
@@ -59,6 +75,7 @@ export function ThreadCard({ comment, className }: { comment: WireComment; class
     return (
       <Card
         label="Resolved thread"
+        threadId={comment.id}
         className="flex items-center gap-2 py-1.5 text-muted-foreground"
       >
         <span className="min-w-0 truncate">✓ Resolved · {firstLine(comment.body)}</span>
@@ -77,11 +94,13 @@ export function ThreadCard({ comment, className }: { comment: WireComment; class
     <Card
       label={comment.kind === "question" ? "Question thread" : "Thread"}
       className={className}
+      threadId={comment.id}
       open
     >
       <div className="mb-1 flex items-center gap-2 text-muted-foreground text-xs">
         <span className="font-medium text-foreground">{who(comment)}</span>
         {comment.severity === undefined ? null : <SeverityChip severity={comment.severity} />}
+        {chip}
       </div>
       {comment.author === "agent" ? <Markdown text={comment.body} /> : <Text>{comment.body}</Text>}
       {comment.diagram === undefined ? null : (
@@ -89,6 +108,7 @@ export function ThreadCard({ comment, className }: { comment: WireComment; class
           <Diagram source={comment.diagram} title="The agent's diagram" />
         </div>
       )}
+      {extra}
       {(comment.replies ?? []).map((reply) => (
         <div
           key={reply.id}
