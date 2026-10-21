@@ -40,18 +40,32 @@ function isIndex(v: unknown): v is number {
 }
 
 function parseAnchor(v: unknown): Anchor | string {
-  if (!isFields<"kind" | "unit" | "commit" | "changes">(v)) return "anchor is not an object";
+  if (!isFields<"kind" | "unit" | "commit" | "changes" | "offsets">(v)) {
+    return "anchor is not an object";
+  }
   if (v.kind === "plan") return { kind: "plan" };
   if (!isIndex(v.commit)) return "anchor.commit is not a commit index";
   const commit = v.commit;
   if (v.kind === "message" || v.kind === "position") return { kind: v.kind, commit };
   if (v.kind !== "hunk") return "anchor.kind is unknown";
   if (typeof v.unit !== "string" || !isUnitId(v.unit)) return "anchor.unit is not a unit id";
-  if (v.changes === null) return { kind: "hunk", unit: v.unit, commit, changes: null };
+  if (v.changes === null) {
+    if (v.offsets !== undefined) return "anchor.offsets needs anchor.changes to be a list";
+    return { kind: "hunk", unit: v.unit, commit, changes: null };
+  }
   if (!isArray(v.changes) || !v.changes.every(isIndex)) {
     return "anchor.changes is not null or a list of change indices";
   }
-  return { kind: "hunk", unit: v.unit, commit, changes: v.changes.filter(isIndex) };
+  const changes = v.changes.filter(isIndex);
+  if (v.offsets === undefined) return { kind: "hunk", unit: v.unit, commit, changes };
+  if (!isArray(v.offsets) || v.offsets.length === 0 || !v.offsets.every(isIndex)) {
+    return "anchor.offsets is not a non-empty list of row indices";
+  }
+  const offsets = v.offsets.filter(isIndex);
+  if (!offsets.every((o, i) => i === 0 || o > (offsets[i - 1] ?? 0))) {
+    return "anchor.offsets is not strictly ascending";
+  }
+  return { kind: "hunk", unit: v.unit, commit, changes, offsets };
 }
 
 /** A stored reply. Replies a client posts go through parseNewReply, which mints id and time. */
@@ -103,7 +117,9 @@ type CommentFields =
   | "kind"
   | "follows"
   | "severity"
-  | "replies";
+  | "replies"
+  | "author"
+  | "diagram";
 
 /** Boundary parse of a comment, from a file or a request. Returns the reason when it is not one. */
 export function parseComment(v: unknown): Comment | string {
@@ -127,6 +143,13 @@ export function parseComment(v: unknown): Comment | string {
     return "body and createdAt must be strings";
   }
   if (v.kind !== undefined && v.kind !== "question") return 'kind is not "question"';
+  if (v.author !== undefined && v.author !== "agent") return 'author is not "agent"';
+  if (v.diagram !== undefined) {
+    if (typeof v.diagram !== "string") return "diagram is not a string";
+    if (v.author !== "agent") return "diagram is only for an agent's comment";
+    const problem = diagramProblem(v.diagram);
+    if (problem !== null) return `diagram: ${problem}`;
+  }
   const follows = v.follows;
   if (follows !== undefined && !(typeof follows === "string" && isCommentId(follows))) {
     return "follows is not a comment id";
@@ -149,10 +172,12 @@ export function parseComment(v: unknown): Comment | string {
     ...(follows === undefined ? {} : { follows }),
     ...(severity === undefined ? {} : { severity }),
     ...(replies.length === 0 ? {} : { replies }),
+    ...(v.author === "agent" ? { author: "agent" } : {}),
+    ...(v.diagram === undefined ? {} : { diagram: v.diagram }),
   };
 }
 
-type DecisionFields = "concern" | "decision" | "severity" | "note";
+type DecisionFields = "concern" | "decision" | "severity" | "note" | "decidedAt";
 
 function withDecision(
   concern: ConcernId,
@@ -163,11 +188,15 @@ function withDecision(
   }
   if (v.severity !== undefined && !isSeverity(v.severity)) return "severity is unknown";
   if (v.note !== undefined && typeof v.note !== "string") return "note is not a string";
+  if (v.decidedAt !== undefined && typeof v.decidedAt !== "string") {
+    return "decidedAt is not a string";
+  }
   return {
     concern,
     decision: v.decision,
     ...(v.severity === undefined ? {} : { severity: v.severity }),
     ...(v.note === undefined || v.note.trim() === "" ? {} : { note: v.note }),
+    ...(v.decidedAt === undefined ? {} : { decidedAt: v.decidedAt }),
   };
 }
 
@@ -178,10 +207,10 @@ export function parseDecision(v: unknown): ConcernDecision | string {
   return withDecision(v.concern, v);
 }
 
-/** The body of POST .../concerns/<id>; the id comes from the URL. */
+/** The body of POST .../concerns/<id>; the id comes from the URL and the time is the server's. */
 export function parseNewDecision(concern: ConcernId, v: unknown): ConcernDecision | string {
   if (!isFields<DecisionFields>(v)) return "the decision is not an object";
-  return withDecision(concern, v);
+  return withDecision(concern, { ...v, decidedAt: undefined });
 }
 
 /** Absent reads as none. The first item that does not parse names its index and reason. */
@@ -285,6 +314,7 @@ type EventFields =
   | "decision"
   | "severity"
   | "note"
+  | "decidedAt"
   | "resolved"
   | "version"
   | "hash"

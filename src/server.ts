@@ -376,6 +376,8 @@ type View = {
   readonly decisions: Map<ConcernId, ConcernDecision>;
   readonly resolved: Set<CommentId>;
   readonly unitIds: ReadonlySet<string>;
+  /** Body length of each hunk, the bound for an anchor's row offsets. */
+  readonly hunkRows: ReadonlyMap<string, number>;
   readonly concernIds: ReadonlySet<string>;
   readonly draftFile: string;
   readonly reviewFile: string;
@@ -390,6 +392,11 @@ function viewOf(registration: Registration, loaded: Loaded, draft: ReviewDraft):
     decisions: new Map(draft.concerns.map((d): [ConcernId, ConcernDecision] => [d.concern, d])),
     resolved: new Set(draft.resolved),
     unitIds: new Set(state.units.map((u) => u.id)),
+    hunkRows: new Map(
+      state.units.flatMap((u): [string, number][] =>
+        u.kind === "hunk" ? [[u.id, u.body.length]] : [],
+      ),
+    ),
     concernIds: new Set(state.commits.flatMap((c) => (c.concerns ?? []).map((k) => k.id))),
     draftFile: draftPath(reviewsDir, state.version),
     reviewFile: join(reviewsDir, `v${state.version}.json`),
@@ -496,6 +503,13 @@ function hostSession(
     }
     if (anchor.kind === "hunk" && !view.unitIds.has(anchor.unit)) {
       throw new HttpError(400, "anchor names an unknown unit");
+    }
+    if (anchor.kind === "hunk" && anchor.offsets !== undefined) {
+      const rows = view.hunkRows.get(anchor.unit);
+      if (rows === undefined) throw new HttpError(400, "anchor.offsets names a unit without rows");
+      if (anchor.offsets.some((o) => o >= rows)) {
+        throw new HttpError(400, `anchor.offsets is out of range, the unit has ${rows} rows`);
+      }
     }
     return parsed;
   };
@@ -651,8 +665,9 @@ function hostSession(
       if (!isConcernId(target) || !view.concernIds.has(target)) {
         throw new HttpError(404, "no such concern in this plan");
       }
-      const decision = parseNewDecision(target, raw);
-      if (typeof decision === "string") throw new HttpError(400, `malformed decision: ${decision}`);
+      const parsed = parseNewDecision(target, raw);
+      if (typeof parsed === "string") throw new HttpError(400, `malformed decision: ${parsed}`);
+      const decision: ConcernDecision = { ...parsed, decidedAt: new Date().toISOString() };
       view.decisions.set(target, decision);
       const { concern: concernId, ...rest } = decision;
       emit({ type: "concern", concernId, ...rest });

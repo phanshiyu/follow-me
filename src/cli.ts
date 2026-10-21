@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PlanRequestError, requestPlan } from "./anthropic.ts";
-import { DiffParseError, formatUnitRef } from "./diff.ts";
+import { DiffParseError, formatUnitRef, isUnitId } from "./diff.ts";
 import {
   BranchRefusedError,
   branchHead,
@@ -25,6 +25,7 @@ import {
   openBrowser,
   pollEvents,
   portFallbackMessage,
+  postComment,
   postReply,
   probeHealth,
   registerWith,
@@ -58,11 +59,13 @@ import {
 } from "./session.ts";
 import { checkSyntax, type SyntaxReport } from "./syntax.ts";
 import type {
+  Comment,
   Diff,
   HostedSummary,
   PlanIssue,
   PlanVersion,
   PlanWarning,
+  ProjectedCommit,
   RepoPath,
   Review,
   ReviewMode,
@@ -117,7 +120,12 @@ Interactive loop (while the review page is open):
   reply <commentId> --body <text> [--diagram <file>]
                                             answer under a comment on the page; the diagram is
                                             Mermaid source
-  report                                    print the consolidated report of the open review, or
+  explain [--commit <n>] [--unit <id>] [--lines <a-b>] --body <text> [--diagram <file>]
+                                            start a thread on the page without being asked;
+                                            --lines are change lines of the unit, commits count
+                                            from 1; with no target it is about the whole plan.
+                                            watch leaves these out like your replies
+  report                                  print the consolidated report of the open review, or
                                             of the last one that ended: issues by file and line
                                             in both voices, then questions with answers
   apply, while the page is open, swaps it to the new plan version in place, same URL.
@@ -558,12 +566,22 @@ function promptInput(session: Session, mode: ReviewMode, args: Args): PromptInpu
     checkCommand: `follow-me check${branchFlag(args)}`,
   };
   if (mode === "walk") return { ...common, mode };
+  const previous = session.plans().at(-1);
   return {
     ...common,
     mode,
-    previousPlan: session.plans().at(-1)?.file ?? null,
+    previousPlan: previous?.file ?? null,
     review: session.lastReview(),
+    previousCommits: previous === undefined ? [] : projectedCommits(session, previous.version),
   };
+}
+
+/** The commits of a frozen plan as projected now, or none when it no longer fits the branch. */
+function projectedCommits(session: Session, version: PlanVersion): readonly ProjectedCommit[] {
+  const plan = session.plans().find((p) => p.version === version);
+  if (plan === undefined) return [];
+  const verdict = validatePlan(session.diff, serializePlanFile(plan.file));
+  return verdict.ok ? verdict.plan.commits : [];
 }
 
 /** Asks the API for draft.json, feeding issues back once. Returns the plan when it validates. */
@@ -1064,9 +1082,12 @@ async function report(cwd: string, args: Args): Promise<number> {
   return 0;
 }
 
-/** Events the reviewer caused; the agent's own replies and version swaps are not news to it. */
+/** Events the reviewer caused; the agent's own replies, explanations and version swaps are not news. */
 function isNews(event: ServerEvent): boolean {
   if (event.type === "version") return false;
+  if (event.type === "comment" || event.type === "comment-updated") {
+    return event.comment.author !== "agent";
+  }
   return !(event.type === "reply" && event.reply.author === "agent");
 }
 
@@ -1093,13 +1114,20 @@ async function watch(cwd: string, args: Args): Promise<number> {
   if (!Number.isInteger(since) || since < 0) {
     throw new UsageError(`--since ${sinceRaw} is not an event number`);
   }
+  // Comments are quoted as the plan they were made on wrote them; a swap changes which that is.
+  let version = open.summary.version;
+  const quoting = (events: readonly ServerEvent[]) => {
+    for (const event of events) if (event.type === "version") version = event.version;
+    return { commits: projectedCommits(session, version), units: session.diff.units };
+  };
   if (args.flags.has("follow")) {
     let ended = false;
     await followEvents(open.port, open.summary, since, (event) => {
       if (event.type === "ended") ended = true;
+      const ctx = quoting([event]);
       if (!isNews(event)) return;
       if (args.flags.has("json")) say(JSON.stringify(event));
-      else process.stdout.write(renderEvents([event]));
+      else process.stdout.write(renderEvents([event], ctx));
     });
     if (ended) return 0;
     console.error("follow-me: the event stream closed before the review ended");
@@ -1114,11 +1142,12 @@ async function watch(cwd: string, args: Args): Promise<number> {
     }
     const batch = await pollEvents(open.port, open.summary, since, Math.min(left, POLL_MS));
     since = batch.seq;
+    const ctx = quoting(batch.events);
     const news = batch.events.filter(isNews);
     if (news.length === 0) continue;
     if (args.flags.has("json")) for (const event of news) say(JSON.stringify(event));
     else {
-      process.stdout.write(renderEvents(news));
+      process.stdout.write(renderEvents(news, ctx));
       next(
         news.some((e) => e.type === "ended")
           ? "follow-me report"
@@ -1136,17 +1165,7 @@ async function reply(cwd: string, args: Args): Promise<number> {
   if (commentId === undefined || extra !== undefined || body === undefined) {
     throw new UsageError("usage: follow-me reply <commentId> --body <text> [--diagram <file>]");
   }
-  const diagramFile = args.values.get("diagram");
-  let diagram: string | undefined;
-  if (diagramFile !== undefined) {
-    try {
-      diagram = readFileSync(diagramFile, "utf8");
-    } catch (error) {
-      throw new UsageError(
-        `cannot read ${diagramFile}: ${error instanceof Error ? error.message : error}`,
-      );
-    }
-  }
+  const diagram = diagramOf(args);
   const session = await openSession(cwd, sessionOpts(args));
   const open = await openOnServer(session, null);
   if (open === null) return notOpen(session);
@@ -1156,6 +1175,130 @@ async function reply(cwd: string, args: Args): Promise<number> {
     ...(diagram === undefined ? {} : { diagram }),
   });
   say(`replied ${id} to ${commentId}`);
+  next("follow-me watch");
+  return 0;
+}
+
+/** The Mermaid source in --diagram's file, or undefined without the flag. */
+function diagramOf(args: Args): string | undefined {
+  const file = args.values.get("diagram");
+  if (file === undefined) return undefined;
+  try {
+    return readFileSync(file, "utf8");
+  } catch (error) {
+    throw new UsageError(`cannot read ${file}: ${error instanceof Error ? error.message : error}`);
+  }
+}
+
+/** "3" or "2-5" as the change indices they name. */
+function parseLineRange(raw: string): number[] {
+  const m = /^(\d+)(?:-(\d+))?$/.exec(raw);
+  const from = Number(m?.[1]);
+  const to = Number(m?.[2] ?? m?.[1]);
+  if (m === null || to < from) {
+    throw new UsageError(`--lines ${raw} is not a change line or a range like 2-5`);
+  }
+  return Array.from({ length: to - from + 1 }, (_, i) => from + i);
+}
+
+/**
+ * Where an explanation points: --unit with --lines names change lines of a hunk, as the prompt
+ * numbers them, and the page marks their rows. --commit alone is the commit itself; nothing is
+ * the whole plan. Commits count from 1, as the prompt prints them.
+ */
+function explainTarget(
+  session: Session,
+  version: PlanVersion,
+  args: Args,
+): Pick<Comment, "anchor" | "context"> {
+  const commitRaw = args.values.get("commit");
+  const unitRaw = args.values.get("unit");
+  const linesRaw = args.values.get("lines");
+  if (linesRaw !== undefined && unitRaw === undefined) {
+    throw new UsageError("--lines needs --unit");
+  }
+  if (commitRaw === undefined && unitRaw === undefined) {
+    return { anchor: { kind: "plan" }, context: { commitMessage: "", path: null } };
+  }
+  const commits = projectedCommits(session, version);
+  if (commits.length === 0) {
+    throw new UsageError(`plan v${version} no longer fits ${session.anchor.branch}`);
+  }
+  const unit =
+    unitRaw === undefined || !isUnitId(unitRaw) ? undefined : session.diff.units.get(unitRaw);
+  if (unitRaw !== undefined && unit === undefined) {
+    throw new UsageError(`--unit ${unitRaw} is not a unit of this branch`);
+  }
+  let index = -1;
+  if (commitRaw !== undefined) {
+    index = Number(commitRaw) - 1;
+    if (!Number.isInteger(index) || index < 0 || index >= commits.length) {
+      throw new UsageError(`--commit ${commitRaw} is not one of the ${commits.length} commits`);
+    }
+  } else {
+    index = commits.findIndex((c) => c.refs.some((r) => r.unit === unit?.id));
+  }
+  const commit = commits[index];
+  if (commit === undefined) throw new UsageError(`no commit of plan v${version} takes ${unitRaw}`);
+  if (unit === undefined) {
+    return {
+      anchor: { kind: "message", commit: index },
+      context: { commitMessage: commit.message, path: null },
+    };
+  }
+  const ref = commit.refs.find((r) => r.unit === unit.id);
+  if (ref === undefined) throw new UsageError(`commit ${index + 1} does not take ${unit.id}`);
+  const context = { commitMessage: commit.message, path: unit.path };
+  if (linesRaw === undefined) {
+    return { anchor: { kind: "hunk", unit: unit.id, commit: index, changes: null }, context };
+  }
+  if (unit.kind !== "hunk")
+    throw new UsageError(`--lines needs a text hunk, ${unit.id} is not one`);
+  const changes = parseLineRange(linesRaw);
+  const taken = ref.select.kind === "lines" ? ref.select.changes : null;
+  for (const n of changes) {
+    if (n >= unit.changeCount || (taken !== null && !taken.includes(n))) {
+      throw new UsageError(`commit ${index + 1} does not take change line ${n} of ${unit.id}`);
+    }
+  }
+  const rows = unit.body.flatMap((line, offset) =>
+    line.op !== " " && changes.includes(line.change) ? [{ line, offset }] : [],
+  );
+  return {
+    anchor: {
+      kind: "hunk",
+      unit: unit.id,
+      commit: index,
+      changes,
+      offsets: rows.map((r) => r.offset),
+    },
+    context: {
+      ...context,
+      lines: rows.map(({ line }) => `${line.op}${line.text.replace(/\r?\n$/, "")}`),
+    },
+  };
+}
+
+/** Starts a thread on the hosted page: the agent explains before anyone asks. */
+async function explain(cwd: string, args: Args): Promise<number> {
+  const body = args.values.get("body");
+  if (body === undefined || args.positionals.length > 0) {
+    throw new UsageError(
+      "usage: follow-me explain [--commit <n>] [--unit <id>] [--lines <a-b>] --body <text> [--diagram <file>]",
+    );
+  }
+  const diagram = diagramOf(args);
+  const session = await openSession(cwd, sessionOpts(args));
+  const open = await openOnServer(session, null);
+  if (open === null) return notOpen(session);
+  const target = explainTarget(session, open.summary.version, args);
+  const id = await postComment(open.port, open.summary, {
+    ...target,
+    body,
+    author: "agent",
+    ...(diagram === undefined ? {} : { diagram }),
+  });
+  say(`explained ${id}`);
   next("follow-me watch");
   return 0;
 }
@@ -1373,6 +1516,10 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
       }
       case "reply":
         return await reply(cwd, parseArgs(rest, { values: ["body", "diagram", "branch"] }));
+      case "explain": {
+        const spec = { values: ["commit", "unit", "lines", "body", "diagram", "branch"] };
+        return await explain(cwd, parseArgs(rest, spec));
+      }
       case "report":
         return await report(cwd, parseArgs(rest, { values: ["branch"] }));
       case "clean": {

@@ -598,10 +598,12 @@ test("events: a poll returns at once when news exists, wakes on news and times o
   assert.equal(all.seq, 5);
   assert.equal(all.events[2].commentId, id);
   assert.equal(all.events[2].reply.author, "agent");
+  assert.match(all.events[3].decidedAt, /^\d{4}-\d\d-\d\dT/);
   assert.deepEqual(
-    { ...all.events[3], seq: 0 },
+    { ...all.events[3], seq: 0, decidedAt: undefined },
     {
       seq: 0,
+      decidedAt: undefined,
       type: "concern",
       concernId: CONCERN,
       decision: "kept",
@@ -735,14 +737,37 @@ test("concern decisions and questions reach the saved review, the report and its
   assert.ok(live.includes("Reviewer asked: why drop old1?"));
 
   const draft = JSON.parse(await readFile(join(run.dir, "v3.draft.json"), "utf8"));
+  const [stamped] = draft.concerns;
+  assert.match(stamped.decidedAt, /^\d{4}-\d\d-\d\dT/);
   assert.deepEqual(draft.concerns, [
-    { concern: CONCERN, decision: "kept", severity: "blocker", note: "Agreed." },
+    {
+      concern: CONCERN,
+      decision: "kept",
+      severity: "blocker",
+      note: "Agreed.",
+      decidedAt: stamped.decidedAt,
+    },
   ]);
+
+  // The server owns the time: a client cannot back-date a decision, and a second one restamps.
+  await post(run.url, `api/concerns/${CONCERN}`, {
+    decision: "dismissed",
+    decidedAt: "2000-01-01T00:00:00.000Z",
+  });
+  const second = JSON.parse(await readFile(join(run.dir, "v3.draft.json"), "utf8"));
+  assert.notEqual(second.concerns[0].decidedAt, "2000-01-01T00:00:00.000Z");
+  assert.ok(second.concerns[0].decidedAt >= stamped.decidedAt);
+  await post(run.url, `api/concerns/${CONCERN}`, {
+    decision: "kept",
+    severity: "blocker",
+    note: "Agreed.",
+  });
 
   await post(run.url, "api/end", {});
   await run.done;
   const saved = JSON.parse(await readFile(join(run.dir, "v3.json"), "utf8"));
-  assert.deepEqual(saved.concerns, draft.concerns);
+  assert.equal(saved.concerns[0].decision, "kept");
+  assert.match(saved.concerns[0].decidedAt, /^\d{4}-\d\d-\d\dT/);
   assert.equal(saved.comments[0].kind, "question");
   assert.deepEqual(saved.comments[0].context.lines, ["-old1", "+new1"]);
   const file = await readFile(join(run.dir, "v3.md"), "utf8");
@@ -889,4 +914,99 @@ test("a reconnecting stream resumes after Last-Event-ID, and a cursor ahead is r
   );
   assert.equal((await fetch(new URL("api/events/stream?since=9", run.url))).status, 409);
   assert.equal((await fetch(new URL("api/events/stream?since=x", run.url))).status, 400);
+});
+
+const rowsAnchor = (offsets: readonly number[], changes: readonly number[]) => ({
+  kind: "hunk",
+  unit: HUNK_A,
+  commit: 0,
+  changes,
+  offsets,
+});
+
+test("row offsets, context rows included, survive POST, PUT, state, autosave and the review file", async (t) => {
+  const run = await start(t, twoCommitState());
+  const mixed = {
+    ...newComment("why is same untouched?"),
+    anchor: rowsAnchor([1, 2], [1]),
+    context: { commitMessage: "add parser", path: "src/a.ts", lines: ["+new1", " same"] },
+  };
+  const contextOnly = { ...mixed, anchor: rowsAnchor([2], []), body: "what is same for?" };
+  const a = await jsonOf(await post(run.url, "api/comments", mixed));
+  const b = await jsonOf(await post(run.url, "api/comments", contextOnly));
+
+  const put = await fetch(new URL(`api/comments/${a.id}`, run.url), {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ...mixed, id: a.id, createdAt: "2026-01-01T00:00:00.000Z" }),
+  });
+  assert.equal(put.status, 200);
+
+  const state = await jsonOf(await fetch(new URL("api/state", run.url)));
+  assert.deepEqual(state.comments[0].anchor.offsets, [1, 2]);
+  assert.deepEqual(state.comments[1].anchor, rowsAnchor([2], []));
+  assert.deepEqual(state.comments[1].context.lines, ["+new1", " same"]);
+  const draft = JSON.parse(await readFile(join(run.dir, "v3.draft.json"), "utf8"));
+  assert.deepEqual(draft.comments[0].anchor.offsets, [1, 2]);
+  assert.deepEqual(draft.comments[1].anchor, rowsAnchor([2], []));
+
+  await post(run.url, "api/end", {});
+  await run.done;
+  const saved = JSON.parse(await readFile(join(run.dir, "v3.json"), "utf8"));
+  assert.deepEqual(saved.comments[0].anchor, rowsAnchor([1, 2], [1]));
+  assert.deepEqual(saved.comments[1].anchor, rowsAnchor([2], []));
+  assert.equal(saved.comments[1].id, b.id);
+});
+
+test("an agent-authored comment is accepted, shown in state and events, and a reviewer cannot fake one", async (t) => {
+  const run = await start(t, twoCommitState());
+  const posted = await post(run.url, "api/comments", {
+    ...newComment("Here is why."),
+    author: "agent",
+    diagram: "flowchart LR\n  a --> b",
+  });
+  assert.equal(posted.status, 201);
+  const state = await jsonOf(await fetch(new URL("api/state", run.url)));
+  assert.equal(state.comments[0].author, "agent");
+  assert.equal(state.comments[0].diagram, "flowchart LR\n  a --> b");
+  const events = await jsonOf(await fetch(new URL("api/events?since=0&timeout=0", run.url)));
+  assert.equal(events.events[0].comment.author, "agent");
+
+  const reviewer = await post(run.url, "api/comments", newComment("A question."));
+  assert.equal(
+    (await jsonOf(await fetch(new URL("api/state", run.url)))).comments[1].author,
+    undefined,
+  );
+  assert.equal(reviewer.status, 201);
+  for (const extra of [
+    { author: "reviewer" },
+    { author: "agent", diagram: "not mermaid" },
+    { diagram: "flowchart LR\n  a --> b" },
+  ]) {
+    const res = await post(run.url, "api/comments", { ...newComment("x"), ...extra });
+    assert.equal(res.status, 400, JSON.stringify(extra));
+  }
+});
+
+test("offsets outside the hunk body, unsorted or on a file unit are refused and change nothing", async (t) => {
+  const run = await start(t, twoCommitState());
+  await post(run.url, "api/comments", newComment("kept"));
+  const before = await readFile(join(run.dir, "v3.draft.json"), "utf8");
+  const bad = [
+    rowsAnchor([5], []),
+    rowsAnchor([0, 99], [0]),
+    rowsAnchor([2, 1], []),
+    rowsAnchor([1, 1], []),
+    rowsAnchor([-1], []),
+    rowsAnchor([], []),
+    { ...rowsAnchor([0], []), unit: FILE_C },
+    { ...rowsAnchor([0], []), changes: null },
+  ];
+  for (const anchor of bad) {
+    const res = await post(run.url, "api/comments", { ...newComment("x"), anchor });
+    assert.equal(res.status, 400, JSON.stringify(anchor));
+  }
+  assert.equal(await readFile(join(run.dir, "v3.draft.json"), "utf8"), before);
+  const state = await jsonOf(await fetch(new URL("api/state", run.url)));
+  assert.equal(state.comments.length, 1);
 });

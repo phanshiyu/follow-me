@@ -252,6 +252,11 @@ export type Anchor =
       readonly unit: UnitId;
       readonly commit: number;
       readonly changes: readonly number[] | null;
+      /**
+       * Rows of the unit's body the reviewer picked, 0-based and strictly ascending, context rows
+       * included. changes then holds the change indices among them and may be empty.
+       */
+      readonly offsets?: readonly number[];
     }
   | { readonly kind: "message"; readonly commit: number }
   | { readonly kind: "position"; readonly commit: number }
@@ -271,7 +276,7 @@ export type Reply = {
 /**
  * Comments snapshot what they pointed at, so a later reader need not load the old plan. Absent
  * kind is a change request; "question" asks for an explanation. context.lines holds the selected
- * change lines as text, for when the unit no longer exists.
+ * rows as text, for when the unit no longer exists.
  */
 export type Comment = {
   readonly id: CommentId;
@@ -288,6 +293,10 @@ export type Comment = {
   readonly follows?: CommentId;
   readonly severity?: Severity;
   readonly replies?: readonly Reply[];
+  /** Absent means the reviewer. "agent" is a thread the agent started, for example an explanation. */
+  readonly author?: "agent";
+  /** Mermaid source, only on an agent's comment (a reviewer's comment has none). */
+  readonly diagram?: string;
 };
 
 /** The reviewer's verdict on one of the agent's concerns; severity overrides the agent's. */
@@ -296,6 +305,8 @@ export type ConcernDecision = {
   readonly decision: "kept" | "dismissed";
   readonly severity?: Severity;
   readonly note?: string;
+  /** ISO time the server recorded the decision, so the timeline can be rebuilt after a restart. */
+  readonly decidedAt?: string;
 };
 
 /**
@@ -342,6 +353,7 @@ export type ServerEvent = { readonly seq: number } & (
       readonly decision: "kept" | "dismissed";
       readonly severity?: Severity;
       readonly note?: string;
+      readonly decidedAt?: string;
     }
   | { readonly type: "resolved"; readonly commentId: CommentId; readonly resolved: boolean }
   | { readonly type: "version"; readonly version: PlanVersion; readonly hash: string }

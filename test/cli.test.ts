@@ -1054,6 +1054,76 @@ test("watch prints what the reviewer does and exits 0, and exits 2 when nothing 
   assert.equal(run(repo.dir, "watch", "--since", "x").code, 1);
 });
 
+test("explain starts an agent thread on the plan, a commit or picked lines, and watch does not echo it", async (t) => {
+  const { run, repo, url, diff } = await reviewing(t);
+  const state = async () => JSON.parse(await (await fetch(new URL("api/state", url))).text());
+
+  const plan = run(repo.dir, "explain", "--body", "Start here: one commit, everything.");
+  assert.equal(plan.code, 0, plan.err);
+  assert.match(plan.out, /^explained c_[a-z2-7]{6}\nnext: follow-me watch\n/);
+  const commit = run(repo.dir, "explain", "--commit", "1", "--body", "Why this is one commit.");
+  assert.equal(commit.code, 0, commit.err);
+
+  const hunk = [...diff.units.values()].find((u) => u.kind === "hunk");
+  assert.ok(hunk && hunk.kind === "hunk");
+  const file = join(repo.dir, "why.mmd");
+  writeFileSync(file, "flowchart LR\n  a --> b\n");
+  const lines = run(
+    repo.dir,
+    "explain",
+    "--unit",
+    hunk.id,
+    "--lines",
+    "0",
+    "--body",
+    "Look at this.",
+    "--diagram",
+    file,
+  );
+  assert.equal(lines.code, 0, lines.err);
+
+  const { comments } = await state();
+  assert.equal(comments.length, 3);
+  assert.ok(comments.every((c: { author: string }) => c.author === "agent"));
+  assert.deepEqual(comments[0].anchor, { kind: "plan" });
+  assert.deepEqual(comments[1].anchor, { kind: "message", commit: 0 });
+  assert.equal(comments[1].context.commitMessage, "feat: everything");
+  const row = hunk.body.findIndex((l) => l.op !== " " && l.change === 0);
+  assert.deepEqual(comments[2].anchor, {
+    kind: "hunk",
+    unit: hunk.id,
+    commit: 0,
+    changes: [0],
+    offsets: [row],
+  });
+  assert.equal(comments[2].context.path, hunk.path);
+  assert.equal(comments[2].diagram, "flowchart LR\n  a --> b\n");
+
+  assert.equal(run(repo.dir, "watch", "--timeout", "0.3", "--json").code, 2);
+  await postJson(url, "api/comments", PLAN_COMMENT);
+  const woken = run(repo.dir, "watch", "--since", "0", "--json", "--timeout", "5");
+  assert.equal(woken.code, 0, woken.err);
+  assert.deepEqual(
+    woken.out
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l).seq),
+    [4],
+  );
+
+  for (const bad of [
+    ["--lines", "0"],
+    ["--commit", "9"],
+    ["--unit", "h_000000000000"],
+    ["--unit", hunk.id, "--lines", "99"],
+    ["--unit", hunk.id, "--lines", "3-1"],
+  ]) {
+    assert.equal(run(repo.dir, "explain", ...bad, "--body", "x").code, 1, bad.join(" "));
+  }
+  assert.equal(run(repo.dir, "explain").code, 1);
+  assert.equal((await state()).comments.length, 4);
+});
+
 test("reply answers under a comment, watch skips the agent's own words, report shows both voices", async (t) => {
   const { run, repo, url, reviews, served } = await reviewing(t);
   const { id } = JSON.parse(await (await postJson(url, "api/comments", PLAN_COMMENT)).text());

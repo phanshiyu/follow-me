@@ -721,7 +721,7 @@ export function validatePlan(
     review === null
       ? []
       : review.comments
-          .filter((c) => !answered.has(c.id))
+          .filter((c) => c.author !== "agent" && !answered.has(c.id))
           .map((c) => ({ kind: "unanswered", comment: c.id, review: review.planVersion }));
   file.commits.forEach((c, commit) => {
     const length = (c.message.split("\n")[0] ?? "").length;
