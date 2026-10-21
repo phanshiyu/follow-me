@@ -1378,16 +1378,22 @@ body.index {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
   padding: 6px 12px;
   font-size: 13px;
-  white-space: nowrap;
 }
 
 .now-head .muted {
-  flex: 1;
+  order: 3;
+  flex: 1 0 100%;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.threads-here {
+  margin-left: auto;
 }
 
 #now-toggle::before {
@@ -1768,4 +1774,8 @@ button.anchor-chip:hover {
 
 .dialog-body:not(.fit) svg {
   max-width: none;
+}
+
+.entry.system .said {
+  margin-left: 0.4em;
 }
