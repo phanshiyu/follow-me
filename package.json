@@ -44,7 +44,6 @@
     "build": "rm -rf dist && tsc -p tsconfig.build.json && cp -R ui dist/ui"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "0.135.0",
     "mermaid": "12.2.0",
     "prismjs": "1.30.0"
   },

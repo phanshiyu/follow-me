@@ -26,11 +26,6 @@ import { makeFixtureRepo, signWithSsh, sshSigningUnavailable } from "./fixture-r
 
 const BIN = fileURLToPath(new URL("../bin/follow-me.ts", import.meta.url));
 
-/** Without API credentials, so no test can reach the Anthropic API. */
-const OFFLINE = Object.fromEntries(
-  Object.entries(process.env).filter(([k]) => !k.startsWith("ANTHROPIC_")),
-);
-
 type Spawned = {
   readonly child: ChildProcessWithoutNullStreams;
   /** The first page URL the command prints. */
@@ -50,7 +45,7 @@ function cliIn(t: TestContext) {
     if (pid !== undefined && isAlive(pid)) process.kill(pid);
     rmSync(home, { recursive: true, force: true });
   });
-  const env = { ...OFFLINE, FOLLOW_ME_HOME: home, FOLLOW_ME_IDLE_MS: "200" };
+  const env = { ...process.env, FOLLOW_ME_HOME: home, FOLLOW_ME_IDLE_MS: "200" };
   const run = (dir: string, ...args: string[]) => {
     const r = spawnSync(BIN, args, { cwd: dir, encoding: "utf8", env });
     return { code: r.status, out: r.stdout, err: r.stderr };
@@ -155,7 +150,7 @@ test("extract, check, apply and status drive the whole flow from the command lin
       "  A src/new-name.js  1 hunk, 1 change line",
       "  D src/old-name.js  1 hunk, 1 change line",
       "session .follow-me/feature",
-      "next: follow-me prompt, or follow-me plan with an Anthropic key",
+      "next: follow-me prompt, or follow-me plan --naive",
       "",
     ].join("\n"),
     err: "",
@@ -290,7 +285,7 @@ test("check and apply refuse a commit that ends inside a function, until --allow
   assert.match(allowed.out, /\nproof: feature-split\^\{tree\} (\w+) equals feature\^\{tree\} \1\n/);
 });
 
-test("plan --naive writes one commit per file with no API, and check and apply accept it", (t) => {
+test("plan --naive writes one commit per file, and check and apply accept it", (t) => {
   const { run } = cliIn(t);
   const repo = makeFixtureRepo();
   t.after(repo.cleanup);
@@ -320,6 +315,17 @@ test("plan --naive writes one commit per file with no API, and check and apply a
   assert.equal(run(repo.dir, "plan", "--naive", "--walk").code, 1);
 });
 
+test("plan without --naive says there is no built-in planner", (t) => {
+  const { run } = cliIn(t);
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  assert.deepEqual(run(repo.dir, "plan"), {
+    code: 1,
+    out: "",
+    err: "follow-me plan: there is no built-in model planner; your coding agent writes the draft from `follow-me prompt`, or use --naive for one commit per file\n",
+  });
+});
+
 test("each step of a review names the next one, ending with feedback for the agent", async (t) => {
   const { run, spawnCli } = cliIn(t);
   const repo = makeFixtureRepo();
@@ -328,7 +334,7 @@ test("each step of a review names the next one, ending with feedback for the age
   assert.deepEqual(run(repo.dir, "check"), {
     code: 1,
     out: "",
-    err: "follow-me: no draft at .follow-me/feature/draft.json yet; your coding agent writes it from `follow-me prompt`, or `follow-me plan` has the Anthropic API write it\n",
+    err: "follow-me: no draft at .follow-me/feature/draft.json yet; your coding agent writes it from `follow-me prompt`, or `follow-me plan --naive` writes one commit per file\n",
   });
   const diff = await loadDiff(repo.dir, "main", "feature");
   writeWholeDraft(repo.dir, repo.base, repo.branch, [...diff.units.keys()]);
@@ -373,7 +379,7 @@ test("--version, --help and a directory outside any repo answer like other CLIs"
   });
 });
 
-test("split without a draft or API credentials writes the prompt and hands off", (t) => {
+test("split without a draft writes the prompt and hands off", (t) => {
   const { run } = cliIn(t);
   const repo = makeFixtureRepo();
   t.after(repo.cleanup);
@@ -383,7 +389,7 @@ test("split without a draft or API credentials writes the prompt and hands off",
     code: 1,
     out: [
       `feature ${tip} onto main ${base}: 8 files, 9 units`,
-      "no draft for feature yet, and neither ANTHROPIC_API_KEY nor ANTHROPIC_AUTH_TOKEN is set to ask the API for one.",
+      "no draft for feature yet.",
       "Have your coding agent follow .follow-me/feature/prompt.md and write .follow-me/feature/draft.json, then run:",
       "  follow-me check",
       "  follow-me split",
@@ -474,14 +480,14 @@ test("prompt --walk writes for a reviewer and names the branch in the check comm
   assert.ok(prompt.out.includes("Check your work with `follow-me check --branch feature`"));
 });
 
-test("walk without a plan or API credentials prints the two commands to run instead", (t) => {
+test("walk without a plan prints the two commands to run instead", (t) => {
   const { run } = cliIn(t);
   const repo = makeFixtureRepo();
   t.after(repo.cleanup);
   assert.deepEqual(run(repo.dir, "walk", "--no-open"), {
     code: 1,
     out: [
-      "no plan for feature yet, and neither ANTHROPIC_API_KEY nor ANTHROPIC_AUTH_TOKEN is set to ask the API for one.",
+      "no plan for feature yet.",
       "Have a coding agent follow the prompt, then walk again:",
       "  follow-me prompt --walk",
       "  follow-me walk",

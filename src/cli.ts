@@ -3,7 +3,6 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PlanRequestError, requestPlan } from "./anthropic.ts";
 import { DiffParseError, formatUnitRef, isUnitId } from "./diff.ts";
 import {
   BranchRefusedError,
@@ -81,17 +80,15 @@ class UsageError extends Error {
 const USAGE = `usage: follow-me <command> [options]
 
 Split your own branch:
-  split [--base <ref>] [--branch <name>] [--model <id>] [--no-open]
-                                            extract, draft (with an Anthropic key), apply and
-                                            open the review in one go
+  split [--base <ref>] [--branch <name>] [--no-open]
+                                            extract, apply your agent's draft and open the
+                                            review in one go; without a valid draft it writes
+                                            the prompt for your agent and stops
   extract [--base <ref>] [--branch <name>]  anchor a session and list the units
   prompt [--walk] [--branch <name>]         print the planner prompt; your coding agent
                                             writes draft.json from it
-  plan [--walk] [--model <id>] [--branch <name>]
-                                            the same draft as prompt, written by the
-                                            Anthropic API
-  plan --naive [--branch <name>]            no API, no agent: one "wip: <path>" commit per
-                                            touched file, in diff order
+  plan --naive [--branch <name>]            no agent: one "wip: <path>" commit per touched
+                                            file, in diff order
   check [path] [--branch <name>] [--syntax "<cmd {file}>"]
                                             validate draft.json or the given plan file, and
                                             check that every file each commit writes parses;
@@ -131,7 +128,7 @@ Interactive loop (while the review page is open):
   apply, while the page is open, swaps it to the new plan version in place, same URL.
 
 Review someone else's branch:
-  walk [--base <ref>] [--branch <name>] [--model <id>] [--port <n>] [--detach] [--no-open]
+  walk [--base <ref>] [--branch <name>] [--port <n>] [--detach] [--no-open]
                                             watch a branch being written, narrated, and
                                             review its code; nothing is applied
 
@@ -584,39 +581,10 @@ function projectedCommits(session: Session, version: PlanVersion): readonly Proj
   return verdict.ok ? verdict.plan.commits : [];
 }
 
-/** Asks the API for draft.json, feeding issues back once. Returns the plan when it validates. */
-async function draftWithApi(
-  session: Session,
-  cwd: string,
-  mode: ReviewMode,
-  args: Args,
-): Promise<ValidPlan | null> {
-  const model = args.values.get("model");
-  const opts = model === undefined ? {} : { model };
-  let prompt = renderPrompt(promptInput(session, mode, args));
-  for (let round = 1; round <= 2; round++) {
-    const draft = await requestPlan(prompt, opts);
-    session.writeDraft(draft);
-    const verdict = validate(session, draft);
-    if (verdict.ok) {
-      say(
-        `wrote ${relative(cwd, session.draftPath)} (${plural(verdict.plan.commits.length, "commit")})`,
-      );
-      return verdict.plan;
-    }
-    const issues = verdict.issues.map((issue) => `- ${formatIssue(issue)}`).join("\n");
-    prompt = `${prompt}\n\n## Your previous draft had these issues, write a corrected plan\n\n${issues}\n`;
-  }
-  say(
-    `wrote ${relative(cwd, session.draftPath)} but it still has issues, repair it and run \`follow-me check${branchFlag(args)}\``,
-  );
-  return null;
-}
-
-/** Writes the one-commit-per-file draft with no API call and no agent. */
+/** Writes the one-commit-per-file draft with no agent. */
 function naive(session: Session, cwd: string, args: Args): number {
-  if (args.flags.has("walk") || args.values.has("model")) {
-    throw new UsageError("--naive writes no story, so --walk and --model do not apply");
+  if (args.flags.has("walk")) {
+    throw new UsageError("--naive writes no story, so --walk does not apply");
   }
   const draft = naiveDraft(session.diff);
   session.writeDraft(draft);
@@ -630,12 +598,13 @@ function naive(session: Session, cwd: string, args: Args): number {
 }
 
 async function plan(cwd: string, args: Args): Promise<number> {
-  const session = await openSession(cwd, sessionOpts(args));
-  const mode = modeOf(args);
-  if (args.flags.has("naive")) return naive(session, cwd, args);
-  if ((await draftWithApi(session, cwd, mode, args)) === null) return 1;
-  next(mode === "walk" ? `follow-me walk${branchFlag(args)}` : "follow-me apply");
-  return 0;
+  if (!args.flags.has("naive")) {
+    console.error(
+      "follow-me plan: there is no built-in model planner; your coding agent writes the draft from `follow-me prompt`, or use --naive for one commit per file",
+    );
+    return 1;
+  }
+  return naive(await openSession(cwd, sessionOpts(args)), cwd, args);
 }
 
 /** The latest frozen plan, or the draft frozen now when it validates. */
@@ -877,9 +846,7 @@ function draftNeed(session: Session, cwd: string, args: Args): string | null | "
 function handOff(session: Session, cwd: string, args: Args, why: string): void {
   session.writePrompt(renderPrompt(promptInput(session, "split", args)));
   const prompt = relative(cwd, session.promptPath);
-  say(
-    `${why}, and neither ANTHROPIC_API_KEY nor ANTHROPIC_AUTH_TOKEN is set to ask the API for one.`,
-  );
+  say(`${why}.`);
   say(
     `Have your coding agent follow ${prompt} and write ${relative(cwd, session.draftPath)}, then run:`,
   );
@@ -889,8 +856,8 @@ function handOff(session: Session, cwd: string, args: Args, why: string): void {
 }
 
 /**
- * The author's one command: extract, draft through the API when it can, apply, and open the
- * review on the user's server. It stops with a handoff whenever an agent has to write the draft.
+ * The author's one command: extract, apply the agent's draft, and open the review on the user's
+ * server. It stops with a handoff whenever there is no valid draft.
  */
 async function split(cwd: string, args: Args): Promise<number> {
   const session = await openFresh(cwd, args);
@@ -904,14 +871,8 @@ async function split(cwd: string, args: Args): Promise<number> {
   const need = draftNeed(session, cwd, args);
   if (need === "invalid") return 1;
   if (need !== null) {
-    if (!hasApiCredentials()) {
-      handOff(session, cwd, args, need);
-      return 1;
-    }
-    say(`${need}; asking the Anthropic API for one`);
-    const drafted = await draftWithApi(session, cwd, "split", args);
-    if (drafted === null) return 1;
-    listPlan(drafted);
+    handOff(session, cwd, args, need);
+    return 1;
   }
   const applied = await locked(session, "apply", () => applyLocked(session, args));
   if (applied !== 0) return applied;
@@ -962,10 +923,6 @@ function walkablePlan(session: Session): Prepared | null {
   return verdict.ok ? { version: session.freeze(verdict.plan), plan: verdict.plan } : null;
 }
 
-function hasApiCredentials(): boolean {
-  return Boolean(process.env["ANTHROPIC_API_KEY"] || process.env["ANTHROPIC_AUTH_TOKEN"]);
-}
-
 async function walk(cwd: string, args: Args): Promise<number> {
   const session = await openFresh(cwd, args);
   const report = (review: Review) => {
@@ -977,34 +934,21 @@ async function walk(cwd: string, args: Args): Promise<number> {
       `follow-me feedback --walk${branchFlag(args)}, which prints it as a code review for the author`,
     );
   };
-  const hosted = await hostReview(
-    session,
-    "walk",
-    args,
-    () => walkPlan(session, cwd, args),
-    report,
-  );
+  const hosted = await hostReview(session, "walk", args, () => walkPlan(session, args), report);
   if (hosted.kind === "elsewhere") {
     next(`end the code review on the page, then follow-me feedback --walk${branchFlag(args)}`);
   }
   return exitCode(hosted);
 }
 
-async function walkPlan(session: Session, cwd: string, args: Args): Promise<Prepared | null> {
-  let latest = walkablePlan(session);
+async function walkPlan(session: Session, args: Args): Promise<Prepared | null> {
+  const latest = walkablePlan(session);
   if (latest === null) {
-    if (!hasApiCredentials()) {
-      say(
-        `no plan for ${session.anchor.branch} yet, and neither ANTHROPIC_API_KEY nor ANTHROPIC_AUTH_TOKEN is set to ask the API for one.`,
-      );
-      say("Have a coding agent follow the prompt, then walk again:");
-      say(`  follow-me prompt --walk${branchFlag(args)}`);
-      say(`  follow-me walk${branchFlag(args)}`);
-      return null;
-    }
-    const drafted = await draftWithApi(session, cwd, "walk", args);
-    if (drafted === null) return null;
-    latest = { version: session.freeze(drafted), plan: drafted };
+    say(`no plan for ${session.anchor.branch} yet.`);
+    say("Have a coding agent follow the prompt, then walk again:");
+    say(`  follow-me prompt --walk${branchFlag(args)}`);
+    say(`  follow-me walk${branchFlag(args)}`);
+    return null;
   }
   return alreadyReviewed(session, "walk", latest.version, args) ? null : latest;
 }
@@ -1425,7 +1369,7 @@ function skillTargets(args: Args): SkillTargets {
 }
 
 function missingDraft(error: MissingDraftError, cwd: string): string {
-  return `no draft at ${relative(cwd, error.path)} yet; your coding agent writes it from \`follow-me prompt\`, or \`follow-me plan\` has the Anthropic API write it`;
+  return `no draft at ${relative(cwd, error.path)} yet; your coding agent writes it from \`follow-me prompt\`, or \`follow-me plan --naive\` writes one commit per file`;
 }
 
 const PACKAGE_NAME = "@shiyuphan/follow-me";
@@ -1464,7 +1408,7 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
         const args = parseArgs(rest, { values: ["base", "branch"] });
         summarize(await extractSession(cwd, sessionOpts(args)), cwd);
         const branch = branchFlag(args);
-        next(`follow-me prompt${branch}, or follow-me plan${branch} with an Anthropic key`);
+        next(`follow-me prompt${branch}, or follow-me plan --naive${branch}`);
         return 0;
       }
       case "check":
@@ -1487,13 +1431,10 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
         return 0;
       }
       case "plan":
-        return await plan(
-          cwd,
-          parseArgs(rest, { values: ["model", "branch"], flags: ["walk", "naive"] }),
-        );
+        return await plan(cwd, parseArgs(rest, { values: ["branch"], flags: ["walk", "naive"] }));
       case "split": {
         const spec = {
-          values: ["base", "branch", "model", "syntax"],
+          values: ["base", "branch", "syntax"],
           flags: ["no-open", "allow-syntax-errors"],
         };
         return await split(cwd, parseArgs(rest, spec));
@@ -1503,7 +1444,7 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
         return await review(cwd, parseArgs(rest, spec));
       }
       case "walk": {
-        const spec = { values: ["base", "branch", "model", "port"], flags: ["no-open", "detach"] };
+        const spec = { values: ["base", "branch", "port"], flags: ["no-open", "detach"] };
         return await walk(cwd, parseArgs(rest, spec));
       }
       case "server":
@@ -1570,7 +1511,6 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
       SessionLockedError,
       RegistrationError,
       GitError,
-      PlanRequestError,
       NotARepositoryError,
     ];
     if (error instanceof MissingDraftError) {

@@ -8,10 +8,6 @@
       "matchDepTypes": ["devDependencies"],
       "matchUpdateTypes": ["minor", "patch"],
       "automerge": true
-    },
-    {
-      "matchPackageNames": ["@anthropic-ai/sdk"],
-      "groupName": "anthropic sdk"
     }
   ]
 }
