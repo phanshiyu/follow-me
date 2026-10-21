@@ -37,6 +37,7 @@ import {
   swapVersion,
 } from "./host.ts";
 import { runInstall, runUninstall, type SkillTargets } from "./install.ts";
+import { naiveDraft } from "./naive.ts";
 import { serializePlanFile, type ValidPlan, validatePlan } from "./plan.ts";
 import { type PromptInput, renderEvents, renderPrompt, renderReport } from "./prompt.ts";
 import { type Registration, RegistrationError, sessionIdOf } from "./server.ts";
@@ -582,9 +583,26 @@ async function draftWithApi(
   return null;
 }
 
+/** Writes the one-commit-per-file draft with no API call and no agent. */
+function naive(session: Session, cwd: string, args: Args): number {
+  if (args.flags.has("walk") || args.values.has("model")) {
+    throw new UsageError("--naive writes no story, so --walk and --model do not apply");
+  }
+  const draft = naiveDraft(session.diff);
+  session.writeDraft(draft);
+  const verdict = validate(session, draft);
+  if (!verdict.ok) return 1;
+  say(
+    `wrote ${relative(cwd, session.draftPath)} (${plural(verdict.plan.commits.length, "commit")})`,
+  );
+  next("follow-me apply");
+  return 0;
+}
+
 async function plan(cwd: string, args: Args): Promise<number> {
   const session = await openSession(cwd, sessionOpts(args));
   const mode = modeOf(args);
+  if (args.flags.has("naive")) return naive(session, cwd, args);
   if ((await draftWithApi(session, cwd, mode, args)) === null) return 1;
   next(mode === "walk" ? `follow-me walk${branchFlag(args)}` : "follow-me apply");
   return 0;
@@ -1286,7 +1304,10 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
         return 0;
       }
       case "plan":
-        return await plan(cwd, parseArgs(rest, { values: ["model", "branch"], flags: ["walk"] }));
+        return await plan(
+          cwd,
+          parseArgs(rest, { values: ["model", "branch"], flags: ["walk", "naive"] }),
+        );
       case "split": {
         const spec = {
           values: ["base", "branch", "model", "syntax"],

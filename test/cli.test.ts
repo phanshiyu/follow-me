@@ -290,6 +290,36 @@ test("check and apply refuse a commit that ends inside a function, until --allow
   assert.match(allowed.out, /\nproof: feature-split\^\{tree\} (\w+) equals feature\^\{tree\} \1\n/);
 });
 
+test("plan --naive writes one commit per file with no API, and check and apply accept it", (t) => {
+  const { run } = cliIn(t);
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  assert.equal(run(repo.dir, "extract").code, 0);
+
+  const planned = run(repo.dir, "plan", "--naive");
+  assert.deepEqual(planned, {
+    code: 0,
+    out: "wrote .follow-me/feature/draft.json (8 commits)\nnext: follow-me apply\n",
+    err: "",
+  });
+  const checked = run(repo.dir, "check");
+  assert.equal(checked.code, 0, checked.out);
+  assert.deepEqual(checked.out.split("\n").slice(1, 9), [
+    "  1  wip: README.md  (1 unit, 1 file)",
+    "  2  wip: assets/logo.bin (binary)  (1 unit, 1 file)",
+    "  3  wip: notes.txt  (1 unit, 1 file)",
+    "  4  wip: scripts/run.sh (mode)  (1 unit, 1 file)",
+    "  5  wip: src/guard.js  (1 unit, 1 file)",
+    "  6  wip: src/lib.js  (2 units, 1 file)",
+    "  7  wip: src/new-name.js  (1 unit, 1 file)",
+    "  8  wip: src/old-name.js  (1 unit, 1 file)",
+  ]);
+  const applied = run(repo.dir, "apply");
+  assert.equal(applied.code, 0, applied.out);
+  assert.match(applied.out, /\nproof: feature-split\^\{tree\} (\w+) equals feature\^\{tree\} \1\n/);
+  assert.equal(run(repo.dir, "plan", "--naive", "--walk").code, 1);
+});
+
 test("each step of a review names the next one, ending with feedback for the agent", async (t) => {
   const { run, spawnCli } = cliIn(t);
   const repo = makeFixtureRepo();
