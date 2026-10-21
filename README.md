@@ -83,11 +83,14 @@ If the hashes differ, `apply` exits with code 1. The commits are signed when you
 
 The red blob in the party hat is your branch tip. Nothing follow-me does moves it.
 
-![The review page: the commit list on the left, commit 3 of 8 with file line numbers, a comment on lines 14-15 and its diagram on the right](assets/screenshots/review.png)
-*The review page. Pick a commit on the left. Comment on its message, its position ("This belongs elsewhere"), a hunk, or single lines.*
+![The review page: commit list on the left, the commit's diff with syntax highlighting in the middle, and the conversation panel on the right with the current diagram and the thread timeline](assets/screenshots/review.png)
+*The review page. Pick any line, changed or not, or a range, and comment or ask. The right-hand panel shows the current diagram and the whole conversation in order.*
 
-![One hunk split across commits: commit 4 adds one line, earlier commits' lines read as context and the four lines commit 5 adds fold into one row](assets/screenshots/split-hunk.png)
-*One hunk split across commits. Commit 3 takes 2 of 7 change lines. The others are dimmed and marked "→ commit 4" or "→ commit 5".*
+![One hunk split across commits: commit 3's lines are bright, the rest are folded into "arrives in commit N" rows](assets/screenshots/split-hunk.png)
+*One hunk split across commits. Commit 3 takes 2 of 7 change lines. The others fold into "4 lines arrive in commit 5".*
+
+![The conversation panel: a question anchored to a line, the agent's reply with a rendered Mermaid diagram, and the composer](assets/screenshots/conversation.png)
+*The conversation. Your questions, the agent's replies and diagrams, its own explanations (`follow-me explain`), concern decisions and new plan versions, all in one timeline. Clicking an entry jumps to its lines.*
 
 On the review page, `n` or `j` goes to the next commit, `p` or `k` to the previous one. **End review** saves `.follow-me/<branch>/reviews/vN.json`. An unfinished review autosaves and comes back when you open the session again.
 
