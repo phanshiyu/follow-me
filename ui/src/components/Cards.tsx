@@ -13,6 +13,7 @@ import type { PlacedConcern, Severity } from "../lib/wire.ts";
 import { scrollToCommit } from "../page.tsx";
 import { useReview } from "../store.tsx";
 import { CommentBox } from "./CommentBox.tsx";
+import { Markdown } from "./Markdown.tsx";
 import { SEVERITIES, SeverityChip } from "./Severity.tsx";
 import { Card, Text } from "./Thread.tsx";
 
@@ -134,7 +135,7 @@ export function AnswerCard({ card, className }: { card: Answer; className?: stri
       {response === null ? null : (
         <div className="mt-3 border-l-2 border-sky-500/60 pl-3">
           <div className="mb-1 font-medium text-xs">Agent</div>
-          <Text>{response.note}</Text>
+          <Markdown text={response.note} />
         </div>
       )}
       {place === null && comment.anchor.kind === "hunk" ? (

@@ -6,6 +6,8 @@ import type { WireComment } from "../lib/wire.ts";
 import { usePage } from "../page.tsx";
 import { useReview } from "../store.tsx";
 import { CommentBox } from "./CommentBox.tsx";
+import { Diagram } from "./Diagram.tsx";
+import { Markdown } from "./Markdown.tsx";
 import { SeverityChip } from "./Severity.tsx";
 
 function firstLine(text: string): string {
@@ -86,13 +88,26 @@ export function ThreadCard({ comment, className }: { comment: WireComment; class
           </span>
         ) : null}
       </div>
-      <Text>{comment.body}</Text>
+      {comment.author === "agent" ? <Markdown text={comment.body} /> : <Text>{comment.body}</Text>}
+      {comment.diagram === undefined ? null : (
+        <div className="mt-2">
+          <Diagram source={comment.diagram} title="The agent's diagram" />
+        </div>
+      )}
       {(comment.replies ?? []).map((reply) => (
-        <div key={reply.id} className="mt-3 border-l-2 pl-3">
+        <div
+          key={reply.id}
+          className={cn("mt-3 border-l-2 pl-3", reply.author === "agent" && "border-sky-500/60")}
+        >
           <div className="mb-1 font-medium text-xs">
             {reply.author === "agent" ? "Agent" : "You"}
           </div>
-          <Text>{reply.body}</Text>
+          {reply.author === "agent" ? <Markdown text={reply.body} /> : <Text>{reply.body}</Text>}
+          {reply.diagram === undefined ? null : (
+            <div className="mt-2">
+              <Diagram source={reply.diagram} title="The agent's diagram" />
+            </div>
+          )}
         </div>
       ))}
       {replying ? (

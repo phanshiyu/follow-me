@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { commitKey } from "../lib/commit.ts";
 import { HEADER_PX, PageProvider, scrollToCommit, usePage } from "../page.tsx";
 import { useReview } from "../store.tsx";
+import { AskBranch, BranchSummary } from "./Branch.tsx";
 import { CommitSection } from "./CommitSection.tsx";
 import { KeySheet } from "./KeySheet.tsx";
 import { StackPicker } from "./StackPicker.tsx";
@@ -118,6 +119,7 @@ function Page() {
           </div>
           <StackPicker open={stackOpen} onOpenChange={setStackOpen} />
           <div className="flex items-center justify-end gap-2">
+            <AskBranch />
             <span className="hidden text-muted-foreground lg:inline">
               Review · {pending} pending
             </span>
@@ -136,6 +138,7 @@ function Page() {
         )}
       </header>
       <main className="mx-auto max-w-[1232px] px-6">
+        <BranchSummary />
         {state.commits.map((commit) => (
           <CommitSection key={commitKey(commit)} commit={commit} />
         ))}

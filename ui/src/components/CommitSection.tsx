@@ -17,6 +17,7 @@ import { useAnswers, useDerived, useReview } from "../store.tsx";
 import { AnswerCard, ConcernCard } from "./Cards.tsx";
 import { Check } from "./Check.tsx";
 import { CommentBox } from "./CommentBox.tsx";
+import { Diagram } from "./Diagram.tsx";
 import { boxActions, Hunk } from "./Hunk.tsx";
 import { ThreadCard } from "./Thread.tsx";
 
@@ -110,6 +111,9 @@ export function CommitSection({ commit }: { commit: ProjectedCommit }) {
               <p className="whitespace-pre-wrap text-muted-foreground">{note}</p>
             </div>
           )}
+          {commit.diagram?.trim() ? (
+            <Diagram source={commit.diagram} title={`Diagram of commit ${commit.index + 1}`} />
+          ) : null}
           {cardsAt(answers, commit.index, null, shownUnits).map((card) => (
             <AnswerCard key={card.id} card={card} className="ml-0" />
           ))}
@@ -156,6 +160,9 @@ export function CommitSection({ commit }: { commit: ProjectedCommit }) {
                             <p className="max-w-[72ch] text-muted-foreground text-sm">
                               {ref.narration.trim()}
                             </p>
+                          ) : null}
+                          {ref.diagram?.trim() ? (
+                            <Diagram source={ref.diagram} title={`Diagram of ${unit.path}`} />
                           ) : null}
                           {cardsAt(answers, commit.index, unit.id, shownUnits).map((card) => (
                             <AnswerCard key={card.id} card={card} className="ml-0" />
