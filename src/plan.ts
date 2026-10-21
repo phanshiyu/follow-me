@@ -1,12 +1,16 @@
 import { createHash } from "node:crypto";
-import { formatUnitRef, isSha, parseUnitRef, projectFile } from "./diff.ts";
+import { formatUnitRef, isSha, isUnitId, parseUnitRef, projectFile } from "./diff.ts";
 import type {
   CommentId,
   CommentResponse,
+  Concern,
+  ConcernId,
+  ConcernKind,
   Diff,
   Entry,
   FileUnit,
   ModeUnit,
+  PlacedConcern,
   PlanFile,
   PlanIssue,
   PlannedCommit,
@@ -16,6 +20,7 @@ import type {
   RepoPath,
   ResponseStatus,
   Review,
+  Severity,
   Sha,
   TextFile,
   TreeChange,
@@ -44,13 +49,28 @@ export function isCommentId(s: string): s is CommentId {
   return s.length > 0;
 }
 
+export function isConcernId(s: unknown): s is ConcernId {
+  return typeof s === "string" && /^k_[0-9a-f]{8}$/.test(s);
+}
+
 export function isPlanVersion(n: unknown): n is PlanVersion {
   return typeof n === "number" && Number.isInteger(n) && n >= 1;
 }
 
-const STATUSES: readonly ResponseStatus[] = ["addressed", "declined", "deferred"];
+const STATUSES: readonly ResponseStatus[] = ["addressed", "declined", "deferred", "answered"];
 function isResponseStatus(s: unknown): s is ResponseStatus {
   return STATUSES.some((x) => x === s);
+}
+
+const SEVERITIES: readonly Severity[] = ["blocker", "major", "minor"];
+const CONCERN_KINDS: readonly ConcernKind[] = ["bug", "missing-test", "naming", "risk"];
+
+export function isSeverity(s: unknown): s is Severity {
+  return SEVERITIES.some((x) => x === s);
+}
+
+function isConcernKind(s: unknown): s is ConcernKind {
+  return CONCERN_KINDS.some((x) => x === s);
 }
 
 /** Narrows to an object whose named fields are still unknown, which holds for any object. */
@@ -91,7 +111,7 @@ const MERMAID_KEYWORDS = [
 ];
 
 /** A diagram is Mermaid source, so its first line must name a diagram type. Else the reason. */
-function diagramProblem(diagram: string): string | null {
+export function diagramProblem(diagram: string): string | null {
   const first = (diagram.split("\n").find((line) => line.trim() !== "") ?? "").trim();
   const named = MERMAID_KEYWORDS.some(
     (k) => first.startsWith(k) && !/[\w-]/.test(first.charAt(k.length)),
@@ -100,40 +120,125 @@ function diagramProblem(diagram: string): string | null {
   return `expected Mermaid source whose first line starts with a diagram type such as flowchart, sequenceDiagram or stateDiagram-v2, got "${first.slice(0, 40)}"`;
 }
 
-type Extras = { readonly narration?: string; readonly diagram?: string };
+type Extras = {
+  readonly narration?: string;
+  readonly diagram?: string;
+  readonly concerns?: readonly Concern[];
+};
 
-/** The optional narration and diagram of a commit or unit entry, or what is wrong with them. */
-function parseExtras(v: {
-  readonly narration?: unknown;
-  readonly diagram?: unknown;
-}): Extras | { readonly field: "narration" | "diagram"; readonly error: string } {
+type ExtrasError = {
+  readonly field: "narration" | "diagram" | "concerns";
+  readonly error: string;
+};
+
+/** A concern is { severity, kind, text, lines? }; lines are change indices, on a unit ref only. */
+function parseConcern(v: unknown, onUnit: boolean): Concern | string {
+  if (!isFields<"severity" | "kind" | "text" | "lines">(v)) return "expected an object";
+  if (!isSeverity(v.severity)) return `severity: expected one of ${SEVERITIES.join(", ")}`;
+  if (!isConcernKind(v.kind)) return `kind: expected one of ${CONCERN_KINDS.join(", ")}`;
+  if (typeof v.text !== "string" || v.text.trim() === "") return "text: expected a sentence";
+  const { severity, kind, text } = v;
+  if (v.lines === undefined || v.lines === null) return { severity, kind, text };
+  if (!onUnit) return "lines: only a concern on a unit ref has lines";
+  const lines = v.lines;
+  if (!isArray(lines) || lines.length === 0) return "lines: expected a list of change indices";
+  const indices = lines.flatMap((n) => (Number.isInteger(n) && Number(n) >= 0 ? [Number(n)] : []));
+  if (indices.length !== lines.length) return "lines: expected a list of change indices";
+  return { severity, kind, text, lines: [...new Set(indices)].sort((a, b) => a - b) };
+}
+
+/** Absent, null and [] all mean no concerns, so a planner may always write the field. */
+function parseConcerns(v: unknown, onUnit: boolean): readonly Concern[] | string {
+  if (v === undefined || v === null) return [];
+  if (!isArray(v)) return "expected an array";
+  const out: Concern[] = [];
+  for (const [i, raw] of v.entries()) {
+    const concern = parseConcern(raw, onUnit);
+    if (typeof concern === "string") return `[${i}]: ${concern}`;
+    out.push(concern);
+  }
+  return out;
+}
+
+/** The optional narration, diagram and concerns of a commit or unit entry, or what is wrong. */
+function parseExtras(
+  v: {
+    readonly narration?: unknown;
+    readonly diagram?: unknown;
+    readonly concerns?: unknown;
+  },
+  onUnit: boolean,
+): Extras | ExtrasError {
   const narration = parseText(v.narration);
   if (narration === INVALID) return { field: "narration", error: "expected a string" };
   const diagram = parseText(v.diagram);
   if (diagram === INVALID) return { field: "diagram", error: "expected a string" };
   const problem = diagram === null ? null : diagramProblem(diagram);
   if (problem !== null) return { field: "diagram", error: problem };
-  return withExtras(narration, diagram);
+  const concerns = parseConcerns(v.concerns, onUnit);
+  if (typeof concerns === "string") return { field: "concerns", error: concerns };
+  return withExtras(narration, diagram, concerns);
 }
 
-function withExtras(narration: string | null, diagram: string | null): Extras {
+type Text = Pick<Extras, "narration" | "diagram">;
+
+function withText(narration: string | null, diagram: string | null): Text {
   return {
     ...(narration === null ? {} : { narration }),
     ...(diagram === null ? {} : { diagram }),
   };
 }
 
-/** A unit entry is "h_x:0-3" or { "unit": "h_x:0-3", "narration": "...", "diagram": "..." }. */
+function withExtras(
+  narration: string | null,
+  diagram: string | null,
+  concerns: readonly Concern[],
+): Extras {
+  return { ...withText(narration, diagram), ...(concerns.length === 0 ? {} : { concerns }) };
+}
+
+function serializeConcern(c: Concern): unknown {
+  return {
+    severity: c.severity,
+    kind: c.kind,
+    text: c.text,
+    ...(c.lines === undefined ? {} : { lines: c.lines }),
+  };
+}
+
+function serializeExtras(x: Extras): Record<string, unknown> {
+  return {
+    ...withText(x.narration ?? null, x.diagram ?? null),
+    ...(x.concerns === undefined ? {} : { concerns: x.concerns.map(serializeConcern) }),
+  };
+}
+
+/** A unit entry is "h_x:0-3" or { "unit": "h_x:0-3", "narration", "diagram", "concerns" }. */
 function parseUnitEntry(u: unknown): UnitRef | { readonly error: string } {
   if (typeof u === "string") return parseUnitRef(u);
-  if (!isFields<"unit" | "narration" | "diagram">(u) || typeof u.unit !== "string") {
-    return { error: 'expected a unit ref string or { "unit", "narration", "diagram" }' };
+  if (!isFields<"unit" | "narration" | "diagram" | "concerns">(u) || typeof u.unit !== "string") {
+    return {
+      error: 'expected a unit ref string or { "unit", "narration", "diagram", "concerns" }',
+    };
   }
   const ref = parseUnitRef(u.unit);
   if ("error" in ref) return ref;
-  const extras = parseExtras(u);
+  const extras = parseExtras(u, true);
   if ("error" in extras) return { error: `${extras.field}: ${extras.error}` };
   return { ...ref, ...extras };
+}
+
+/** { "commit": 3, "unit": "h_x" } with commit 1-based; absent and null mean not given. */
+function parseAnswerAt(v: unknown): NonNullable<CommentResponse["at"]> | null | string {
+  if (v === undefined || v === null) return null;
+  if (!isFields<"commit" | "unit">(v)) return 'expected { "commit", "unit" }';
+  const { commit, unit } = v;
+  if (typeof commit !== "number" || !Number.isInteger(commit) || commit < 1) {
+    return "commit: expected a commit number counted from 1";
+  }
+  if (unit === undefined || unit === null) return { commit };
+  if (typeof unit !== "string" || !isUnitId(unit)) return "unit: expected a unit id";
+  return { commit, unit };
 }
 
 /** Boundary parse of draft.json or plans/vN.json. Reports every malformed field. */
@@ -160,12 +265,12 @@ export function parsePlanFile(draft: unknown): PlanFile | PlanIssue[] {
   else {
     for (const [i, c] of draft.commits.entries()) {
       const at = `$.commits[${i}]`;
-      if (!isFields<"message" | "narration" | "diagram" | "units">(c)) {
+      if (!isFields<"message" | "narration" | "diagram" | "concerns" | "units">(c)) {
         bad(at, "expected an object");
         continue;
       }
       if (typeof c.message !== "string") bad(`${at}.message`, "expected a string");
-      const extras = parseExtras(c);
+      const extras = parseExtras(c, false);
       if ("error" in extras) bad(`${at}.${extras.field}`, extras.error);
       const units: UnitRef[] = [];
       if (!isArray(c.units)) bad(`${at}.units`, "expected an array of unit refs");
@@ -188,13 +293,24 @@ export function parsePlanFile(draft: unknown): PlanFile | PlanIssue[] {
   else {
     for (const [i, r] of rawResponses.entries()) {
       const at = `$.responses[${i}]`;
-      if (!isFields<"comment" | "status" | "note">(r)) bad(at, "expected an object");
+      if (!isFields<"comment" | "status" | "note" | "at">(r)) bad(at, "expected an object");
       else if (typeof r.comment !== "string" || !isCommentId(r.comment)) {
         bad(`${at}.comment`, "expected a comment id");
       } else if (!isResponseStatus(r.status)) {
         bad(`${at}.status`, `expected one of ${STATUSES.join(", ")}`);
       } else if (typeof r.note !== "string") bad(`${at}.note`, "expected a string");
-      else responses.push({ comment: r.comment, status: r.status, note: r.note });
+      else {
+        const where = parseAnswerAt(r.at);
+        if (typeof where === "string") bad(`${at}.at`, where);
+        else {
+          responses.push({
+            comment: r.comment,
+            status: r.status,
+            note: r.note,
+            ...(where === null ? {} : { at: where }),
+          });
+        }
+      }
     }
   }
 
@@ -210,14 +326,19 @@ export function serializePlanFile(file: PlanFile): unknown {
     tip: file.tip,
     commits: file.commits.map((c) => ({
       message: c.message,
-      ...withExtras(c.narration ?? null, c.diagram ?? null),
+      ...serializeExtras(c),
       units: c.units.map((ref) =>
-        ref.narration === undefined && ref.diagram === undefined
+        ref.narration === undefined && ref.diagram === undefined && ref.concerns === undefined
           ? formatUnitRef(ref)
-          : { unit: formatUnitRef(ref), ...withExtras(ref.narration ?? null, ref.diagram ?? null) },
+          : { unit: formatUnitRef(ref), ...serializeExtras(ref) },
       ),
     })),
-    responses: file.responses.map((r) => ({ comment: r.comment, status: r.status, note: r.note })),
+    responses: file.responses.map((r) => ({
+      comment: r.comment,
+      status: r.status,
+      note: r.note,
+      ...(r.at === undefined ? {} : { at: r.at }),
+    })),
   };
 }
 
@@ -398,12 +519,85 @@ function matchesTip(change: TreeChange, tip: Tip | null): boolean {
   return false;
 }
 
+/** "k_" + 8 hex over the unit, the lines and the text: stable while the concern is unchanged. */
+function deriveConcernId(unit: UnitId | null, c: Concern): ConcernId {
+  const hex = createHash("sha256")
+    .update(`${unit ?? ""}\0${(c.lines ?? []).join(",")}\0${c.text}`)
+    .digest("hex")
+    .slice(0, 8);
+  const id = `k_${hex}`;
+  if (!isConcernId(id)) throw new Error(`sha256 produced ${id}`);
+  return id;
+}
+
+/**
+ * Gives every concern its id and checks where it sits: lines must be change lines the commit
+ * takes, and a unit carries at most one concern across the whole plan.
+ */
+function placeConcerns(
+  diff: Diff,
+  file: PlanFile,
+  claims: Claims,
+  issues: PlanIssue[],
+): PlacedConcern[][] {
+  const ids = new Set<string>();
+  const holders = new Map<UnitId, number[]>();
+  const placedPerCommit = file.commits.map((commit, k) => {
+    const placed: PlacedConcern[] = [];
+    const add = (c: Concern, unit: UnitId | null): void => {
+      const id = deriveConcernId(unit, c);
+      if (ids.has(id)) {
+        issues.push({ kind: "bad-concern", commit: k, reason: `${id} repeats another concern` });
+        return;
+      }
+      ids.add(id);
+      placed.push({ ...c, id, ...(unit === null ? {} : { unit }) });
+    };
+    for (const c of commit.concerns ?? []) add(c, null);
+    commit.units.forEach((ref, j) => {
+      const concerns = ref.concerns ?? [];
+      if (concerns.length === 0) return;
+      holders.set(ref.unit, [...(holders.get(ref.unit) ?? []), ...concerns.map(() => k)]);
+      const taken = claims.resolved[k]?.[j]?.select;
+      const unit = diff.units.get(ref.unit);
+      for (const c of concerns) {
+        const lines = c.lines ?? [];
+        if (lines.length > 0 && unit?.kind !== "hunk") {
+          issues.push({
+            kind: "bad-concern",
+            commit: k,
+            reason: `${ref.unit}: only a text hunk has change lines`,
+          });
+          continue;
+        }
+        const outside =
+          taken?.kind === "lines" ? lines.filter((n) => !taken.changes.includes(n)) : [];
+        if (outside.length > 0) {
+          issues.push({
+            kind: "bad-concern",
+            commit: k,
+            reason: `${ref.unit}: concern lines ${outside.join(", ")} are not change lines this commit takes`,
+          });
+        } else add(c, ref.unit);
+      }
+    });
+    return placed;
+  });
+  for (const [unit, commits] of holders) {
+    if (commits.length > 1) {
+      issues.push({ kind: "too-many-concerns", unit, commits: [...new Set(commits)] });
+    }
+  }
+  return placedPerCommit;
+}
+
 function project(
   diff: Diff,
   file: PlanFile,
   claims: Claims,
   issues: PlanIssue[],
 ): ProjectedCommit[] {
+  const concerns = placeConcerns(diff, file, claims, issues);
   const { stateAt, tipOf } = projector(diff, claims.owners);
   const present = new Map<RepoPath, boolean>();
   for (const f of diff.textFiles.values()) present.set(f.path, f.base !== null);
@@ -413,6 +607,7 @@ function project(
 
   const commits = file.commits.map((commit, k): ProjectedCommit => {
     const refs = claims.resolved[k] ?? [];
+    const mine = concerns[k] ?? [];
     const touched = [...new Set(refs.flatMap((r) => diff.units.get(r.unit)?.path ?? []))].sort();
     const changes = touched.map((path) => {
       const state = stateAt(path, k);
@@ -436,7 +631,8 @@ function project(
     return {
       index: k,
       message: commit.message,
-      ...withExtras(commit.narration ?? null, commit.diagram ?? null),
+      ...withText(commit.narration ?? null, commit.diagram ?? null),
+      ...(mine.length === 0 ? {} : { concerns: mine }),
       refs,
       changes,
     };
@@ -456,6 +652,26 @@ function project(
     }
   }
   return commits;
+}
+
+/**
+ * Why an "answered" response is not an answer, or null. It must answer a question and point at a
+ * commit, or a unit of it, that carries narration or a diagram to explain it.
+ */
+function answerProblem(file: PlanFile, r: CommentResponse, isQuestion: boolean): string | null {
+  if (!isQuestion) return "answered is only for questions; use addressed, declined or deferred";
+  if (r.at === undefined) return 'an answer needs "at" naming the commit that explains it';
+  const commit = file.commits[r.at.commit - 1];
+  if (commit === undefined) return `at.commit ${r.at.commit} is not a commit of this plan`;
+  const target = r.at.unit;
+  const ref = target === undefined ? undefined : commit.units.find((u) => u.unit === target);
+  if (target !== undefined && ref === undefined) {
+    return `commit ${r.at.commit} does not take ${target}`;
+  }
+  const explains = [commit, ref].some(
+    (x) => x?.narration !== undefined || x?.diagram !== undefined,
+  );
+  return explains ? null : `commit ${r.at.commit} has no narration or diagram to point at`;
 }
 
 /**
@@ -504,6 +720,16 @@ export function validatePlan(
       : review.comments
           .filter((c) => !answered.has(c.id))
           .map((c) => ({ kind: "unanswered", comment: c.id, review: review.planVersion }));
+  const asked = new Map(review?.comments.map((c) => [c.id, c.kind === "question"]));
+  for (const r of file.responses) {
+    const isQuestion = asked.get(r.comment);
+    if (isQuestion === undefined) continue;
+    if (r.status === "addressed" && isQuestion) {
+      warnings.push({ kind: "question-addressed", comment: r.comment });
+    }
+    const problem = r.status === "answered" ? answerProblem(file, r, isQuestion) : null;
+    if (problem !== null) issues.push({ kind: "bad-answer", comment: r.comment, reason: problem });
+  }
 
   if (issues.length > 0) return { ok: false, issues };
   return {

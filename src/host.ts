@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { type NewReply, parseEvent, parseEventBatch } from "./comments.ts";
 import { isPlanVersion, serializePlanFile, validatePlan } from "./plan.ts";
 import {
   HEALTH_APP,
@@ -30,7 +31,7 @@ import {
   SessionFileError,
   SessionLockedError,
 } from "./session.ts";
-import type { HostedSummary, ServerRecord } from "./types.ts";
+import type { HostedSummary, PlanVersion, ServerEvent, ServerRecord } from "./types.ts";
 
 const RECORD = "server.json";
 const DEFAULT_IDLE_MS = 30_000;
@@ -128,7 +129,10 @@ function removeRecord(dir: string, pid: number): void {
   if (readServerRecord(dir)?.pid === pid) rmSync(join(dir, RECORD), { force: true });
 }
 
-async function loadHosted(registration: Registration): Promise<Loaded> {
+async function loadHosted(
+  registration: Registration,
+  held: Loaded["release"] | null,
+): Promise<Loaded> {
   const { dir, mode, version, hash, lockToken } = registration;
   try {
     const session = await openSessionAt(dir);
@@ -151,12 +155,25 @@ async function loadHosted(registration: Registration): Promise<Loaded> {
     }
     const reviewsDir = session.reviewsDir(mode);
     const comments = await loadDraftComments(reviewsDir, version);
+    const prior = session.priorReview(mode, version);
+    const previous =
+      prior === null || prior.comments.length === 0
+        ? null
+        : {
+            version: prior.planVersion,
+            comments: prior.comments,
+            responses: stored.file.responses,
+          };
     const command = mode === "walk" ? "walk" : "review";
-    const lock = lockToken === null ? session.lock(command) : session.adoptLock(lockToken, command);
+    // A version swap runs inside the server that already owns this session's lock.
+    const release =
+      held ??
+      (lockToken === null ? session.lock(command) : session.adoptLock(lockToken, command)).release;
     return {
       repo: session.root,
       reviewsDir,
-      release: lock.release,
+      release,
+      previous,
       state: {
         mode,
         anchor: session.anchor,
@@ -284,6 +301,87 @@ export async function registerWith(
   const summary = parseSummary(await call(port, "POST", "/api/sessions", registration));
   if (summary === null) throw new RegistrationError("the server answered with a malformed session");
   return summary;
+}
+
+/** Moves the hosted session to a newer frozen plan; its id and URL stay. */
+export async function swapVersion(
+  port: number,
+  summary: HostedSummary,
+  version: PlanVersion,
+  hash: string,
+): Promise<HostedSummary> {
+  const swapped = parseSummary(
+    await call(port, "POST", `${summary.url}api/version`, { version, hash }),
+  );
+  if (swapped === null) throw new RegistrationError("the server answered with a malformed session");
+  return swapped;
+}
+
+/** One long poll of the session's event log: what happened after `since`, or nothing at timeout. */
+export async function pollEvents(
+  port: number,
+  summary: HostedSummary,
+  since: number,
+  timeoutMs: number,
+) {
+  const path = `${summary.url}api/events?since=${since}&timeout=${timeoutMs}`;
+  const batch = parseEventBatch(await call(port, "GET", path));
+  if (typeof batch === "string")
+    throw new RegistrationError(`the server sent bad events: ${batch}`);
+  return batch;
+}
+
+/**
+ * Follows the session's event stream from `since`, calling `onEvent` for each event. Resolves when
+ * the server closes the stream, which it does after the `ended` event.
+ */
+export async function followEvents(
+  port: number,
+  summary: HostedSummary,
+  since: number,
+  onEvent: (event: ServerEvent) => void,
+): Promise<void> {
+  const res = await fetch(`${sessionUrl(port, summary)}api/events/stream?since=${since}`);
+  if (!res.ok || res.body === null) {
+    throw new RegistrationError(`GET api/events/stream failed with ${res.status}`);
+  }
+  const decoder = new TextDecoder();
+  const gap = "\n\n";
+  let buffer = "";
+  for await (const chunk of res.body) {
+    buffer += decoder.decode(chunk, { stream: true });
+    for (let end = buffer.indexOf(gap); end !== -1; end = buffer.indexOf(gap)) {
+      const frame = buffer.slice(0, end);
+      buffer = buffer.slice(end + 2);
+      const data = frame.split("\n").find((l) => l.startsWith("data: "));
+      if (data === undefined) continue;
+      const event = parseEvent(JSON.parse(data.slice(6)));
+      if (typeof event === "string")
+        throw new RegistrationError(`bad event on the stream: ${event}`);
+      onEvent(event);
+    }
+  }
+}
+
+/** Posts the agent's reply under a comment and returns the new reply's id. */
+export async function postReply(
+  port: number,
+  summary: HostedSummary,
+  commentId: string,
+  reply: NewReply,
+): Promise<string> {
+  const path = `${summary.url}api/comments/${encodeURIComponent(commentId)}/replies`;
+  const body = await call(port, "POST", path, reply);
+  const id = isFields(body) ? body["id"] : undefined;
+  if (typeof id !== "string") throw new RegistrationError("the server answered without a reply id");
+  return id;
+}
+
+/** The consolidated report of the hosted session as it stands. */
+export async function fetchReport(port: number, summary: HostedSummary): Promise<string> {
+  const res = await fetch(`${sessionUrl(port, summary)}api/report`);
+  if (!res.ok) throw new RegistrationError(`GET api/report failed with ${res.status}`);
+  return res.text();
 }
 
 export async function listSessions(port: number): Promise<readonly HostedSummary[]> {

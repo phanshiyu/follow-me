@@ -476,7 +476,7 @@ test("walk serves a frozen plan in walk mode and saves a code review on end", as
   assert.equal(review.planVersion, 1);
   assert.equal(
     run(repo.dir, "feedback", "--walk").out,
-    "# Code review\n\nThe reviewer left no comments.\n\nnext: hand this to the branch's author\n",
+    "# Code review: feature (1 commit, no issues)\n\nThe reviewer raised no issues.\n\nnext: hand this to the branch's author\n",
   );
 });
 
@@ -519,7 +519,7 @@ test("a reviewer walks a plan the author already reviewed, and feedback keeps th
   assert.equal(plan.out.includes("this reads well"), false);
   const code = run(repo.dir, "feedback", "--walk");
   assert.equal(code.code, 0, code.err);
-  assert.equal(code.out.split("\n")[0], "# Code review");
+  assert.equal(code.out.split("\n")[0], "# Code review: feature (1 commit, 1 issue: 1 unrated)");
   assert.equal(code.out.includes("this reads well"), true);
   assert.equal(code.out.includes("say what the guard is for"), false);
   assert.deepEqual(run(repo.dir, "status").out.split("\n").slice(6, 8), [
@@ -694,7 +694,7 @@ test("two worktrees of one repo apply their own splits at the same time", async 
   assert.equal(git(repo.dir, "fsck", "--connectivity-only", "--no-dangling"), "");
 });
 
-test("while the server hosts a review, apply waits and review prints the same page", async (t) => {
+test("while the server hosts a review, apply writes under the server and review prints the same page", async (t) => {
   const { run, spawnCli } = cliIn(t);
   const repo = makeFixtureRepo();
   t.after(repo.cleanup);
@@ -705,8 +705,10 @@ test("while the server hosts a review, apply waits and review prints the same pa
   const served = spawnCli(repo.dir, "review", "--no-open", "--port", "0");
   const url = await served.url;
   const pid = served.child.pid;
-  const busy = `follow-me: the session for feature is busy: pid ${pid} is running follow-me review; wait for it to finish or stop it\n`;
-  assert.deepEqual(run(repo.dir, "apply"), { code: 1, out: "", err: busy });
+  // The plan is unchanged, so apply writes the branch and finds the page already on v1.
+  const applied = run(repo.dir, "apply");
+  assert.equal(applied.code, 0, applied.err);
+  assert.ok(applied.out.includes(`plan v1 is already open: ${url}\n`));
   assert.deepEqual(run(repo.dir, "review", "--no-open"), {
     code: 0,
     out: `follow-me review: ${url}\nnext: end the review on the page, then follow-me feedback\n`,
@@ -915,4 +917,261 @@ test("server stop ends a detached server and releases the sessions it held", asy
   assert.equal(run(repo.dir, "status").out.split("\n")[2], "lock: free");
   assert.deepEqual(run(repo.dir, "server", "stop").out, "no server running\n");
   assert.deepEqual(run(repo.dir, "server", "status").out, "no server running\n");
+});
+
+const PLAN_COMMENT = {
+  anchor: { kind: "plan" },
+  context: { commitMessage: "", path: null },
+  body: "Why one big commit?",
+  kind: "question",
+};
+
+async function postJson(url: string, path: string, body: unknown): Promise<Response> {
+  return fetch(new URL(path, url), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+async function reviewing(t: TestContext) {
+  const cli = cliIn(t);
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  assert.equal(cli.run(repo.dir, "extract").code, 0);
+  const diff = await loadDiff(repo.dir, "main", "feature");
+  writeWholeDraft(repo.dir, repo.base, repo.branch, [...diff.units.keys()]);
+  const served = cli.spawnCli(repo.dir, "review", "--no-open", "--port", "0");
+  const url = await served.url;
+  const reviews = join(repo.dir, ".follow-me", "feature", "reviews");
+  return { ...cli, repo, diff, served, url, reviews };
+}
+
+test("watch prints what the reviewer does and exits 0, and exits 2 when nothing happens", async (t) => {
+  const { run, runAsync, repo, url } = await reviewing(t);
+
+  const quiet = run(repo.dir, "watch", "--timeout", "0.4");
+  assert.deepEqual(quiet, {
+    code: 2,
+    out: "",
+    err: "follow-me: nothing new on the review page since event 0\n",
+  });
+
+  const watching = runAsync(repo.dir, "watch", "--json", "--timeout", "20");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const created = await postJson(url, "api/comments", PLAN_COMMENT);
+  assert.equal(created.status, 201);
+  const { id } = JSON.parse(await created.text());
+  const seen = await watching;
+  assert.equal(seen.code, 0, seen.err);
+  const [line, ...more] = seen.out.trim().split("\n");
+  assert.deepEqual(more, []);
+  const event = JSON.parse(line ?? "");
+  assert.equal(event.seq, 1);
+  assert.equal(event.type, "comment");
+  assert.equal(event.comment.id, id);
+  assert.equal(event.comment.kind, "question");
+
+  const digest = run(repo.dir, "watch", "--since", "0");
+  assert.equal(digest.code, 0, digest.err);
+  assert.ok(
+    digest.out.startsWith(
+      `# Review activity (event 1)\n\n- new question ${id} on the whole plan\n`,
+    ),
+  );
+  assert.ok(digest.out.includes("  - Why one big commit?\n"));
+  assert.ok(digest.out.includes("next: follow-me reply <comment> --body <text>"));
+  assert.ok(digest.out.includes("follow-me watch --since 1"));
+  assert.equal(run(repo.dir, "watch", "--since", "x").code, 1);
+});
+
+test("reply answers under a comment, watch skips the agent's own words, report shows both voices", async (t) => {
+  const { run, repo, url, reviews, served } = await reviewing(t);
+  const { id } = JSON.parse(await (await postJson(url, "api/comments", PLAN_COMMENT)).text());
+
+  const file = join(repo.dir, "answer.mmd");
+  writeFileSync(file, "flowchart LR\n  draft --> plan\n");
+  const replied = run(
+    repo.dir,
+    "reply",
+    id,
+    "--body",
+    "Everything lands at once.",
+    "--diagram",
+    file,
+  );
+  assert.equal(replied.code, 0, replied.err);
+  assert.match(replied.out, new RegExp(`^replied r_[a-z2-7]{6} to ${id}\n`));
+  assert.equal(run(repo.dir, "reply", "c_zzzzzz", "--body", "x").code, 1);
+  assert.equal(run(repo.dir, "reply", id).code, 1);
+
+  const state = JSON.parse(await (await fetch(new URL("api/state", url))).text());
+  assert.equal(state.comments[0].replies[0].author, "agent");
+  assert.equal(state.comments[0].replies[0].diagram, "flowchart LR\n  draft --> plan\n");
+
+  // Event 1 is the comment and 2 the agent's reply; only the reviewer's words wake a watcher.
+  assert.equal(run(repo.dir, "watch", "--since", "1", "--timeout", "0.3").code, 2);
+  await postJson(url, `api/comments/${id}/replies`, { author: "reviewer", body: "Fair enough." });
+  const woken = run(repo.dir, "watch", "--since", "1", "--json", "--timeout", "5");
+  assert.equal(woken.code, 0, woken.err);
+  const news = woken.out
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l));
+  assert.deepEqual(
+    news.map((e) => [e.seq, e.type, e.reply.author]),
+    [[3, "reply", "reviewer"]],
+  );
+
+  const live = run(repo.dir, "report");
+  assert.equal(live.code, 0, live.err);
+  assert.ok(live.out.startsWith("# Review of plan v1\n"));
+  assert.ok(
+    live.out.includes(
+      `## Questions\n\n### ${id} · whole plan\n\nReviewer asked: Why one big commit?\n`,
+    ),
+  );
+  assert.ok(
+    live.out.includes(
+      "Agent replied: Everything lands at once.\n```mermaid\nflowchart LR\n  draft --> plan\n```\n",
+    ),
+  );
+  assert.ok(live.out.includes("Reviewer replied: Fair enough.\n"));
+
+  await fetch(new URL("api/end", url), { method: "POST" });
+  assert.deepEqual(await served.exited, [0, null]);
+
+  const saved = JSON.parse(readFileSync(join(reviews, "v1.json"), "utf8"));
+  assert.deepEqual(
+    saved.comments[0].replies.map((r: { author: string }) => r.author),
+    ["agent", "reviewer"],
+  );
+  const after = run(repo.dir, "report");
+  assert.equal(after.out, readFileSync(join(reviews, "v1.md"), "utf8"));
+  assert.equal(after.out, live.out);
+  assert.equal(run(repo.dir, "reply", id, "--body", "late").code, 1);
+});
+
+test("apply swaps the open page to the new plan in place and keeps the old comments", async (t) => {
+  const { run, repo, url, reviews, served, diff } = await reviewing(t);
+  const { id } = JSON.parse(await (await postJson(url, "api/comments", PLAN_COMMENT)).text());
+  const answer = { comment: id, status: "answered", note: "It is one idea.", at: { commit: 1 } };
+  const draftPath = join(repo.dir, ".follow-me", "feature", "draft.json");
+  const commits = [
+    {
+      message: "feat: everything",
+      narration: "I write it all at once.",
+      units: [...diff.units.keys()],
+    },
+  ];
+  writeFileSync(
+    draftPath,
+    JSON.stringify({
+      schema: "follow-me/plan@1",
+      base: repo.base,
+      tip: repo.branch,
+      commits,
+      responses: [answer],
+    }),
+  );
+
+  const checked = run(repo.dir, "check");
+  assert.equal(checked.code, 0, checked.out + checked.err);
+  assert.ok(!checked.out.includes("warning"));
+
+  const applied = run(repo.dir, "apply");
+  assert.equal(applied.code, 0, applied.err);
+  assert.ok(applied.out.includes(`\nfollow-me review: ${url}\n`));
+  assert.ok(applied.out.includes("the page now shows plan v2; the comments on v1 are saved\n"));
+  assert.ok(applied.out.endsWith("next: follow-me watch\n"));
+
+  const state = JSON.parse(await (await fetch(new URL("api/state", url))).text());
+  assert.equal(state.version, 2);
+  assert.deepEqual(state.comments, []);
+  assert.equal(state.previous.version, 1);
+  assert.equal(state.previous.comments[0].id, id);
+  assert.deepEqual(state.previous.responses, [answer]);
+
+  const old = JSON.parse(readFileSync(join(reviews, "v1.json"), "utf8"));
+  assert.equal(old.mode, "split");
+  assert.equal(old.comments[0].id, id);
+  assert.equal(existsSync(join(reviews, "v1.draft.json")), false);
+  const events = JSON.parse(
+    await (await fetch(new URL("api/events?since=1&timeout=10", url))).text(),
+  );
+  assert.deepEqual(
+    events.events.map((e: { type: string }) => e.type),
+    ["version"],
+  );
+
+  // The same plan again changes nothing, and the server still owns the session.
+  const again = run(repo.dir, "apply");
+  assert.equal(again.code, 0, again.err);
+  assert.ok(again.out.includes(`plan v2 is already open: ${url}\n`));
+  assert.ok(run(repo.dir, "status").out.includes(`review page: ${url}`));
+
+  await fetch(new URL("api/end", url), { method: "POST" });
+  assert.deepEqual(await served.exited, [0, null]);
+  assert.equal(JSON.parse(readFileSync(join(reviews, "v2.json"), "utf8")).comments.length, 0);
+});
+
+test("check counts the agent's concerns by severity and refuses a second one on a unit", async (t) => {
+  const { run } = cliIn(t);
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  assert.equal(run(repo.dir, "extract").code, 0);
+  const diff = await loadDiff(repo.dir, "main", "feature");
+  const all = [...diff.units.keys()];
+  const draftPath = join(repo.dir, ".follow-me", "feature", "draft.json");
+  const planWith = (concerns: unknown[]) =>
+    JSON.stringify({
+      schema: "follow-me/plan@1",
+      base: repo.base,
+      tip: repo.branch,
+      commits: [
+        {
+          message: "feat: everything",
+          concerns: [{ severity: "minor", kind: "naming", text: "The title is vague." }],
+          units: all.map((u, i) => (i === 0 ? { unit: u, concerns } : u)),
+        },
+      ],
+      responses: [],
+    });
+  const one = { severity: "blocker", kind: "bug", text: "div never checks b." };
+
+  writeFileSync(draftPath, planWith([one]));
+  const ok = run(repo.dir, "check");
+  assert.equal(ok.code, 0, ok.out + ok.err);
+  assert.ok(ok.out.includes("\nconcerns: 1 blocker, 1 minor\n"));
+
+  writeFileSync(draftPath, planWith([one, { ...one, text: "and add never checks a." }]));
+  const two = run(repo.dir, "check");
+  assert.equal(two.code, 1);
+  assert.ok(two.out.includes(`${all[0]} has more than one concern, in commits 0;`));
+});
+
+test("watch --follow --json prints every event until the review ends, then exits 0", async (t) => {
+  const { runAsync, repo, url, served } = await reviewing(t);
+  await postJson(url, "api/comments", PLAN_COMMENT);
+  const following = runAsync(repo.dir, "watch", "--follow", "--json");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  await postJson(url, "api/comments", { ...PLAN_COMMENT, body: "And the second?" });
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  await fetch(new URL("api/end", url), { method: "POST" });
+  const seen = await following;
+  assert.equal(seen.code, 0, seen.err);
+  const events = seen.out
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l));
+  assert.deepEqual(
+    events.map((e) => [e.seq, e.type]),
+    [
+      [1, "comment"],
+      [2, "comment"],
+      [3, "ended"],
+    ],
+  );
+  assert.equal(events[1].comment.body, "And the second?");
+  assert.deepEqual(await served.exited, [0, null]);
 });

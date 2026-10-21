@@ -29,18 +29,35 @@ export class PlanRequestError extends Error {
 }
 
 const optionalText = { anyOf: [{ type: "string" }, { type: "null" }] };
+const concern = {
+  type: "object",
+  properties: {
+    severity: { type: "string", enum: ["blocker", "major", "minor"] },
+    kind: { type: "string", enum: ["bug", "missing-test", "naming", "risk"] },
+    text: { type: "string" },
+    lines: { anyOf: [{ type: "array", items: { type: "integer" } }, { type: "null" }] },
+  },
+  required: ["severity", "kind", "text", "lines"],
+  additionalProperties: false,
+};
+const concerns = { anyOf: [{ type: "array", items: concern }, { type: "null" }] };
 const annotatedUnit = {
   type: "object",
-  properties: { unit: { type: "string" }, narration: optionalText, diagram: optionalText },
-  required: ["unit", "narration", "diagram"],
+  properties: {
+    unit: { type: "string" },
+    narration: optionalText,
+    diagram: optionalText,
+    concerns,
+  },
+  required: ["unit", "narration", "diagram", "concerns"],
   additionalProperties: false,
 };
 const unitList = { type: "array", items: { anyOf: [{ type: "string" }, annotatedUnit] } };
 
 /**
  * Mirrors PlanFile on the wire. Structured outputs need every property required and closed
- * objects, so narration and diagram are nullable instead of optional; the plan parser reads null
- * as none.
+ * objects, so narration, diagram, concerns and a response's `at` are nullable instead of
+ * optional; the plan parser reads null as none.
  */
 export const PLAN_SCHEMA = {
   type: "object",
@@ -56,9 +73,10 @@ export const PLAN_SCHEMA = {
           message: { type: "string" },
           narration: optionalText,
           diagram: optionalText,
+          concerns,
           units: unitList,
         },
-        required: ["message", "narration", "diagram", "units"],
+        required: ["message", "narration", "diagram", "concerns", "units"],
         additionalProperties: false,
       },
     },
@@ -68,10 +86,21 @@ export const PLAN_SCHEMA = {
         type: "object",
         properties: {
           comment: { type: "string" },
-          status: { type: "string", enum: ["addressed", "declined", "deferred"] },
+          status: { type: "string", enum: ["addressed", "declined", "deferred", "answered"] },
           note: { type: "string" },
+          at: {
+            anyOf: [
+              {
+                type: "object",
+                properties: { commit: { type: "integer" }, unit: optionalText },
+                required: ["commit", "unit"],
+                additionalProperties: false,
+              },
+              { type: "null" },
+            ],
+          },
         },
-        required: ["comment", "status", "note"],
+        required: ["comment", "status", "note", "at"],
         additionalProperties: false,
       },
     },

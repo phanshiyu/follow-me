@@ -12,7 +12,7 @@ import {
   sessionIdOf,
   startServer,
 } from "./server.ts";
-import type { Review } from "./types.ts";
+import type { PreviousVersion, Review } from "./types.ts";
 
 const HUNK_A = "h_aaaaaaaaaaaa";
 const HUNK_B = "h_bbbbbbbbbbbb";
@@ -125,6 +125,7 @@ function fixedLoader(states: ReadonlyMap<string, ReviewState>, released: string[
       reviewsDir: join(r.dir, "reviews"),
       state,
       release: () => released.push(r.dir),
+      previous: null,
     };
   };
 }
@@ -451,4 +452,410 @@ test("a taken port is reported as PortInUseError", async (t) => {
     startServer({ port: first.port, idleMs: 0, load: fixedLoader(new Map()) }),
     (error: unknown) => error instanceof PortInUseError && error.port === first.port,
   );
+});
+
+const CONCERN = "k_0a1b2c3d";
+
+/** The two-commit state with one agent concern on the first commit's first hunk. */
+function stateWithConcern(): ReviewState {
+  const state = twoCommitState();
+  return JSON.parse(
+    JSON.stringify({
+      ...state,
+      commits: state.commits.map((c, i) =>
+        i === 0
+          ? {
+              ...c,
+              concerns: [
+                {
+                  id: CONCERN,
+                  unit: HUNK_A,
+                  severity: "major",
+                  kind: "bug",
+                  text: "old1 is dropped without its guard.",
+                  lines: [1],
+                },
+              ],
+            }
+          : c,
+      ),
+    }),
+  );
+}
+
+/** A loader whose state follows the registered version, as the real one's does. */
+function versionedLoader(released: string[], refuse = 0): Loader {
+  return async (r, held) => {
+    if (r.version === refuse) throw new RegistrationError(`plan v${r.version} no longer fits`);
+    // JSON.parse is the only brand-free way to build branded literals without a cast.
+    const previous: PreviousVersion | null =
+      r.version > 3
+        ? JSON.parse(
+            JSON.stringify({
+              version: 3,
+              comments: [],
+              responses: [{ comment: "c_abcdef", status: "answered", note: "see v4" }],
+            }),
+          )
+        : null;
+    return {
+      repo: "/repo",
+      reviewsDir: join(r.dir, "reviews"),
+      state: { ...twoCommitState(), version: r.version, planHash: r.hash },
+      release: held ?? (() => released.push(r.dir)),
+      previous,
+    };
+  };
+}
+
+async function startVersioned(t: TestContext, refuse = 0) {
+  const dir = await tempDir(t);
+  const released: string[] = [];
+  const host = await serve(t, versionedLoader(released, refuse));
+  const { summary, done } = await host.register(registration(dir));
+  const url = new URL(summary.url, host.url).href;
+  return { url, dir, reviews: join(dir, "reviews"), host, done, released };
+}
+
+async function eventsOf(url: string, since: number, timeout: number) {
+  return jsonOf(await fetch(new URL(`api/events?since=${since}&timeout=${timeout}`, url)));
+}
+
+test("events: a poll returns at once when news exists, wakes on news and times out empty", async (t) => {
+  const run = await start(t, stateWithConcern());
+  assert.deepEqual(await eventsOf(run.url, 0, 50), { seq: 0, events: [] });
+
+  const waiting = eventsOf(run.url, 0, 20_000);
+  const { id } = await jsonOf(await post(run.url, "api/comments", newComment("why drop old1?")));
+  const woken = await waiting;
+  assert.equal(woken.seq, 1);
+  assert.deepEqual(
+    woken.events.map((e: { seq: number; type: string }) => [e.seq, e.type]),
+    [[1, "comment"]],
+  );
+  assert.equal(woken.events[0].comment.id, id);
+
+  // News after `since` is returned without waiting, so a long timeout costs nothing.
+  const edited = {
+    id,
+    ...newComment("why drop old1 here?"),
+    createdAt: "2026-01-01T00:00:00.000Z",
+  };
+  await fetch(new URL(`api/comments/${id}`, run.url), {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(edited),
+  });
+  await post(run.url, `api/comments/${id}/replies`, { author: "agent", body: "see the guard" });
+  await post(run.url, `api/concerns/${CONCERN}`, {
+    decision: "kept",
+    severity: "blocker",
+    note: "yes",
+  });
+  await fetch(new URL(`api/comments/${id}`, run.url), { method: "DELETE" });
+  const all = await eventsOf(run.url, 0, 60_000);
+  assert.deepEqual(
+    all.events.map((e: { seq: number; type: string }) => [e.seq, e.type]),
+    [
+      [1, "comment"],
+      [2, "comment-updated"],
+      [3, "reply"],
+      [4, "concern"],
+      [5, "comment-deleted"],
+    ],
+  );
+  assert.equal(all.seq, 5);
+  assert.equal(all.events[2].commentId, id);
+  assert.equal(all.events[2].reply.author, "agent");
+  assert.deepEqual(
+    { ...all.events[3], seq: 0 },
+    {
+      seq: 0,
+      type: "concern",
+      concernId: CONCERN,
+      decision: "kept",
+      severity: "blocker",
+      note: "yes",
+    },
+  );
+  assert.deepEqual(all.events[4], { seq: 5, type: "comment-deleted", id });
+  assert.deepEqual(
+    (await eventsOf(run.url, 3, 60_000)).events.map((e: { seq: number }) => e.seq),
+    [4, 5],
+  );
+
+  const ending = eventsOf(run.url, 5, 20_000);
+  await post(run.url, "api/end", {});
+  const last = await ending;
+  assert.deepEqual(last.events, [{ seq: 6, type: "ended", review: join(run.dir, "v3.json") }]);
+});
+
+test("events: a bad cursor or timeout is refused", async (t) => {
+  const run = await start(t, twoCommitState());
+  for (const query of ["since=-1", "since=x", "timeout=-5", "timeout="]) {
+    const res = await fetch(new URL(`api/events?${query}`, run.url));
+    assert.equal(res.status, 400, query);
+  }
+  const ahead = await fetch(new URL("api/events?since=9&timeout=10", run.url));
+  assert.equal(ahead.status, 409);
+});
+
+test("a reply lives on its comment, survives the page's edits and lands in the saved review", async (t) => {
+  const run = await start(t, twoCommitState());
+  const { id } = await jsonOf(await post(run.url, "api/comments", newComment("why drop old1?")));
+
+  const diagram = "flowchart LR\n  a --> b";
+  const res = await post(run.url, `api/comments/${id}/replies`, {
+    author: "agent",
+    body: "It is replaced one line later.",
+    diagram,
+  });
+  assert.equal(res.status, 201);
+  const reply = await jsonOf(res);
+  assert.match(reply.id, /^r_[a-z2-7]{6}$/);
+  await post(run.url, `api/comments/${id}/replies`, { author: "reviewer", body: "ok, thanks" });
+
+  const state = await jsonOf(await fetch(new URL("api/state", run.url)));
+  assert.deepEqual(
+    state.comments[0].replies.map((r: { author: string; body: string }) => [r.author, r.body]),
+    [
+      ["agent", "It is replaced one line later."],
+      ["reviewer", "ok, thanks"],
+    ],
+  );
+  assert.equal(state.comments[0].replies[0].diagram, diagram);
+
+  // The page's copy of the comment has no replies; saving it must not erase the conversation.
+  const stale = { id, ...newComment("why drop old1 here?"), createdAt: "2026-01-01T00:00:00.000Z" };
+  const put = await fetch(new URL(`api/comments/${id}`, run.url), {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(stale),
+  });
+  assert.equal((await jsonOf(put)).replies.length, 2);
+
+  const draft = JSON.parse(await readFile(join(run.dir, "v3.draft.json"), "utf8"));
+  assert.equal(draft.comments[0].replies[0].id, reply.id);
+
+  await post(run.url, "api/end", {});
+  await run.done;
+  const saved = JSON.parse(await readFile(join(run.dir, "v3.json"), "utf8"));
+  assert.equal(saved.comments[0].body, "why drop old1 here?");
+  assert.deepEqual(
+    saved.comments[0].replies.map((r: { author: string }) => r.author),
+    ["agent", "reviewer"],
+  );
+});
+
+test("a malformed reply gets 400 and an unknown comment 404", async (t) => {
+  const run = await start(t, twoCommitState());
+  const { id } = await jsonOf(await post(run.url, "api/comments", newComment("q")));
+  const attempts: unknown[] = [
+    { author: "robot", body: "x" },
+    { author: "agent", body: "  " },
+    { author: "agent", body: 3 },
+    { author: "agent", body: "x", diagram: "just words" },
+    "text",
+  ];
+  for (const body of attempts) {
+    assert.equal((await post(run.url, `api/comments/${id}/replies`, body)).status, 400);
+  }
+  const missing = await post(run.url, "api/comments/c_zzzzzz/replies", {
+    author: "agent",
+    body: "x",
+  });
+  assert.equal(missing.status, 404);
+  const state = await jsonOf(await fetch(new URL("api/state", run.url)));
+  assert.equal(state.comments[0].replies, undefined);
+});
+
+test("concern decisions and questions reach the saved review, the report and its markdown file", async (t) => {
+  const run = await start(t, stateWithConcern());
+  const initial = await jsonOf(await fetch(new URL("api/state", run.url)));
+  assert.equal(initial.commits[0].concerns[0].id, CONCERN);
+  assert.deepEqual(initial.concerns, []);
+  assert.equal(initial.previous, null);
+  assert.equal(initial.seq, 0);
+
+  for (const body of [{ decision: "maybe" }, { decision: "kept", severity: "huge" }, "kept"]) {
+    assert.equal((await post(run.url, `api/concerns/${CONCERN}`, body)).status, 400);
+  }
+  assert.equal((await post(run.url, "api/concerns/k_ffffffff", { decision: "kept" })).status, 404);
+  const decided = await post(run.url, `api/concerns/${CONCERN}`, {
+    decision: "kept",
+    severity: "blocker",
+    note: "Agreed.",
+  });
+  assert.equal(decided.status, 200);
+  await post(run.url, "api/comments", {
+    ...newComment("why drop old1?"),
+    kind: "question",
+    context: { commitMessage: "add parser", path: "src/a.ts", lines: ["-old1", "+new1"] },
+  });
+
+  const md = await fetch(new URL("api/report", run.url));
+  assert.equal(md.status, 200);
+  assert.match(md.headers.get("content-type") ?? "", /^text\/markdown/);
+  const live = await md.text();
+  assert.ok(
+    live.includes("### line 1 · blocker · bug · raised by the agent, kept by the reviewer"),
+  );
+  assert.ok(live.includes("Agent: old1 is dropped without its guard.\nReviewer: Agreed."));
+  assert.ok(live.includes("Reviewer asked: why drop old1?"));
+
+  const draft = JSON.parse(await readFile(join(run.dir, "v3.draft.json"), "utf8"));
+  assert.deepEqual(draft.concerns, [
+    { concern: CONCERN, decision: "kept", severity: "blocker", note: "Agreed." },
+  ]);
+
+  await post(run.url, "api/end", {});
+  await run.done;
+  const saved = JSON.parse(await readFile(join(run.dir, "v3.json"), "utf8"));
+  assert.deepEqual(saved.concerns, draft.concerns);
+  assert.equal(saved.comments[0].kind, "question");
+  assert.deepEqual(saved.comments[0].context.lines, ["-old1", "+new1"]);
+  const file = await readFile(join(run.dir, "v3.md"), "utf8");
+  assert.ok(file.startsWith("# Review of plan v3\n"));
+  assert.ok(file.includes("## Code issues (1 issue: 1 blocker)"));
+});
+
+test("a version swap keeps the URL, finalizes the old draft and starts a fresh comment set", async (t) => {
+  const run = await startVersioned(t);
+  const { id } = await jsonOf(await post(run.url, "api/comments", newComment("why drop old1?")));
+  await post(run.url, `api/comments/${id}/replies`, { author: "agent", body: "on it" });
+
+  const swapped = await post(run.url, "api/version", { version: 4, hash: "hash-of-v4" });
+  assert.equal(swapped.status, 200);
+  const summary = await jsonOf(swapped);
+  assert.equal(new URL(summary.url, run.host.url).href, run.url);
+  assert.equal(summary.version, 4);
+  assert.equal(run.host.sessions().length, 1);
+  assert.deepEqual(run.released, [], "the lock moves with the session, it is not released");
+
+  const state = await jsonOf(await fetch(new URL("api/state", run.url)));
+  assert.equal(state.version, 4);
+  assert.equal(state.planHash, "hash-of-v4");
+  assert.deepEqual(state.comments, []);
+  assert.equal(state.previous.version, 3);
+  assert.equal(state.previous.responses[0].status, "answered");
+  assert.equal(state.seq, 3);
+
+  const old = JSON.parse(await readFile(join(run.reviews, "v3.json"), "utf8"));
+  assert.equal(old.mode, "split");
+  assert.equal(old.planVersion, 3);
+  assert.equal(old.comments[0].id, id);
+  assert.equal(old.comments[0].replies[0].body, "on it");
+  assert.ok((await readFile(join(run.reviews, "v3.md"), "utf8")).startsWith("# Review of plan v3"));
+  await assert.rejects(stat(join(run.reviews, "v3.draft.json")), { code: "ENOENT" });
+
+  const events = await eventsOf(run.url, 2, 10);
+  assert.deepEqual(events.events, [{ seq: 3, type: "version", version: 4, hash: "hash-of-v4" }]);
+
+  // New comments belong to v4, and a swap with nothing said writes no review.
+  const next = await jsonOf(await post(run.url, "api/comments", newComment("and now?")));
+  assert.ok((await readFile(join(run.reviews, "v4.draft.json"), "utf8")).includes(next.id));
+  await post(run.url, "api/end", {});
+  await run.done;
+  assert.deepEqual(run.released, [run.dir]);
+  assert.equal(JSON.parse(await readFile(join(run.reviews, "v4.json"), "utf8")).planVersion, 4);
+});
+
+test("a swap with nothing said writes no review, and bad swaps change nothing", async (t) => {
+  const run = await startVersioned(t, 9);
+  assert.equal((await post(run.url, "api/version", { version: 4, hash: "h4" })).status, 200);
+  await assert.rejects(stat(join(run.reviews, "v3.json")), { code: "ENOENT" });
+  await assert.rejects(stat(join(run.reviews, "v3.draft.json")), { code: "ENOENT" });
+
+  const noop = await post(run.url, "api/version", { version: 4, hash: "h4" });
+  assert.equal(noop.status, 200);
+  assert.equal((await eventsOf(run.url, 0, 10)).seq, 1, "no second version event");
+  const attempts: [unknown, number][] = [
+    [{ version: 4, hash: "other" }, 409],
+    [{ version: 3, hash: "old" }, 409],
+    [{ version: 9, hash: "gone" }, 409],
+    [{ version: 0, hash: "x" }, 400],
+    [{ version: 5 }, 400],
+    ["v5", 400],
+  ];
+  for (const [body, status] of attempts) {
+    assert.equal((await post(run.url, "api/version", body)).status, status, JSON.stringify(body));
+  }
+  const state = await jsonOf(await fetch(new URL("api/state", run.url)));
+  assert.equal(state.version, 4);
+});
+
+/** Reads data frames from an event stream until `count` arrived or the stream closed. */
+async function frames(res: Response, count: number) {
+  const reader = res.body?.getReader();
+  assert.ok(reader, "the stream has a body");
+  const decoder = new TextDecoder();
+  let text = "";
+  let closed = false;
+  while (text.split("\n\n").filter((f) => f.includes("data: ")).length < count) {
+    const { done, value } = await reader.read();
+    if (done) {
+      closed = true;
+      break;
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  if (!closed) {
+    // Whether the server closes the stream is part of what callers assert.
+    const next = await Promise.race([
+      reader.read(),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 300)),
+    ]);
+    closed = next?.done === true;
+  }
+  const events = text
+    .split("\n\n")
+    .flatMap((f) => (f.includes("data: ") ? [f] : []))
+    .map((f) => ({
+      id: /^id: (\d+)$/m.exec(f)?.[1],
+      data: JSON.parse(/^data: (.*)$/m.exec(f)?.[1] ?? "null"),
+    }));
+  return { events, closed, text };
+}
+
+test("the event stream replays, pushes new events and closes after the end", async (t) => {
+  const run = await start(t, twoCommitState());
+  await post(run.url, "api/comments", newComment("first"));
+
+  const res = await fetch(new URL("api/events/stream?since=0", run.url));
+  assert.match(res.headers.get("content-type") ?? "", /^text\/event-stream/);
+  const pushed = (async () => {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await post(run.url, "api/comments", newComment("second"));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await post(run.url, "api/end", {});
+  })();
+  const seen = await frames(res, 3);
+  await pushed;
+  assert.deepEqual(
+    seen.events.map((e) => [e.id, e.data.type]),
+    [
+      ["1", "comment"],
+      ["2", "comment"],
+      ["3", "ended"],
+    ],
+  );
+  assert.equal(seen.events[0]?.data.comment.body, "first");
+  assert.equal(seen.events[1]?.data.comment.body, "second");
+  assert.ok(seen.closed, "the stream closes after the ended event");
+});
+
+test("a reconnecting stream resumes after Last-Event-ID, and a cursor ahead is refused", async (t) => {
+  const run = await start(t, twoCommitState());
+  await post(run.url, "api/comments", newComment("first"));
+  await post(run.url, "api/comments", newComment("second"));
+  const res = await fetch(new URL("api/events/stream", run.url), {
+    headers: { "last-event-id": "1" },
+  });
+  const seen = await frames(res, 1);
+  assert.deepEqual(
+    seen.events.map((e) => e.id),
+    ["2"],
+  );
+  assert.equal((await fetch(new URL("api/events/stream?since=9", run.url))).status, 409);
+  assert.equal((await fetch(new URL("api/events/stream?since=x", run.url))).status, 400);
 });

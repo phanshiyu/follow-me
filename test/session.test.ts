@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { parseReview } from "../src/comments.ts";
 import { PLAN_SCHEMA, validatePlan } from "../src/plan.ts";
 import {
   BranchMovedError,
@@ -20,7 +21,6 @@ import {
   isLockToken,
   openSession,
   openSessionAt,
-  parseReview,
   SessionFileError,
   SessionLockedError,
 } from "../src/session.ts";
