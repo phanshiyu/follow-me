@@ -106,8 +106,8 @@ export type Selection =
   | { readonly kind: "rest" }
   | { readonly kind: "lines"; readonly changes: readonly number[] };
 /**
- * narration is what the author is thinking as this unit is written, spoken during playback.
- * diagram is Mermaid source the page draws beside the code while playback is on this unit.
+ * narration is the agent's note on why this unit is written the way it is.
+ * diagram is Mermaid source the page draws under this unit's lines.
  */
 export type UnitRef = {
   readonly unit: UnitId;
@@ -140,8 +140,8 @@ export type PlacedConcern = Concern & {
 };
 
 /**
- * narration is the author thinking aloud while writing this commit: first person, present tense.
- * diagram is Mermaid source for the shape the commit builds, drawn beside its code.
+ * narration is the agent's note on why this commit exists, shown beside its message.
+ * diagram is Mermaid source for the shape the commit builds, drawn under its header.
  */
 export type PlannedCommit = {
   readonly message: string;

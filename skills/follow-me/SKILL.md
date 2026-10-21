@@ -1,6 +1,6 @@
 ---
 name: follow-me
-description: Split the current branch's net change into fine, story-ordered commits that read like the author's thought process, then hand them to a human for hunk-by-hunk review. Also plans a narrated walk-through of someone else's branch for a reviewer. Use when the user asks to clean up, reorder, split or "tell the story" of a branch's commits, to walk through or review a branch, or to act on a follow-me review or code review.
+description: Split the current branch's net change into fine, story-ordered commits that read like the author's thought process, then hand them to a human for hunk-by-hunk review. Also reads someone else's branch with the user and carries a review to the merge request. Use when the user asks to clean up, reorder, split or "tell the story" of a branch's commits, to walk through or review a branch, or to act on a follow-me review or code review.
 ---
 
 # follow-me
@@ -25,13 +25,13 @@ Run every command from the repo root. If `follow-me` is not on PATH, ask the use
 6. Tell the user to run `follow-me review`. It opens a local page where they comment on messages,
    positions, hunks and single lines. If you start it yourself, use `follow-me review --wait --no-open`,
    which prints the page URL to give the user and returns once they end the review, so you can go
-   straight on to `follow-me feedback`; one server hosts every session the user has open.
+   straight on to `follow-me report`; one server hosts every session the user has open.
 
 ## After a review
 
 When the user says they finished reviewing:
 
-1. `follow-me feedback` prints the review as markdown. Every comment has an id like `c_abc234`.
+1. `follow-me report` prints the review as markdown. Every comment has an id like `c_abc234`.
 2. `follow-me prompt` now includes the previous plan and the open comments. Write a new draft that
    changes the plan where you agree and lists one entry per comment in `responses`:
    `{ "comment": "c_abc234", "status": "addressed" | "declined" | "deferred", "note": "..." }`.
@@ -40,29 +40,56 @@ When the user says they finished reviewing:
 
 ## As a reviewer
 
-`follow-me walk` is for someone reading a branch they did not write. It plays the branch back
-commit by commit in the browser, one chunk of change at a time: it reads your narration aloud,
-then shows the lines it explains. The reviewer comments on the code. Nothing is applied and no branch is written.
+When the branch is someone else's, `follow-me review` reads it with the user instead of splitting
+it: nothing is applied and no branch is written. The user reads the commits in order and comments
+on the code.
 
-1. `follow-me walk [--branch <name>]` opens the session. If there is no plan yet, it
+1. `follow-me review [--branch <name>]` opens the session. If there is no plan yet, it
    prints two commands and stops. Run the first, `follow-me prompt --walk`, and read all of it.
-2. Write the draft it names. The order rules are the same, and every commit also gets a
-   `narration`: what the author is thinking while writing it, first person, present tense, two or
-   three sentences, no markdown. Give a unit narration as `{ "unit": "h_x:0-3", "narration": "..." }`
-   when the why of that hunk is not obvious from the commit's narration. Narration is spoken, so
-   it names no symbols the listener has to see spelled out and never describes a picture.
-   Optionally add a `diagram`, Mermaid source drawn beside the code, to a commit or a unit
+2. Write the draft it names. The order rules are the same. Put the why in each commit message body.
+   Add a `narration` (the page shows it as your note) to a commit, or to a unit as
+   `{ "unit": "h_x:0-3", "narration": "..." }`, only where it says something the body does not:
+   one plain paragraph on why, no markdown.
+   Optionally add a `diagram`, Mermaid source drawn under the lines, to a commit or a unit
    (`{ "unit": "h_x", "diagram": "flowchart LR\n  a --> b" }`). Use one only for what prose
    carries badly: data flow between modules, a state machine, a call graph, or the before and
    after shape of a structure. Most commits need none. Its first line must name the diagram type,
    such as `flowchart`, `sequenceDiagram` or `stateDiagram-v2`; `follow-me check` rejects others.
-3. `follow-me check` until green, then tell the user to run `follow-me walk` again. Do not apply.
+3. `follow-me check` until green, then `follow-me review` again. Do not apply.
 
-When you are the author's agent and `follow-me feedback --walk` prints a `# Code review`, the review
-came from a walk. It quotes each commented line as a diff excerpt with its line number on the
-branch. Address every item in the code on the branch itself, then tell the user what you changed
-and what you declined and why. Do not write a follow-me draft or `responses` for it; those answer
-plan reviews only.
+When you are the author's agent and `follow-me report` prints a `# Code review`, it quotes each
+commented line as a diff excerpt with its line number on the branch. Address every item in the
+code on the branch itself, then tell the user what you changed and what you declined and why. Do
+not write a follow-me draft or `responses` for it; those answer plan reviews only.
+
+## Porting a review
+
+When the user asks you to post the review to a merge request or pull request:
+
+1. Run `follow-me report --json`. It prints an array of items: `path`, `oldPath`, `newLine`,
+   `oldLine`, `startNewLine`, `startOldLine`, `severity`, `kind` (`flag`, `concern` or
+   `question`), `body` (markdown, ready to post), `thread`, `resolved` and `excluded`. Lines are the
+   branch tip's, or the base's for a removed line. Skip every item with `excluded: true`. Tell the
+   user how many items there are and read out their first lines. Ask which merge request or pull
+   request, and whether to post. Never post without a yes.
+2. Find the target with the user's own CLI: `glab mr view <iid> --output json` (see `diff_refs`) or
+   `gh pr view <n> --json headRefOid,baseRefName`. Its head must equal the tip on the first line of
+   `follow-me status`. If it does not, say so and stop: the line numbers would be wrong.
+3. GitHub: build one review and post it once with
+   `gh api repos/{owner}/{repo}/pulls/<n>/reviews --input review.json` and `"event": "COMMENT"`.
+   Each item goes in `comments[]` with `path`, `body`, and `line` = `newLine` with `side` = `RIGHT`,
+   or `line` = `oldLine` with `side` = `LEFT`; add `start_line` and `start_side` for a range. Items
+   with no `path` go in the review `body`. Never use `APPROVE` or `REQUEST_CHANGES` unless asked.
+4. GitLab: post one discussion per item with
+   `glab api --method POST projects/:id/merge_requests/<iid>/discussions` and
+   `position[position_type]=text`. Take `base_sha`, `start_sha` and `head_sha` from `diff_refs`, and
+   set `new_path`, `old_path`, `new_line` and `old_line` from the item: `new_line` for an added
+   line, `old_line` for a removed line, both for a context line. Items with no `path` go with
+   `glab mr note`.
+5. Report what was posted, with links, and anything that failed. Do not retry blindly.
+
+follow-me never stores, reads or asks for a token. `gh` and `glab` hold the credentials, and you run
+them from your harness.
 
 ## Rules
 
@@ -94,5 +121,5 @@ closing the page. Everything goes through the review server.
    raised, by file and line, with questions and answers last. It is also saved as
    `.follow-me/<slug>/reviews/vN.md`. Give it to the author.
 
-In a walk you may also raise `concerns` (see `follow-me prompt --walk`); the reviewer keeps or dismisses
+In a reviewer's session you may also raise `concerns` (see `follow-me prompt --walk`); the reviewer keeps or dismisses
 each, and only kept ones reach the report.

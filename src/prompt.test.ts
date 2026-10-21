@@ -252,7 +252,7 @@ test("feedback is a markdown digest grouped by plan, then commit", () => {
   );
 });
 
-test("the walk prompt writes for a first-time reviewer and asks for narration", () => {
+test("the walk prompt writes for a first-time reviewer and asks for a note only where it adds", () => {
   const walk = renderPrompt({
     mode: "walk",
     diff: fixtureDiff(),
@@ -262,14 +262,15 @@ test("the walk prompt writes for a first-time reviewer and asks for narration", 
   assert.ok(walk.startsWith("# follow-me: tell the story of this branch\n"));
   assert.ok(
     walk.includes(
-      "The reader is a reviewer meeting this branch for the first time. They will watch it\nbeing written commit by commit,",
+      "The reader is a reviewer meeting this branch for the first time. They will read it commit\nby commit",
     ),
   );
-  assert.ok(walk.includes("Give every commit a `narration`."));
-  assert.ok(walk.includes("wherever the why of that hunk is not\nobvious"));
   assert.ok(
-    walk.includes("keyboard: first person, present tense, two or three sentences, no markdown."),
+    walk.includes("Add a `narration` to a commit, or to a unit, only when it says something"),
   );
+  assert.ok(walk.includes("A note is one plain paragraph on why"));
+  assert.ok(walk.includes("Put the why in the body first"));
+  assert.doesNotMatch(walk, /aloud|playback|first person|spoken/i);
   assert.ok(walk.includes("Check your work with `follow-me check --branch pr-7`"));
   assert.ok(walk.includes("[3]+ new2"));
   assert.ok(
@@ -280,7 +281,7 @@ test("the walk prompt writes for a first-time reviewer and asks for narration", 
   assert.ok(!split.includes("reviewer meeting this branch"));
 });
 
-test("both prompts explain the optional Mermaid diagram and keep narration plain", () => {
+test("both prompts explain the optional Mermaid diagram and keep the note plain", () => {
   const prompts = {
     split: renderPrompt(first),
     walk: renderPrompt({ mode: "walk", diff: fixtureDiff(), draftPath: "/d", checkCommand: "c" }),
@@ -289,7 +290,7 @@ test("both prompts explain the optional Mermaid diagram and keep narration plain
     assert.ok(text.includes('`{ "unit": "<ref>", "diagram": "..." }`'), mode);
     assert.ok(text.includes('"diagram": "flowchart LR\\n  parse --> validate --> apply"'), mode);
     assert.ok(text.includes("a state machine, a call graph, or the before and after shape"), mode);
-    assert.ok(text.includes("Narration stays plain text even when a diagram is present"), mode);
+    assert.ok(text.includes("The note stays plain text even when a diagram is present"), mode);
   }
 });
 

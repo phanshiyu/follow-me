@@ -249,9 +249,9 @@ function renderComment(comment: Comment, ctx: Context): string {
   return lines.join("\n");
 }
 
-const QUESTIONS = `A question is not a request to change the plan. Answer it by explaining, not by moving lines. Where the asked-about lines now live, add or rewrite the \`narration\` of that commit or unit so it answers the question, in plain spoken sentences. When the answer is about flow, structure or order across files, add a \`diagram\` there too. Then write one response with \`"status": "answered"\`, a \`note\` of one to three sentences that answers the question directly, and \`"at"\` naming the commit (1-based) and unit that carry the explanation. Move lines only if answering shows the order itself was wrong. Say so in the note, and answer the question as well. If the diff cannot answer it, use \`"deferred"\` and say what is missing.`;
+const QUESTIONS = `A question is not a request to change the plan. Answer it by explaining, not by moving lines. Where the asked-about lines now live, add or rewrite the \`narration\` (the page shows it as your note) of that commit or unit so it answers the question, in plain sentences. When the answer is about flow, structure or order across files, add a \`diagram\` there too. Then write one response with \`"status": "answered"\`, a \`note\` of one to three sentences that answers the question directly, and \`"at"\` naming the commit (1-based) and unit that carry the explanation. Move lines only if answering shows the order itself was wrong. Say so in the note, and answer the question as well. If the diff cannot answer it, use \`"deferred"\` and say what is missing.`;
 
-const CONCERNS = `You are also a careful reviewer. Add a concern only for something you would raise in a pull request: a bug or unhandled case, a change with no test where one is expected, a name that misleads, or a risky change such as a migration, concurrency or security. Pin it to the change lines with \`lines\`. Say what goes wrong and when, in one or two sentences. Severity: \`blocker\` breaks behaviour or loses data, \`major\` should be fixed before merge, \`minor\` is worth a note. Do not flag style, formatting or taste. Do not repeat the narration. Most commits deserve no concern, and a plan with none is fine. Never write more than one concern per unit. Concerns are in your voice as a reviewer, while narration stays the author's.
+const CONCERNS = `You are also a careful reviewer. Add a concern only for something you would raise in a pull request: a bug or unhandled case, a change with no test where one is expected, a name that misleads, or a risky change such as a migration, concurrency or security. Pin it to the change lines with \`lines\`. Say what goes wrong and when, in one or two sentences. Severity: \`blocker\` breaks behaviour or loses data, \`major\` should be fixed before merge, \`minor\` is worth a note. Do not flag style, formatting or taste. Do not repeat the note. Most commits deserve no concern, and a plan with none is fine. Never write more than one concern per unit. Concerns are in your voice as a reviewer, while the note stays the author's.
 
 A concern is \`{ "severity": "blocker" | "major" | "minor", "kind": "bug" | "missing-test" | "naming" | "risk", "text": "...", "lines": [0, 1] }\`. \`lines\` holds change indices of that unit and is allowed only on a unit ref. Write \`"concerns": [ ... ]\` on a commit, or on a unit written as an object: \`{ "unit": "h_x:0-3", "concerns": [ ... ] }\`. Never write an id; follow-me derives one.`;
 
@@ -264,7 +264,8 @@ const ORDERING = `Order the commits so the story reads naturally:
 - The last commit must bring the tree to exactly the tip, which follows from covering every unit.
 
 Write each commit message as a short imperative title, then a blank line and a body that
-says why. Keep the title to 50 characters or fewer; put detail in the body.`;
+says why. Put the why in the body first, before anything else. Keep the title to 50
+characters or fewer; put detail in the body.`;
 
 const GOALS = {
   split: {
@@ -277,17 +278,16 @@ ${ORDERING}`,
   },
   walk: {
     title: "tell the story of this branch",
-    goal: `The reader is a reviewer meeting this branch for the first time. They will watch it
-being written commit by commit, hear your narration read aloud as each line appears, and
-comment on the code itself. The final tree is fixed. You decide how its change lines are
-grouped and ordered, and what the author is thinking while writing them.
+    goal: `The reader is a reviewer meeting this branch for the first time. They will read it commit
+by commit and comment on the code itself. The final tree is fixed. You decide how its change
+lines are grouped and ordered, and why each step is there.
 
 ${ORDERING}
 
-Give every commit a \`narration\`. Add one to a unit too wherever the why of that hunk is not
-obvious from the commit's narration. Narration should sound like someone thinking aloud at the
-keyboard: first person, present tense, two or three sentences, no markdown. Say why, not what
-the lines already show.`,
+Add a \`narration\` to a commit, or to a unit, only when it says something the commit message
+body does not. The page shows it as your note. A note is one plain paragraph on why, in plain
+text with no markdown. Say why, not what the lines already show. Leave it out when the body
+already says it.`,
   },
 } satisfies Record<PromptInput["mode"], { readonly title: string; readonly goal: string }>;
 
@@ -305,7 +305,7 @@ const FORMAT = (
     { "message": "Add the Token type\\n\\nThe parser needs it.", "units": ["h_0123456789ab", "h_ba9876543210:0-3,7"] },
     {
       "message": "Parse tokens",
-      "narration": "Now that tokens exist I can finally read them. I start with the happy path.",
+      "narration": "Tokens are read in one pass, so the loop below never backtracks.",
       "units": [{ "unit": "h_ba9876543210", "narration": "The loop is boring on purpose." }, "f_0123456789ab"]
     }
   ],
@@ -314,19 +314,18 @@ const FORMAT = (
   ]
 }
 
-\`narration\` is optional on a commit and on a unit. A unit with narration is written as
-\`{ "unit": "<ref>", "narration": "..." }\` instead of the plain ref string.
+\`narration\` is optional on a commit and on a unit, and the page shows it as your note. A unit
+with a note is written as \`{ "unit": "<ref>", "narration": "..." }\` instead of the plain ref string.
 
 \`diagram\` is optional on a commit and on a unit, written the same way:
 \`{ "unit": "<ref>", "diagram": "..." }\`. It is Mermaid source that the review page draws beside
-the code: a commit's diagram while its commit is on screen, a unit's while playback is on that
-unit. Add one only where a picture says what the code and prose cannot: data flowing between
+the code: a commit's diagram under its commit, a unit's under its hunk. Add one only where a picture says what the code and prose cannot: data flowing between
 modules, a state machine, a call graph, or the before and after shape of a structure. Most commits
 need none. The first line names the diagram type, for example:
 
   "diagram": "flowchart LR\\n  parse --> validate --> apply"
 
-Narration stays plain text even when a diagram is present, because it is read aloud.
+The note stays plain text even when a diagram is present.
 \`responses\` is [] when there are no review comments. \`status\` is one of "addressed",
 "declined", "deferred" or, for a question, "answered", and \`note\` says what you did or why not.
 An "answered" response also carries \`"at": { "commit": 3, "unit": "h_x" }\`: the commit, counted from 1,
