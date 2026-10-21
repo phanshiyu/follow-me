@@ -56,12 +56,21 @@ function rowOf(node: Node | null, within: HTMLElement): number | null {
   return row && within.contains(row) ? Number(row.dataset["row"]) : null;
 }
 
-/** What the box offers. A question asks now; a flag is saved as a change request. */
+/**
+ * What the box offers. A question goes to the agent now, because the answer is wanted while
+ * reading; a flag waits for Submit review. Each kind keeps the other path as a second button.
+ */
 export function boxActions(post: (pending: boolean, draft: Draft) => Promise<boolean>) {
   return (kind: BoxKind): BoxAction[] =>
     kind === "ask"
-      ? [{ label: "Ask now", primary: true, run: (d) => post(false, d) }]
-      : [{ label: "Flag", primary: true, run: (d) => post(false, d) }];
+      ? [
+          { label: "Add to review", run: (d) => post(true, d) },
+          { label: "Ask now", primary: true, run: (d) => post(false, d) },
+        ]
+      : [
+          { label: "Flag now", run: (d) => post(false, d) },
+          { label: "Add to review", primary: true, run: (d) => post(true, d) },
+        ];
 }
 
 /**

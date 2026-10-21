@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
 import { commitKey } from "../lib/commit.ts";
 import { HEADER_PX, PageProvider, scrollToCommit, usePage } from "../page.tsx";
 import { useReview } from "../store.tsx";
 import { CommitSection } from "./CommitSection.tsx";
 import { KeySheet } from "./KeySheet.tsx";
 import { StackPicker } from "./StackPicker.tsx";
+import { SubmitDialog } from "./SubmitDialog.tsx";
 
 /** Keys typed into a field, or with a modifier, belong to the field or the browser. */
 export function isTyping(event: KeyboardEvent): boolean {
@@ -23,11 +25,16 @@ function nextUnresolved(): void {
   next?.scrollIntoView({ block: "center" });
 }
 
-function usePageKeys(openStack: () => void, openSheet: () => void) {
+function usePageKeys(openStack: () => void, openSheet: () => void, openSubmit: () => void) {
   const { state } = useReview();
   const { current, isViewed, setViewed, pick, setPick, setBox } = usePage();
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Enter" && event.shiftKey && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault();
+        openSubmit();
+        return;
+      }
       if (event.key === "Escape" && pick !== null) {
         setPick(null);
         return;
@@ -73,16 +80,30 @@ function usePageKeys(openStack: () => void, openSheet: () => void) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [state.commits, current, isViewed, setViewed, openStack, openSheet, pick, setPick, setBox]);
+  }, [
+    state.commits,
+    current,
+    isViewed,
+    setViewed,
+    openStack,
+    openSheet,
+    openSubmit,
+    pick,
+    setPick,
+    setBox,
+  ]);
 }
 
 function Page() {
-  const { state } = useReview();
+  const { state, error, ended } = useReview();
   const [stackOpen, setStackOpen] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [submitOpen, setSubmitOpen] = useState(false);
+  const pending = state.comments.filter((c) => c.pending === true).length;
   usePageKeys(
     () => setStackOpen(true),
     () => setSheetOpen(true),
+    () => setSubmitOpen(true),
   );
   return (
     <div className="min-h-screen">
@@ -96,8 +117,23 @@ function Page() {
             </span>
           </div>
           <StackPicker open={stackOpen} onOpenChange={setStackOpen} />
-          <div />
+          <div className="flex items-center justify-end gap-2">
+            <span className="hidden text-muted-foreground lg:inline">
+              Review · {pending} pending
+            </span>
+            <Button size="sm" onClick={() => setSubmitOpen(true)}>
+              Submit review
+            </Button>
+          </div>
         </div>
+        {error === null && !ended ? null : (
+          <div
+            role="alert"
+            className="border-b bg-rose-500/10 px-6 py-1.5 text-center text-rose-800 text-sm dark:text-rose-200"
+          >
+            {ended ? "This review has ended. Nothing more can be saved here." : error}
+          </div>
+        )}
       </header>
       <main className="mx-auto max-w-[1232px] px-6">
         {state.commits.map((commit) => (
@@ -105,6 +141,7 @@ function Page() {
         ))}
       </main>
       <KeySheet open={sheetOpen} onOpenChange={setSheetOpen} />
+      <SubmitDialog open={submitOpen} onOpenChange={setSubmitOpen} />
     </div>
   );
 }

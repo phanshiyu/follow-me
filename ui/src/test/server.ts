@@ -5,13 +5,15 @@ import type { ServerEvent, State } from "../lib/wire.ts";
 
 export type Call = { readonly method: string; readonly path: string; readonly body: unknown };
 type Handler = (call: Call) => unknown;
+/** An event as the server writes it, before it is numbered. */
+type EventBody = ServerEvent extends infer E ? (E extends unknown ? Omit<E, "seq"> : never) : never;
 
 export type FakeServer = {
   readonly calls: Call[];
   /** Answers a route; return undefined from a handler for an empty 200. */
   on(method: string, path: string | RegExp, handler: Handler): void;
   /** Delivers one event to every open stream, as the server would after a write. */
-  push(event: Omit<ServerEvent, "seq">): void;
+  push(event: EventBody): void;
   restore(): void;
 };
 
