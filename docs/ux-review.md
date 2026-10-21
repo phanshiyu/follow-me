@@ -341,3 +341,112 @@ Files appear in diff order, and items within a file by line on the branch. Sever
 Effort per piece:
 
 Wire fields and validation: S to M. Inline concern cards, keep and dismiss, and the end-of-review prompt: M. `renderReport`, the `/api/report` endpoint, the done page, and writing `vN.md`: M. The prompt section: S. The split report's two parts: S.
+
+## 8. Conversation
+
+This section was written against `458d573`. By then the question loop, replies (`follow-me watch` and `follow-me reply`), concerns, syntax highlighting and the Mermaid side panel were all built.
+
+### 8.1 Comment on any line
+
+What I observed. In `diffLine` (`ui/app.js`), only the commit's own `+` and `-` rows get the `+` gutter button, the click handler and a roving tabindex. Context rows and lines from earlier commits are plain `div`s. `pickLine` builds ranges from `ownLines`, so a shift-click from a context row does nothing, and a range across context silently drops the context rows. On the wire, `Anchor.hunk.changes` holds change indices, which cannot name a context line at all.
+
+Why it hurts. The questions that matter often point at the code around the change: "why doesn't `div` get the guard too?" points at an untouched `return a / b;`. The reviewer has to anchor to the nearest changed line and explain in prose where they meant.
+
+Recommendation (S to M):
+
+- Selection. Every rendered row of a hunk can be picked: context, added, removed, struck-through removals, and earlier commits' lines that now render as context. Fold rows ("4 lines arrive in commit 5") stay buttons and are not selectable. Click picks one row. Shift-click extends from the anchor row to any row in the same hunk, and a range may mix context and changed rows. A drag in the gutter selects a range. A pick never crosses hunks; a shift-click into another hunk starts a new pick there. Picked rows use the yellow selection colour with a 3px accent bar in the gutter. Every row shows the `+` gutter button on hover and focus.
+- Keyboard. Each hunk is one tab stop, and the roving focus covers all rows. Up and Down move the focus. Shift+Up and Shift+Down extend the pick. Space or Enter toggles the focused row. `c` and `q` act on the pick when there is one, else on the current chunk as today. Escape clears the pick. Selection pauses playback, as it does now.
+- Wire. Add `Anchor.hunk.offsets?: number[]`: sorted 0-based indices into the unit's hunk `body`, covering context, `+` and `-` rows alike. `changes` keeps its meaning. It holds the change indices inside the pick, and is `[]` when only context is picked, so placement and older readers still work. Offsets are as stable as change indices, because the unit id hashes the body: while the id exists, offset 9 is the same row. `context.lines` already snapshots the text. The validator checks that each offset is less than the body length and that `changes` equals the change indices of the offset rows owned by that commit.
+- Inline placement. The open composer, then the saved comment chip, sits directly under the last picked row, not under the hunk. Every row in a saved anchor keeps a thin marker in the gutter, so the reader can see what was meant.
+- What the agent sees. `describeAnchor` in the prompt and in `watch` should print the file line and quote the rows, marking the picked ones:
+
+```
+- new question c_8k2pqa on src/lib.js:17-18 in commit 4 (h_7da8387be1bf rows 9-10; 1 context line, 1 added)
+  >   export function div(a, b) {
+  > +   if (b === 0) throw new RangeError('division by zero');
+        return a / b;
+  - why does div not call assertNumber like add and mul?
+```
+
+The prompt adds one rule: "A comment on context lines is about code this branch leaves alone or depends on. It cannot be moved in the plan. Answer a question with narration, a diagram or a reply. Answer a change request as a code issue, not by reordering." Placement of an answer for a context-only anchor goes to the first commit in the new plan that takes any line of that unit, at the same offset.
+
+### 8.2 A conversation panel on the right
+
+What I observed. Today the conversation is in four places:
+
+- Replies sit inline under their comment (`replyView`), and reply diagrams render inline too.
+- Previous answers are in a sidebar "Answers" section and in inline cards.
+- Concern decisions show only on the concern cards.
+- The right-hand `aside#diagram` (380px, 300px below 1200px) shows only the planned diagram for the current commit or beat.
+
+The server already keeps an ordered event log (`comment`, `reply`, `concern`, `resolved`, `version`, `ended`, each with a `seq`), and the page already follows it over SSE. At 1280px the grid is 300px sidebar, 600px code and 380px panel. At 1024px it is 240px, 484px and 300px, about 55 characters of code.
+
+Why it hurts. The reviewer and the agent are having a conversation, but it is scattered across the code, the sidebar and a panel that ignores it. You cannot read back what was asked and answered in order. The agent can only speak by replying to something the reviewer wrote.
+
+Recommendation: one right-hand column, merged with the Mermaid panel rather than stacked beside it. Two right columns would leave under 500px for code. From top to bottom:
+
+1. A "Now" card, collapsible. It holds the planned diagram for the current commit or beat (today's panel content), a one-line label ("Diagram · src/lib.js, commit 3"), and "2 threads here", which filters the timeline to entries anchored to this chunk.
+2. The timeline, oldest first, auto-scrolled to the bottom unless the reader has scrolled up. If they have, a "1 new ↓" pill appears. It holds these entries:
+   - Reviewer comments and questions ("You", a kind chip, an anchor chip such as `src/lib.js:17-18 · commit 4`, the quoted rows collapsed to three, and the body).
+   - Agent replies (with a "re:" stub naming the parent and its anchor).
+   - Agent-started explanations.
+   - Concern decisions, as compact system rows ("You kept the agent's concern, major bug, on src/lib.js:17").
+   - Resolve and reopen rows.
+   - Version dividers ("Plan v2 opened · answers 3 of 4 questions"), each followed by that version's answer cards.
+   - The end of the review.
+3. A composer pinned to the bottom. It holds a question / change-request toggle, an anchor chip, and a textarea with Cmd+Enter to send. With nothing picked, the chip reads "Whole branch", and the comment is `{ "anchor": { "kind": "plan" }, "kind": "question" }`. With rows picked, the chip shows the anchor and quotes the rows, and × clears it. No new `chat` anchor kind is needed. `plan` plus `kind: "question"` already means "a question about the whole thing", and `follow-me reply` already answers it. `check` should count an agent reply as an answer to a question, so a live answer does not also need a `responses` entry.
+
+Inline cards. Remove the inline threads, and keep one inline chip per anchor under its last row: "Question · 2 replies · answered". Clicking the chip focuses its thread in the panel. Writing then happens in exactly one place, a thread has one copy whose state cannot disagree with itself, and the code stays readable, while the chip still shows that a line has discussion. Concern cards stay inline, because they are proposals about the code that need keep or dismiss right there. Their decisions are also logged in the timeline.
+
+Clicking an entry with an anchor:
+
+- selects its commit and scrolls the anchored rows to 30% from the top;
+- flashes them for 1.2 seconds and moves the roving focus there;
+- if playing, pauses and seeks to the beat that contains the anchor, so the rows are not hidden;
+- for a stale anchor (the unit is gone), shows the quoted rows in the entry and does not scroll.
+
+During playback. The timeline does not follow the player. Its order is the order of the conversation, and jumping it to each chunk would make it unreadable. The player drives the Now card instead: its diagram follows the beat, as the Mermaid panel does today. Timeline entries anchored to the current chunk get an accent edge, and the Now card shows "2 threads here". An agent reply that arrives mid-playback does not pause it or get spoken. The panel tab gets an unread count. A reply to a question the reviewer asked during this playback raises a toast, "Agent replied · Show".
+
+Long replies and diagrams in a narrow column:
+
+- Replies render as plain paragraphs, with backtick spans in monospace and fenced blocks as scrollable `pre`.
+- A reply longer than 12 lines collapses with "Show more".
+- A diagram renders at the column width, with a maximum height of 280px, and an "Expand" button that opens it in a `dialog` at up to 90vw by 85vh with scroll and fit-to-width. In a 360px column, a wide `flowchart LR` is unreadable unless it can be expanded.
+- A Mermaid error shows the source collapsed under the message, as today.
+
+Wire changes, all optional:
+
+- `Anchor.hunk.offsets?: number[]`, from 8.1.
+- `Comment.author?: "agent"`. Absent means the reviewer. This lets the agent start a thread, for example to explain a chunk before anyone asks. It needs a new command, `follow-me explain [--commit <n>] [--unit <h_x[:offsets]>] --body <text> [--diagram <file>]`, and `watch` leaves these out as it leaves out the agent's own replies.
+- `ConcernDecision.decidedAt?: string`. Comments and replies already carry `createdAt`, so with this the timeline can be rebuilt in order from saved state after a server restart, when the in-memory event log is gone. Version dividers come from the live log, or after a restart from the version each comment belongs to.
+
+Layout. The panel replaces `aside#diagram` and is always present while a review is open, with a collapse control that leaves a 40px tab carrying an unread count.
+
+- 1440px and wider: sidebar 300px, code at least 720px, panel 400px.
+- 1280px: sidebar 240px with the two-line clamp, code 680px, panel 360px.
+- 1024px: the commit rail (56px) takes over from the sidebar here rather than at 900px, the code gets about 648px and the panel 320px.
+- Below 900px: the panel becomes an overlay drawer 360px wide from the right, opened by its tab, an inline chip, or `t`. Escape closes it.
+
+Every width keeps at least about 75 characters of code visible. When the reader needs room, the panel gives way first and the code never does.
+
+Effort per piece:
+
+- 8.1 selection, keyboard and offsets: M.
+- Prompt and `watch` quoting: S.
+- Panel shell merged with the Now card, and the timeline built from state and the event log: M.
+- Composer with plan-anchored questions, and agent replies counting as answers: S.
+- Inline chips replacing inline threads, with click-to-anchor: M.
+- `Comment.author` and `follow-me explain`: S to M.
+- Long-reply collapse and the diagram expand dialog: S.
+- Breakpoints and the drawer: S.
+
+What to build first:
+
+1. Offsets, any-line selection and keyboard selection. This is the owner's direct ask, and everything below anchors through it.
+2. Prompt and `watch` quoting of anchors with file lines, so the agent can see what the reviewer meant.
+3. The panel shell: merge the Mermaid panel into the Now card, and render the timeline from the existing event log with click-to-anchor.
+4. The composer for whole-branch questions, with agent replies counting as answers.
+5. Inline chips replacing inline threads, once the panel holds the threads.
+6. `follow-me explain` with `Comment.author`, so the agent can explain unprompted.
+7. Diagram expand, long-reply collapse, the breakpoints and the drawer.
+8. `ConcernDecision.decidedAt`, and rebuilding the timeline after a restart.
