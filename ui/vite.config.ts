@@ -25,7 +25,7 @@ export default defineConfig({
             headless: true,
             // The installed Chrome, so neither a developer nor CI downloads a browser build.
             provider: playwright({ launchOptions: { channel: "chrome" } }),
-            instances: [{ browser: "chromium" }],
+            instances: [{ browser: "chromium", viewport: { width: 1280, height: 900 } }],
           },
         },
       },

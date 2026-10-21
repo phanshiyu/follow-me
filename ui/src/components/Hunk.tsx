@@ -5,11 +5,8 @@ import type { Span } from "../lib/highlight.ts";
 import { type LineNumber, ownersOf, rowsOf, scopeOf } from "../lib/rows.ts";
 import { useSpans } from "../lib/useSpans.ts";
 import type { HunkLine, TextHunk } from "../lib/wire.ts";
+import { scrollToCommit } from "../page.tsx";
 import { useDerived } from "../store.tsx";
-
-export function scrollToCommit(index: number): void {
-  document.getElementById(`commit-${index + 1}`)?.scrollIntoView({ block: "start" });
-}
 
 function Code({ line, spans }: { line: HunkLine; spans: Span[] | undefined }) {
   const text = line.text.replace(/\n$/, "");
