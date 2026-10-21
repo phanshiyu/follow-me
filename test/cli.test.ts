@@ -1189,6 +1189,87 @@ test("reply answers under a comment, watch skips the agent's own words, report s
   assert.equal(run(repo.dir, "reply", id, "--body", "late").code, 1);
 });
 
+test("show expands a unit, a line in a commit, a concern and a comment thread", async (t) => {
+  const { run, spawnCli } = cliIn(t);
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  assert.equal(run(repo.dir, "extract").code, 0);
+  const diff = await loadDiff(repo.dir, "main", "feature");
+  const [first, second] = [...diff.units.values()].filter((u) => u.path === "src/lib.js");
+  assert.ok(first?.kind === "hunk" && second !== undefined);
+  const rest = [...diff.units.keys()].filter((id) => id !== first.id && id !== second.id);
+  const concern = { severity: "minor", kind: "bug", text: "b may be a string.", lines: [3] };
+  const commits = [
+    { message: "Guard add", units: [{ unit: first.id, concerns: [concern] }] },
+    { message: "The rest", units: [second.id, ...rest] },
+  ];
+  writeFileSync(
+    join(repo.dir, ".follow-me", "feature", "draft.json"),
+    JSON.stringify({
+      schema: "follow-me/plan@1",
+      base: repo.base,
+      tip: repo.branch,
+      commits,
+      responses: [],
+    }),
+  );
+  assert.equal(run(repo.dir, "apply").code, 0);
+
+  assert.equal(
+    run(repo.dir, "show", first.id).out,
+    [
+      `${first.id}  src/lib.js  (4 change lines)`,
+      "[0]+ import { assertNumber } from './guard.js';",
+      "[1]+ ",
+      "    export function add(a, b) {",
+      "[2]+   assertNumber(a);",
+      "[3]+   assertNumber(b);",
+      "      return a + b;",
+      "    }",
+      "    ",
+      `commit 1 takes ${first.id}:0-3`,
+      "",
+    ].join("\n"),
+  );
+  // Commit 1 guards add but leaves div alone; the tip has the division check.
+  assert.equal(
+    run(repo.dir, "show", "src/lib.js:18@1").out,
+    "src/lib.js:18 in commit 1\n  15  }\n  16  \n  17  export function div(a, b) {\n> 18    return a / b;\n  19  }\n",
+  );
+  assert.match(run(repo.dir, "show", "src/lib.js:20").out, /^> 20 {4}if \(b === 0\)/m);
+  assert.equal(
+    run(repo.dir, "show", "src/lib.js:21@1").out,
+    "src/lib.js has 19 lines in commit 1\n",
+  );
+  assert.equal(
+    run(repo.dir, "show", "src/guard.js:1@base").out,
+    "src/guard.js does not exist in the base\n",
+  );
+  const shownConcern = run(repo.dir, "show", "k_00000000");
+  assert.equal(shownConcern.code, 1);
+  assert.match(shownConcern.err, /no concern k_00000000/);
+
+  const served = spawnCli(repo.dir, "review", "--no-open", "--port", "0");
+  const url = await served.url;
+  const state = JSON.parse(await (await fetch(new URL("api/state", url))).text());
+  const kid = state.commits[0].concerns[0].id;
+  assert.equal(
+    run(repo.dir, "show", kid).out.split("\n").slice(-2).join("\n"),
+    "b may be a string.\n",
+  );
+  assert.match(
+    run(repo.dir, "show", kid).out,
+    new RegExp(`^${kid} minor bug in commit 1, src/lib\\.js line 5\n`),
+  );
+  const { id } = JSON.parse(await (await postJson(url, "api/comments", PLAN_COMMENT)).text());
+  run(repo.dir, "reply", id, "--body", "Each step is its own commit now.");
+  assert.equal(
+    run(repo.dir, "show", id).out,
+    `${id} question on plan v1, on the whole plan\nreviewer: Why one big commit?\nagent replied: Each step is its own commit now.\n`,
+  );
+  assert.equal(run(repo.dir, "show", "c_zzzzzz").code, 1);
+});
+
 test("apply swaps the open page to the new plan in place and keeps the old comments", async (t) => {
   const { run, repo, url, reviews, served, diff } = await reviewing(t);
   const { id } = JSON.parse(await (await postJson(url, "api/comments", PLAN_COMMENT)).text());

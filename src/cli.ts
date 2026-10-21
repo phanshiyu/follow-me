@@ -18,6 +18,7 @@ import {
 } from "./git.ts";
 import {
   fetchCarried,
+  fetchComments,
   fetchReport,
   findServer,
   followEvents,
@@ -49,13 +50,23 @@ import {
   syncSkills,
 } from "./install.ts";
 import { naiveDraft } from "./naive.ts";
-import { isFields, serializePlanFile, type ValidPlan, validatePlan } from "./plan.ts";
+import {
+  isCommentId,
+  isConcernId,
+  isFields,
+  serializePlanFile,
+  type ValidPlan,
+  validatePlan,
+} from "./plan.ts";
 import {
   type Changes,
   type PromptInput,
   renderEvents,
   renderPrompt,
   renderReport,
+  renderShownComment,
+  renderShownConcern,
+  renderShownUnit,
   reportItems,
 } from "./prompt.ts";
 import { type Registration, RegistrationError, sessionIdOf } from "./server.ts";
@@ -109,6 +120,9 @@ Other commands:
                                             Mermaid source
   explain [--commit <n>] [--unit <id>] [--lines <a-b>] --body <text> [--diagram <file>]
                                             start a thread on the page without being asked
+  show <h_…|c_…|k_…|path:line[@n|@base]>   print a unit, a comment's thread, a concern, or the
+                                            lines around path:line in commit n, instead of
+                                            reading files
   report [--json] [--markdown]              print the report of the latest review; --json lists
                                             the items to post to a merge request
 
@@ -162,6 +176,11 @@ Interactive loop (while the review page is open):
                                             --lines are change lines of the unit, commits count
                                             from 1; with no target it is about the whole plan.
                                             watch leaves these out like your replies
+  show <h_…|c_…|k_…|path:line[@n|@base]> [--branch <name>]
+                                            print a unit with the commits that take it, a
+                                            comment with its rows and thread, a concern with its
+                                            lines, or the lines around path:line at the tip, in
+                                            commit n of the plan, or in the base
   report [--json] [--markdown] [--branch <name>]
                                             print the report of the open review, or of the last
                                             one that ended. Markdown lists issues by file and
@@ -1677,6 +1696,120 @@ async function explain(cwd: string, args: Args): Promise<number> {
   return 0;
 }
 
+const SHOW_USAGE = "usage: follow-me show <h_…|c_…|k_…|path:line[@<commit>|@base]>";
+
+/** Every comment the session has, with the plan version it was made on: live ones first. */
+async function knownComments(
+  session: Session,
+): Promise<{ version: PlanVersion; comments: readonly Comment[] }[]> {
+  const open = await openOnServer(session, null);
+  const live = open === null ? [] : await fetchComments(open.port, open.summary);
+  const saved = [
+    session.priorReview("split", null),
+    session.priorReview("walk", null),
+    ...reviewsOf(session).map((r) => r.review),
+  ].flatMap((r) => (r === null ? [] : [{ version: r.planVersion, comments: r.comments }]));
+  return [...live, ...saved];
+}
+
+const SHOW_MARGIN = 3;
+
+/**
+ * The lines around path:line as commit `at` of the latest plan writes the file (1-based), the
+ * base, or the tip when `at` is undefined. Read from the plan, so it works before any apply.
+ */
+function showLines(session: Session, raw: string): string {
+  const m = /^(.+):(\d+)(?:@(\d+|base))?$/.exec(raw);
+  const [, typed, lineRaw, at] = m ?? [];
+  if (typed === undefined || lineRaw === undefined) throw new UsageError(SHOW_USAGE);
+  const path = Buffer.from(typed, "utf8").toString("latin1");
+  const file = [...session.diff.textFiles.values()].find((f) => f.path === path);
+  if (file === undefined) {
+    return `${typed} is not a text file this branch changes; it reads the same in every commit, so read it from the working tree\n`;
+  }
+  let text: string | null;
+  let label: string;
+  if (at === undefined) {
+    text = file.tip?.bytes ?? null;
+    label = "the tip";
+  } else if (at === "base") {
+    text = file.base === null ? null : file.base.lines.join("");
+    label = "the base";
+  } else {
+    const latest = session.plans().at(-1);
+    const commits = latest === undefined ? [] : projectedCommits(session, latest.version);
+    const n = Number(at);
+    if (n < 1 || n > commits.length) {
+      throw new UsageError(`@${at} is not one of the ${commits.length} commits of the plan`);
+    }
+    text = file.base === null ? null : file.base.lines.join("");
+    for (const commit of commits.slice(0, n)) {
+      for (const change of commit.changes) {
+        if (change.path !== path) continue;
+        text = change.op === "write" ? change.bytes : null;
+      }
+    }
+    label = `commit ${n}`;
+  }
+  if (text === null) return `${typed} does not exist in ${label}\n`;
+  const lines = Buffer.from(text, "latin1").toString("utf8").split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  const line = Number(lineRaw);
+  if (line < 1 || line > lines.length) {
+    return `${typed} has ${plural(lines.length, "line")} in ${label}\n`;
+  }
+  const from = Math.max(1, line - SHOW_MARGIN);
+  const to = Math.min(lines.length, line + SHOW_MARGIN);
+  const width = String(to).length;
+  const rows = lines.slice(from - 1, to).map((l, i) => {
+    const n = from + i;
+    return `${n === line ? ">" : " "} ${String(n).padStart(width)}  ${l}`;
+  });
+  return `${typed}:${line} in ${label}\n${rows.join("\n")}\n`;
+}
+
+/** Expands a ref the agent was given to the lines and thread it names, so no file read is needed. */
+async function showRef(cwd: string, args: Args): Promise<number> {
+  const [ref, extra] = args.positionals;
+  if (ref === undefined || extra !== undefined) throw new UsageError(SHOW_USAGE);
+  const session = await openSession(cwd, sessionOpts(args));
+  const { units } = session.diff;
+  const latest = session.plans().at(-1);
+  if (isUnitId(ref)) {
+    const unit = units.get(ref);
+    if (unit === undefined) {
+      throw new UsageError(`${ref} is not a unit of the branch now; its hunk changed`);
+    }
+    const commits = latest === undefined ? [] : projectedCommits(session, latest.version);
+    process.stdout.write(renderShownUnit(unit, commits));
+    return 0;
+  }
+  if (/^c_[a-z2-7]{6}$/.test(ref) && isCommentId(ref)) {
+    for (const { version, comments } of await knownComments(session)) {
+      const comment = comments.find((c) => c.id === ref);
+      if (comment === undefined) continue;
+      const ctx = { commits: projectedCommits(session, version), units };
+      process.stdout.write(renderShownComment(comment, ctx, version));
+      return 0;
+    }
+    throw new UsageError(`no comment ${ref} in this session`);
+  }
+  if (isConcernId(ref)) {
+    for (const plan of session.plans().toReversed()) {
+      const commits = projectedCommits(session, plan.version);
+      for (const commit of commits) {
+        const concern = commit.concerns?.find((k) => k.id === ref);
+        if (concern === undefined) continue;
+        process.stdout.write(renderShownConcern(concern, commit.index, { commits, units }));
+        return 0;
+      }
+    }
+    throw new UsageError(`no concern ${ref} in a plan that fits the branch`);
+  }
+  process.stdout.write(showLines(session, ref));
+  return 0;
+}
+
 function describeLock(lock: LockState): string {
   if (lock.kind === "free") return "free";
   const who = `pid ${lock.pid} (follow-me ${lock.command})`;
@@ -1927,6 +2060,8 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
         const spec = { values: ["commit", "unit", "lines", "body", "diagram", "branch"] };
         return await explain(cwd, parseArgs(rest, spec));
       }
+      case "show":
+        return await showRef(cwd, parseArgs(rest, { values: ["branch"] }));
       case "report":
         return await report(
           cwd,

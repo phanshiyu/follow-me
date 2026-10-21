@@ -1185,3 +1185,42 @@ function renderEvent(event: ServerEvent, ctx: Context | null): string[] {
 export function renderEvents(events: readonly ServerEvent[], ctx: Context | null = null): string {
   return `${events.flatMap((event) => renderEvent(event, ctx)).join("\n")}\n`;
 }
+
+/** A unit as prompt.md prints it, and which commits of the plan take its lines. */
+export function renderShownUnit(unit: Unit, commits: readonly ReportCommit[]): string {
+  const taken = commits.flatMap((commit, k) =>
+    commit.refs
+      .filter((ref) => ref.unit === unit.id)
+      .map((ref) => `commit ${k + 1} takes ${formatSelection(ref.unit, ref.select)}`),
+  );
+  const where = taken.length === 0 ? "in no commit of the plan" : taken.join("; ");
+  return `${renderUnit(unit)}\n${where}\n`;
+}
+
+/** A comment with every row it was made on, its words and the whole thread under it. */
+export function renderShownComment(c: Comment, ctx: Context, version: PlanVersion): string {
+  const what = c.kind === "question" ? "question" : (c.severity ?? "comment");
+  const lines = [`${c.id} ${what} on plan v${version}, on ${describeAnchor(c.anchor, ctx)}`];
+  if (c.follows) lines.push(`asks again after ${c.follows}`);
+  const rows = anchorRows(ctx, c.anchor);
+  const quoted = rows.length > 0 ? rows : (c.context.lines ?? []).map((l) => `> ${l}`);
+  lines.push(...quoted.map((r) => `    ${r}`));
+  lines.push(...said(c.author === "agent" ? "agent" : "reviewer", c.body));
+  for (const reply of c.replies ?? []) {
+    const diagram = reply.diagram === undefined ? "" : " (with a diagram)";
+    lines.push(...said(`${reply.author} replied${diagram}`, reply.body));
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+/** A concern of the plan with the lines it is pinned to, as its commit writes them. */
+export function renderShownConcern(concern: PlacedConcern, commit: number, ctx: Context): string {
+  const where = whereConcern(ctx, { concern, commit, severity: concern.severity, note: null });
+  const place = where.path === null ? where.label : `${where.path} ${where.label}`;
+  return [
+    `${concern.id} ${concern.severity} ${concern.kind} in commit ${commit + 1}, ${place}`,
+    ...where.quote.map((r) => `    ${r}`),
+    concern.text,
+    "",
+  ].join("\n");
+}

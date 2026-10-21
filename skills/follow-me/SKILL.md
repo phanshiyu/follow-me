@@ -14,6 +14,7 @@ The user never types a follow-me command. If `follow-me` is not on PATH, tell th
 5. When the user asks for a code change, make it on the original branch and commit it there. Then run `follow-me`. It carries the plan over, asks you to place any new units in the draft, and swaps the open page to the new code with the thread kept. Then `follow-me reply <id>` on that comment saying what changed and where (file and line), and run `follow-me` again.
 6. Repeat until it prints the report and `next: done`. Fix each issue in the code, or say why you decline. On someone else's branch you only report.
 7. Never run `git rebase` or `reset` for this, and never touch the `-split` branch. The only commits you make are the requested fixes on the original branch.
+8. To see code or a thread follow-me names by ref (`h_…`, `c_…`, `k_…`, `path:line`, `path:line@3` for commit 3, `path:line@base`), run `follow-me show <ref>` instead of reading files. A file in the working tree is the tip, not the commit the reviewer is reading.
 ## Writing the draft
 prompt.md holds the session: the draft path, base and tip, the check command, the units, and the comments to answer. This section is how to write the draft from it. Commits are numbered from 1 everywhere.
 Author mode ("plan the commits"): You are reordering a finished branch into a series of commits that a reader can follow as the author's thought process. The final tree is fixed. You only decide how its change lines are grouped and ordered.
@@ -79,7 +80,7 @@ A question is not a request to change the plan. Answer it by explaining, not by 
 
 A comment on a context row (marked `>` with no + or -) is about code this branch leaves alone or depends on. The plan cannot move it, so do not move lines because of it. Answer a question with an explanation, or point at the commit that last touched those lines. Answer a change request as a code issue, not by reordering.
 ### When the branch moved
-prompt.md then starts with what changed since the last plan. The draft already holds that plan on the new tip: every unit whose hunk did not change keeps its commit, and any commit left with no unit was dropped. Put each new unit into a commit, an existing one or a new one, and keep the rest as it is. For each comment on a hunk that changed, write a response saying what you changed, and post the same with `follow-me reply <id>`.
+prompt.md then starts with what changed since the last plan. The draft already holds that plan on the new tip: every unit whose hunk did not change keeps its commit, and any commit left with no unit was dropped. Put each new unit into a commit, an existing one or a new one, and keep the rest as it is. Unchanged units are listed one line each; `follow-me show <id>` prints one in full. For each comment on a hunk that changed, write a response saying what you changed, and post the same with `follow-me reply <id>`.
 ## Porting a review
 Only when the user asks to post it.
 1. `follow-me report --json` prints items with `path`, `oldPath`, `newLine`, `oldLine`, `startNewLine`, `startOldLine`, `severity`, `kind`, `body` (markdown, ready to post), `thread`, `resolved`, `excluded`. Skip `excluded: true`. Lines are the branch tip's, or the base's for a removed line. Tell the user the count and first lines, ask which merge request or pull request, and never post without a yes.

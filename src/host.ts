@@ -11,7 +11,13 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { type NewReply, parseCarried, parseEvent, parseEventBatch } from "./comments.ts";
+import {
+  type NewReply,
+  parseCarried,
+  parseComment,
+  parseEvent,
+  parseEventBatch,
+} from "./comments.ts";
 import { carryComments } from "./evolve.ts";
 import { isPlanVersion, serializePlanFile, validatePlan } from "./plan.ts";
 import {
@@ -347,6 +353,26 @@ export async function fetchCarried(
     if (typeof carried === "string") throw new RegistrationError(`carried: ${carried}`);
     return [carried];
   });
+}
+
+/** The comments of the hosted review, and of the version before a swap, with their versions. */
+export async function fetchComments(
+  port: number,
+  summary: HostedSummary,
+): Promise<readonly { readonly version: PlanVersion; readonly comments: readonly Comment[] }[]> {
+  const state = await call(port, "GET", `${summary.url}api/state`);
+  const parse = (raw: unknown): Comment[] =>
+    (Array.isArray(raw) ? raw : []).flatMap((item: unknown) => {
+      const comment = parseComment(item);
+      return typeof comment === "string" ? [] : [comment];
+    });
+  if (!isFields(state)) throw new RegistrationError("the server sent no state");
+  const previous = state["previous"];
+  const out = [{ version: summary.version, comments: parse(state["comments"]) }];
+  if (isFields(previous) && isPlanVersion(previous["version"])) {
+    out.push({ version: previous["version"], comments: parse(previous["comments"]) });
+  }
+  return out;
 }
 
 /** One long poll of the session's event log: what happened after `since`, or nothing at timeout. */
