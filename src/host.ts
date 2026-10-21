@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { type NewReply, parseEvent, parseEventBatch } from "./comments.ts";
+import { type NewReply, parseCarried, parseEvent, parseEventBatch } from "./comments.ts";
 import { carryComments } from "./evolve.ts";
 import { isPlanVersion, serializePlanFile, validatePlan } from "./plan.ts";
 import {
@@ -33,7 +33,14 @@ import {
   SessionFileError,
   SessionLockedError,
 } from "./session.ts";
-import type { Comment, HostedSummary, PlanVersion, ServerEvent, ServerRecord } from "./types.ts";
+import type {
+  CarriedComment,
+  Comment,
+  HostedSummary,
+  PlanVersion,
+  ServerEvent,
+  ServerRecord,
+} from "./types.ts";
 
 const RECORD = "server.json";
 const DEFAULT_IDLE_MS = 30_000;
@@ -325,6 +332,21 @@ export async function swapVersion(
   );
   if (swapped === null) throw new RegistrationError("the server answered with a malformed session");
   return swapped;
+}
+
+/** The previous version's comments as the open page places them on its plan. */
+export async function fetchCarried(
+  port: number,
+  summary: HostedSummary,
+): Promise<readonly CarriedComment[]> {
+  const state = await call(port, "GET", `${summary.url}api/state`);
+  const raw = isFields(state) ? state["carried"] : undefined;
+  if (!Array.isArray(raw)) throw new RegistrationError("the server sent no carried comments");
+  return raw.flatMap((item: unknown) => {
+    const carried = parseCarried(item);
+    if (typeof carried === "string") throw new RegistrationError(`carried: ${carried}`);
+    return [carried];
+  });
 }
 
 /** One long poll of the session's event log: what happened after `since`, or nothing at timeout. */

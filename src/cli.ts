@@ -17,6 +17,7 @@ import {
   writeBranch,
 } from "./git.ts";
 import {
+  fetchCarried,
   fetchReport,
   findServer,
   followEvents,
@@ -90,8 +91,9 @@ const SHORT_USAGE = `usage: follow-me [--wait <seconds>] [--branch <name>]
 
 Run follow-me with no command. Each call does the next thing that is missing and returns: it
 writes the prompt for you to answer, reports what is wrong with your draft, opens the review for
-the user, then listens to them for up to --wait seconds (default 60, 0 for none) and prints what
-they flagged or asked. Do what its "next:" line says. Run it again to keep listening.
+the user, then listens to them for up to --wait seconds (default 90, at most 300, 0 for none) and
+prints what they flagged or asked. It is interactive: do what its "next:" line says and run it
+again until it prints the report.
 
 Other commands:
   reply <commentId> --body <text> [--diagram <file>]
@@ -1016,13 +1018,64 @@ function draftForTip(session: Session): boolean {
  * tip as draft.json; while the draft does not validate, each call writes the prompt with what
  * changed and hands off. Null when the draft is ready, so the entry applies it as usual.
  */
-function evolveHandoff(session: Session, cwd: string, mode: ReviewMode, args: Args, moved: Moved) {
+function evolveHandoff(
+  session: Session,
+  cwd: string,
+  mode: ReviewMode,
+  args: Args,
+  moved: Moved,
+  hosted: boolean,
+): number | null {
   if (!draftForTip(session)) session.writeDraft(serializePlanFile(moved.draft));
   if (draftState(session).kind === "valid") return null;
   const { since, vanished, added } = moved;
   session.writePrompt(renderPrompt(promptInput(session, mode, args, { since, vanished, added })));
   say(`wrote ${relative(cwd, session.promptPath)}`);
-  next(`assign the new units in ${relative(cwd, session.draftPath)}, then run follow-me again`);
+  const step = `assign the new units in ${relative(cwd, session.draftPath)}, then run follow-me again`;
+  next(hosted ? `${step}; ${STILL_WORKING}` : step);
+  return 0;
+}
+
+const STILL_WORKING = "the reviewer is still working";
+
+/**
+ * Applies the draft carried over to the moved tip under the server's lock (only freezes it for a
+ * reviewer's walk) and moves the open page onto it, threads and all.
+ */
+async function swapOpenPage(session: Session, open: Open, args: Args): Promise<number> {
+  const state = draftState(session);
+  if (state.kind !== "valid") return 1;
+  const syntax = await checkSyntax(state.prepared, syntaxOverride(args));
+  if (syntax.issues.length > 0) {
+    for (const line of formatSyntax(syntax)) say(line);
+    next(`fix the draft, then run follow-me again; ${STILL_WORKING}`);
+    return 1;
+  }
+  if (open.summary.mode === "split") {
+    const code = await applyLocked(session, args);
+    if (code !== 0) {
+      next(`fix the draft, then run follow-me again; ${STILL_WORKING}`);
+      return code;
+    }
+  } else session.freeze(state.prepared);
+  const latest = session.plans().at(-1);
+  if (latest === undefined) return 1;
+  const swapped =
+    latest.version === open.summary.version
+      ? open.summary
+      : await swapVersion(open.port, open.summary, latest.version, latest.hash);
+  const carried = await fetchCarried(open.port, swapped);
+  const changed = carried.filter((c) => c.changed);
+  say(
+    `swapped the open page to plan v${latest.version}; carried ${plural(carried.length, "comment")}, ${changed.length} changed`,
+  );
+  for (const { comment, path, newLine } of changed) {
+    const where = path === null ? "no file" : newLine === null ? path : `${path}:${newLine}`;
+    say(`  ${comment.id} now on ${where}`);
+  }
+  next(
+    `${STILL_WORKING}; reply on each changed thread with follow-me reply <id> --body "<what changed and where>", then run follow-me again`,
+  );
   return 0;
 }
 
@@ -1069,10 +1122,12 @@ function waitOf(args: Args): number {
   if (!Number.isFinite(seconds) || seconds < 0) {
     throw new UsageError(`--wait ${raw} is not a number of seconds`);
   }
-  return seconds;
+  return Math.min(seconds, MAX_ENTRY_WAIT_SECONDS);
 }
 
-const ENTRY_WAIT_SECONDS = 60;
+/** One call fits inside a harness's tool timeout, so the agent's loop is one command per turn. */
+const ENTRY_WAIT_SECONDS = 90;
+const MAX_ENTRY_WAIT_SECONDS = 300;
 
 /**
  * Listens to the hosted review for up to --wait seconds and prints what the reviewer did. It
@@ -1116,13 +1171,12 @@ async function listen(session: Session, open: Open, args: Args): Promise<number>
         return 0;
       }
       next(
-        'answer with follow-me reply <id> --body "<markdown>" [--diagram file], or run follow-me again to keep listening',
+        `${STILL_WORKING}; answer with follow-me reply <id> --body "<markdown>" [--diagram file], then run follow-me again`,
       );
       return 0;
     }
     if (left <= 0) {
-      say(`nothing new on the review page in ${Math.round(waitMs / 1000)}s`);
-      next("run follow-me again to keep listening");
+      next(`${STILL_WORKING}; run follow-me again to keep listening`);
       return 0;
     }
   }
@@ -1137,11 +1191,12 @@ async function entry(cwd: string, args: Args): Promise<number> {
   syncSkills(homedir(), say);
   const session = await openFresh(cwd, args);
   const hosted = await openOnServer(session, null);
-  const mode = await entryMode(session, args);
+  const mode = hosted?.summary.mode ?? (await entryMode(session, args));
   const moved = await sinceLastPlan(session);
   if (moved !== null) {
-    const handed = evolveHandoff(session, cwd, mode, args, moved);
+    const handed = evolveHandoff(session, cwd, mode, args, moved, hosted !== null);
     if (handed !== null) return handed;
+    if (hosted !== null) return swapOpenPage(session, hosted, args);
   }
   if (hosted !== null) return listen(session, hosted, args);
 
@@ -1185,6 +1240,7 @@ async function entry(cwd: string, args: Args): Promise<number> {
   const detached = { ...args, flags: new Set([...args.flags, "detach"]) };
   const result = await hostReview(session, mode, detached, async () => prep, reportSaved);
   if (result.kind !== "elsewhere") return exitCode(result);
+  say("follow-me is interactive: keep running it until it prints the report");
   return listen(session, result, args);
 }
 

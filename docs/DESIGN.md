@@ -261,8 +261,12 @@ files stay the durable record written as it goes (`reviews/vN.draft.json`) and a
   Then the old version's review is finalized to `reviews/vN.json` (and `vN.md`) if anything was said,
   and the comment set starts empty. `api/state.previous` is `{ version, comments, responses }`: the
   comments of the review before this version, finished or still an autosave, and what this plan
-  answered. `follow-me apply` does this when the server hosts the session, writing the branch under the
-  server's lock. Walk sessions can be swapped through the endpoint, but no command does it yet.
+  answered. `api/state.carried` and the `version` event's `carried` place each of those comments on
+  the new diff (see "Live update after a code change"). `POST api/comments/<cid>/replies` takes an id
+  from `previous` too; such replies are saved under `earlierReplies` in this version's draft and
+  review, since the old review file is written once, and are merged into `previous` and `carried`.
+  `follow-me apply` and the bare entry do the swap when the server hosts the session, writing the
+  branch under the server's lock.
 - **Validation sees live comments.** `session.priorReview` returns the autosave of an unfinished
   review when it is newer than every finished one, so `check` and `apply` accept responses to comments
   that exist only on the open page.
@@ -288,10 +292,46 @@ otherwise it applies (author mode) or only freezes (reviewer mode), starts or at
 the browser on that first launch only, and listens. Mode is a split already applied, else whether the
 configured `user.email` wrote every commit of the branch (`--author` and `--reviewer` override).
 
-Listening long-polls `api/events?audience=agent` for up to `--wait` seconds (default 60) from a cursor
+After it launches the page the entry prints `follow-me is interactive: keep running it until it prints
+the report`, and every `next:` line while the page is up says the reviewer is still working and to run
+`follow-me` again; only `submitted` and `ended` say otherwise.
+
+Listening long-polls `api/events` for up to `--wait` seconds (default 90, at most 300) from a cursor
 kept in `cursor.json` beside the session, keyed by the hosted session's id and `openedAt`, so a repeated
 call prints only what is new and a restarted server reads from the start. The agent's own replies and version
 swaps are not news. A `submitted` or `ended` event ends the loop with the report.
+
+## Live update after a code change
+
+The reviewer flags "change X" on some rows; the comment reaches the listening agent at once. The agent
+edits the original branch, commits, and runs `follow-me`. The tip has moved, so:
+
+1. `openFresh` re-extracts into the same session: new anchor and diff, plans and reviews kept.
+2. `sinceLastPlan` loads the latest plan's own diff from its `base` and `tip` and runs
+   `evolvePlan(oldPlan, oldDiff, newDiff)` (`src/evolve.ts`, pure). Unit ids hash path and hunk
+   body, so a surviving id is the same hunk: every ref to it stays where it was, refs to vanished
+   units are dropped, a commit left with none is dropped, responses start empty. It returns the
+   draft, the vanished units with the old commits that took them, and the added units.
+3. If `draft.json` is not already for this tip, the carried draft is written. While it does not
+   validate, `prompt.md` gains "Changes since v<N>" (vanished units with their old commit and
+   message, new units with their bodies, and the reviewer's comments on vanished hunks quoted), and
+   the entry prints `next: assign the new units in draft.json, then run follow-me again`.
+4. Once it validates (at once when nothing vanished or appeared), the entry checks syntax, applies
+   under the server's lock (only freezes for a walk), swaps the open page with `api/version` and
+   prints `swapped the open page to plan v<N+1>; carried M comments, K changed` and where each
+   changed thread now points. The agent then answers with `follow-me reply <id>`.
+
+Every step reads only what is on disk and in git, so a repeated or interrupted call converges.
+
+The loader computes `carried` with `carryComments(previous.comments, oldUnits, newUnits)`, one
+entry per comment of `previous`, in order:
+`{ comment, unit: UnitId | null, offsets: number[] | null, changed, path, newLine: number | null }`.
+A unit still in the new diff keeps its id and offsets, `changed: false`. A vanished one is replaced
+by the hunk of the same path whose tip lines cover, or come closest to, the comment's old tip line,
+with `changed: true` and no offsets; `newLine` is the nearest row with the same text, else the old
+line clamped into that hunk. Nothing left on the path gives `unit: null`. Comments not on a hunk
+carry with `unit: null, changed: false`. When the old commits are gone from the repo, vanished
+comments carry to the first unit on their path with `newLine: null`.
 
 ## Hand-off
 

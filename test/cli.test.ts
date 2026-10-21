@@ -1355,7 +1355,7 @@ test("follow-me with no command walks the states: prompt, issues, review, questi
   assert.match(opened.out, /created feature-split at [0-9a-f]{12} from plan v1/);
   assert.equal(
     opened.out.endsWith(
-      "nothing new on the review page in 0s\nnext: run follow-me again to keep listening\n",
+      "follow-me is interactive: keep running it until it prints the report\nnext: the reviewer is still working; run follow-me again to keep listening\n",
     ),
     true,
     opened.out,
@@ -1383,12 +1383,15 @@ test("follow-me with no command walks the states: prompt, issues, review, questi
   assert.equal(heard.out.includes("change this"), false);
   assert.equal(
     heard.out.endsWith(
-      'next: answer with follow-me reply <id> --body "<markdown>" [--diagram file], or run follow-me again to keep listening\n',
+      'next: the reviewer is still working; answer with follow-me reply <id> --body "<markdown>" [--diagram file], then run follow-me again\n',
     ),
     true,
   );
   // The next call starts after what it already printed.
-  assert.match(run(repo.dir, "--wait", "0").out, /^nothing new/m);
+  assert.equal(
+    run(repo.dir, "--wait", "0").out,
+    "next: the reviewer is still working; run follow-me again to keep listening\n",
+  );
 
   await fetch(new URL("api/submit", url), { method: "POST" });
   const submitted = run(repo.dir, "--wait", "5");
@@ -1448,6 +1451,110 @@ test("follow-me after the branch moved carries the plan over and asks only for t
   const applied = run(repo.dir, "--no-open", "--wait", "0");
   assert.equal(applied.code, 0, applied.err);
   assert.match(applied.out, /updated feature-split at [0-9a-f]{12} from plan v2/);
+});
+
+test("a fix the agent commits while the page is open swaps in with the threads carried", async (t) => {
+  const skillHome = mkdtempSync(join(tmpdir(), "follow-me-skillhome-"));
+  t.after(() => rmSync(skillHome, { recursive: true, force: true }));
+  mkdirSync(join(skillHome, ".claude"));
+  const { run } = cliIn(t, { HOME: skillHome });
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  git(repo.dir, "config", "user.email", "fixture@example.com");
+  const sub = ".follow-me/feature";
+  const before = await loadDiff(repo.dir, "main", "feature");
+  run(repo.dir, "extract");
+  writeWholeDraft(repo.dir, repo.base, repo.branch, [...before.units.keys()]);
+  const opened = run(repo.dir, "--no-open", "--wait", "0");
+  assert.equal(opened.code, 0, opened.err);
+  const [, url] = SESSION_URL.exec(opened.out) ?? [];
+  assert.ok(url, opened.out);
+  const skill = readFileSync(join(skillHome, ".claude", "skills", "follow-me", "SKILL.md"), "utf8");
+  assert.deepEqual(skill.split("---\n")[2]?.split("\n").slice(0, 3), [
+    "# follow-me",
+    "follow-me is interactive. After it launches the review page, keep running `follow-me` until it prints the report. Each run waits up to 90 seconds for the reviewer.",
+    "Do not stop, do not summarise, and do not ask the user whether to continue. The user is on the page.",
+  ]);
+
+  const units = [...before.units.values()];
+  const [guarded] = units.filter((u) => u.path === "src/lib.js").slice(1);
+  const readme = units.find((u) => u.path === "README.md");
+  assert.ok(guarded?.kind === "hunk" && readme?.kind === "hunk");
+  const guard = guarded.body.findIndex((r) => r.text.includes("division by zero"));
+  const flag = async (unit: string, offsets: number[], path: string, body: string) => {
+    const res = await fetch(new URL("api/comments", url), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        anchor: { kind: "hunk", unit, commit: 0, changes: [], offsets },
+        context: { commitMessage: "feat: everything", path },
+        body,
+        severity: "minor",
+      }),
+    });
+    return JSON.parse(await res.text()).id;
+  };
+  const asked = await flag(guarded.id, [guard], "src/lib.js", "say what went wrong");
+  const kept = await flag(readme.id, [0], "README.md", "fine as is");
+  assert.match(run(repo.dir, "--wait", "0").out, /say what went wrong/);
+
+  editLib(repo.dir, "division by zero", "cannot divide by zero");
+  const moved = run(repo.dir, "--wait", "0");
+  assert.equal(
+    moved.out.endsWith(
+      `next: assign the new units in ${sub}/draft.json, then run follow-me again; the reviewer is still working\n`,
+    ),
+    true,
+    moved.out,
+  );
+  const draft = JSON.parse(readFileSync(join(repo.dir, sub, "draft.json"), "utf8"));
+  const after = await loadDiff(repo.dir, "main", "feature");
+  const added = [...after.units.keys()].filter((id) => !before.units.has(id));
+  draft.commits[0].units.push(...added);
+  draft.responses = [
+    { comment: asked, status: "addressed", note: "The error now says what went wrong." },
+  ];
+  writeFileSync(join(repo.dir, sub, "draft.json"), JSON.stringify(draft));
+
+  const swapped = run(repo.dir, "--wait", "0");
+  assert.equal(swapped.code, 0, swapped.err);
+  assert.match(
+    swapped.out,
+    new RegExp(
+      `swapped the open page to plan v2; carried 2 comments, 1 changed\n  ${asked} now on src/lib\\.js:20\n`,
+    ),
+  );
+  const state = JSON.parse(await (await fetch(new URL("api/state", url))).text());
+  assert.equal(state.version, 2);
+  assert.deepEqual(
+    state.carried.map(
+      (c: { comment: { id: string }; unit: string; changed: boolean; newLine: number }) => [
+        c.comment.id,
+        c.unit,
+        c.changed,
+        c.newLine,
+      ],
+    ),
+    [
+      [asked, added[0], true, 20],
+      [kept, readme.id, false, 1],
+    ],
+  );
+
+  const replied = run(repo.dir, "reply", asked, "--body", "Changed the message in src/lib.js:20.");
+  assert.equal(replied.code, 0, replied.err);
+  const page = JSON.parse(await (await fetch(new URL("api/state", url))).text());
+  assert.deepEqual(
+    page.carried[0].comment.replies.map((r: { author: string; body: string }) => [
+      r.author,
+      r.body,
+    ]),
+    [["agent", "Changed the message in src/lib.js:20."]],
+  );
+  assert.equal(
+    run(repo.dir, "--wait", "0").out,
+    "next: the reviewer is still working; run follow-me again to keep listening\n",
+  );
 });
 
 test("follow-me on a branch someone else wrote plans a reviewer's reading and applies nothing", async (t) => {

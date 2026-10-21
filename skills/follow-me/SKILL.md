@@ -3,13 +3,17 @@ name: follow-me
 description: Review a branch with the user, hunk by hunk in a local page, and carry the review to the merge request. Use when the user asks to review, split, clean up or reorder a branch's commits, to read someone else's branch, or to post a follow-me review to GitLab or GitHub.
 ---
 # follow-me
+follow-me is interactive. After it launches the review page, keep running `follow-me` until it prints the report. Each run waits up to 90 seconds for the reviewer.
+Do not stop, do not summarise, and do not ask the user whether to continue. The user is on the page.
+
 The user never types a follow-me command. If `follow-me` is not on PATH, tell them to run `npm i -g @shiyuphan/follow-me`; otherwise you run everything. They use the page, press Submit, and ask you to post the review.
 1. From the repo root run `follow-me`. It does the next missing thing, prints what happened, and ends with a `next:` line. Do what it says, then run `follow-me` again.
 2. When it says to write `.follow-me/<slug>/draft.json` from `prompt.md`, read the prompt, write the draft, and run `follow-me` (it checks the draft, prints every issue, and applies when valid). Put the why in each commit body.
-3. When it prints the review page URL, tell the user and keep running `follow-me`: each call listens up to 60 seconds and prints what the user flagged or asked, with comment ids.
-4. Answer a question in place with `follow-me reply <id> --body "<markdown>" [--diagram file]` (Mermaid source for a picture). Start a thread yourself with `follow-me explain [--commit n] [--unit id] [--lines a-b] --body "..."`. Flags the user is still collecting stay hidden from you until they press Submit.
-5. Repeat until it prints the report and `next: done`. Fix each issue in the code, or say why you decline. On someone else's branch you only report.
-6. Never run `git rebase`, `reset` or `commit` for this. The draft is the only file you write.
+3. When it prints the review page URL, tell the user once and keep running `follow-me`. Each call listens up to 90 seconds and prints what the user flagged or asked, with comment ids, the moment they post it.
+4. Answer a question in place with `follow-me reply <id> --body "<markdown>" [--diagram file]` (Mermaid source for a picture). Start a thread yourself with `follow-me explain [--commit n] [--unit id] [--lines a-b] --body "..."`.
+5. When the user asks for a code change, make it on the original branch and commit it there. Then run `follow-me`. It carries the plan over, asks you to place any new units in the draft, and swaps the open page to the new code with the thread kept. Then `follow-me reply <id>` on that comment saying what changed and where (file and line), and run `follow-me` again.
+6. Repeat until it prints the report and `next: done`. Fix each issue in the code, or say why you decline. On someone else's branch you only report.
+7. Never run `git rebase` or `reset` for this, and never touch the `-split` branch. The only commits you make are the requested fixes on the original branch.
 ## Porting a review
 Only when the user asks to post it.
 1. `follow-me report --json` prints items with `path`, `oldPath`, `newLine`, `oldLine`, `startNewLine`, `startOldLine`, `severity`, `kind`, `body` (markdown, ready to post), `thread`, `resolved`, `excluded`. Skip `excluded: true`. Lines are the branch tip's, or the base's for a removed line. Tell the user the count and first lines, ask which merge request or pull request, and never post without a yes.
