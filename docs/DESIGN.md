@@ -280,6 +280,22 @@ files stay the durable record written as it goes (`reviews/vN.draft.json`) and a
   `kind: "question"` is answered by a response with status `answered` whose `at` points at narration or a
   diagram in the new plan; validation rejects an answer that points at nothing.
 
+## Entry point
+
+The user never types a follow-me command; the agent runs `follow-me` with no command, and each call is
+idempotent and returns. It syncs the skill into every detected harness, opens the session (re-extracting
+if the tip moved), and then does the first thing that applies: if the review is already hosted, it just
+listens; if the draft is invalid or fails the syntax gate, it prints the issues; if there is no plan for
+the tip, it writes `prompt.md` and says where; if the plan already has a review, it prints the report;
+otherwise it applies (author mode) or only freezes (reviewer mode), starts or attaches the server, opens
+the browser on that first launch only, and listens. Mode is a split already applied, else whether the
+configured `user.email` wrote every commit of the branch (`--author` and `--reviewer` override).
+
+Listening long-polls `api/events?audience=agent` for up to `--wait` seconds (default 60) from a cursor
+kept in `cursor.json` beside the session, keyed by the hosted session's id and `openedAt`, so a repeated
+call prints only what is new and a restarted server reads from the start. The agent's own replies, held
+flags and version swaps are not news. A `submitted` or `ended` event ends the loop with the report.
+
 ## Hand-off
 
 follow-me never holds a forge token, so the end of a review is a hand-off, not a post. The reviewer

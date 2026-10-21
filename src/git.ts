@@ -158,6 +158,18 @@ export async function loadDiff(repo: string, baseRef: string, tipRef: string): P
   return parseDiff({ base, tip, baseTree, tipTree, rawZ, patch: patchText, blobs });
 }
 
+/**
+ * Whether the configured user wrote every commit of base..tip, which is how follow-me tells its
+ * author's own branch from one it is asked to review. False when no user.email is set.
+ */
+export async function isOwnWork(repo: string, base: Sha, tip: Sha): Promise<boolean> {
+  const me = await gitText(repo, ["config", "--default=", "user.email"]);
+  if (me === "") return false;
+  const authors = await gitText(repo, ["log", "--format=%ae", `${base}..${tip}`]);
+  const emails = authors.split("\n").filter((line) => line !== "");
+  return emails.length > 0 && emails.every((email) => email === me);
+}
+
 /** "config" leaves signing to commit.gpgsign; "on" and "off" override it. */
 export type SignMode = "config" | "on" | "off";
 

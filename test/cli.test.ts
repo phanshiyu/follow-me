@@ -38,14 +38,14 @@ type Spawned = {
  * Runs the CLI with its own state dir, so each test gets its own review server. A server the
  * test leaves running is killed when the test ends.
  */
-function cliIn(t: TestContext) {
+function cliIn(t: TestContext, extraEnv: Record<string, string> = {}) {
   const home = mkdtempSync(join(tmpdir(), "follow-me-home-"));
   t.after(() => {
     const pid = serverRecord(home)?.pid;
     if (pid !== undefined && isAlive(pid)) process.kill(pid);
     rmSync(home, { recursive: true, force: true });
   });
-  const env = { ...process.env, FOLLOW_ME_HOME: home, FOLLOW_ME_IDLE_MS: "200" };
+  const env = { ...process.env, FOLLOW_ME_HOME: home, FOLLOW_ME_IDLE_MS: "200", ...extraEnv };
   const run = (dir: string, ...args: string[]) => {
     const r = spawnSync(BIN, args, { cwd: dir, encoding: "utf8", env });
     return { code: r.status, out: r.stdout, err: r.stderr };
@@ -372,8 +372,13 @@ test("--version, --help and a directory outside any repo answer like other CLIs"
   for (const flag of ["--help", "-h", "help"]) {
     const help = run(outside, flag);
     assert.deepEqual([help.code, help.err], [0, ""]);
-    assert.equal(help.out.split("\n")[0], "usage: follow-me <command> [options]");
+    assert.equal(help.out.split("\n")[0], "usage: follow-me [--wait <seconds>] [--branch <name>]");
+    assert.equal(help.out.includes("\n  extract "), false);
+    assert.equal(help.out.includes("\n  reply "), true);
   }
+  const all = run(outside, "help", "--all");
+  assert.equal(all.out.split("\n")[0], "usage: follow-me <command> [options]");
+  assert.equal(all.out.includes("\n  extract "), true);
   assert.deepEqual(run(outside, "extract"), {
     code: 1,
     out: "",
@@ -1301,4 +1306,127 @@ test("watch --follow --json prints every event until the review ends, then exits
   );
   assert.equal(events[1].comment.body, "And the second?");
   assert.deepEqual(await served.exited, [0, null]);
+});
+
+test("follow-me with no command walks the states: prompt, issues, review, questions, report", async (t) => {
+  const skillHome = mkdtempSync(join(tmpdir(), "follow-me-skillhome-"));
+  t.after(() => rmSync(skillHome, { recursive: true, force: true }));
+  mkdirSync(join(skillHome, ".claude"));
+  const { run, runAsync } = cliIn(t, { HOME: skillHome });
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  // The branch is the user's own, so the entry splits it instead of reviewing it as someone else's.
+  git(repo.dir, "config", "user.email", "fixture@example.com");
+  const sub = ".follow-me/feature";
+
+  const first = run(repo.dir);
+  assert.equal(first.code, 0, first.err);
+  assert.deepEqual(first.out.split("\n"), [
+    `wrote ${join(skillHome, ".claude", "skills", "follow-me", "SKILL.md")}`,
+    `wrote ${sub}/prompt.md`,
+    `next: write ${sub}/draft.json from ${sub}/prompt.md, then run follow-me again`,
+    "",
+  ]);
+  const prompt = readFileSync(join(repo.dir, sub, "prompt.md"), "utf8");
+  assert.equal(prompt.split("\n")[0], "# follow-me: plan the commits");
+  // Running it again changes nothing and the skill is not rewritten.
+  assert.equal(run(repo.dir).out.split("\n")[0], `wrote ${sub}/prompt.md`);
+
+  const diff = await loadDiff(repo.dir, "main", "feature");
+  const ids = [...diff.units.keys()];
+  writeWholeDraft(repo.dir, repo.base, repo.branch, ids.slice(1));
+  const bad = run(repo.dir);
+  assert.equal(bad.code, 1);
+  assert.match(bad.out, /is in no commit/);
+  assert.equal(bad.out.endsWith("next: fix the draft, then run follow-me again\n"), true);
+
+  writeWholeDraft(repo.dir, repo.base, repo.branch, ids);
+  const opened = run(repo.dir, "--no-open", "--wait", "0");
+  assert.equal(opened.code, 0, opened.err);
+  const [, url] = SESSION_URL.exec(opened.out) ?? [];
+  assert.ok(url, opened.out);
+  assert.match(opened.out, /created feature-split at [0-9a-f]{12} from plan v1/);
+  assert.equal(
+    opened.out.endsWith(
+      "nothing new on the review page in 0s\nnext: run follow-me again to keep listening\n",
+    ),
+    true,
+    opened.out,
+  );
+
+  const anchor = { kind: "message", commit: 0 };
+  const context = { commitMessage: "feat: everything", path: null };
+  const comment = (body: string, more: object) => ({
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ anchor, context, body, ...more }),
+  });
+  await fetch(
+    new URL("api/comments", url),
+    comment("hold this back", { severity: "major", pending: true }),
+  );
+  const quiet = run(repo.dir, "--wait", "0");
+  assert.equal(quiet.out.includes("hold this back"), false);
+
+  // A question reaches a call that is already listening.
+  const listening = runAsync(repo.dir, "--wait", "10");
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  await fetch(new URL("api/comments", url), comment("why one commit?", { kind: "question" }));
+  const heard = await listening;
+  assert.equal(heard.code, 0, heard.err);
+  assert.match(heard.out, /new question c_[a-z2-7]{6} on the message of commit 1/);
+  assert.match(heard.out, /why one commit\?/);
+  assert.equal(heard.out.includes("hold this back"), false);
+  assert.equal(
+    heard.out.endsWith(
+      'next: answer with follow-me reply <id> --body "<markdown>" [--diagram file], or run follow-me again to keep listening\n',
+    ),
+    true,
+  );
+  // The next call starts after what it already printed.
+  assert.match(run(repo.dir, "--wait", "0").out, /^nothing new/m);
+
+  await fetch(new URL("api/submit", url), { method: "POST" });
+  const submitted = run(repo.dir, "--wait", "5");
+  assert.equal(submitted.code, 0, submitted.err);
+  assert.match(submitted.out, /the reviewer submitted the review/);
+  assert.match(submitted.out, /hold this back/);
+  assert.equal(
+    submitted.out.endsWith("next: done; the user can port it with follow-me report --json\n"),
+    true,
+  );
+
+  await fetch(new URL("api/end", url), { method: "POST" });
+  const after = run(repo.dir, "--wait", "0");
+  assert.equal(after.code, 0, after.err);
+  assert.match(after.out, /^review v1 ended with 2 comments\n/);
+  assert.match(after.out, /hold this back/);
+  assert.equal(
+    after.out.endsWith("next: done; the user can port it with follow-me report --json\n"),
+    true,
+  );
+});
+
+test("follow-me on a branch someone else wrote plans a reviewer's reading and applies nothing", async (t) => {
+  const skillHome = mkdtempSync(join(tmpdir(), "follow-me-skillhome-"));
+  t.after(() => rmSync(skillHome, { recursive: true, force: true }));
+  const { run } = cliIn(t, { HOME: skillHome });
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  git(repo.dir, "config", "user.email", "someone-else@example.com");
+  const first = run(repo.dir);
+  assert.equal(first.code, 0, first.err);
+  assert.equal(first.out.split("\n")[0], "wrote .follow-me/feature/prompt.md");
+  const prompt = readFileSync(join(repo.dir, ".follow-me", "feature", "prompt.md"), "utf8");
+  assert.equal(prompt.split("\n")[0], "# follow-me: tell the story of this branch");
+
+  const diff = await loadDiff(repo.dir, "main", "feature");
+  writeWholeDraft(repo.dir, repo.base, repo.branch, [...diff.units.keys()]);
+  const opened = run(repo.dir, "--no-open", "--wait", "0");
+  assert.equal(opened.code, 0, opened.err);
+  const [, url] = SESSION_URL.exec(opened.out) ?? [];
+  assert.ok(url, opened.out);
+  const state = JSON.parse(await (await fetch(new URL("api/state", url))).text());
+  assert.equal(state.mode, "walk");
+  assert.equal(git(repo.dir, "branch", "--list", "feature-split"), "");
 });

@@ -7,10 +7,6 @@ follow-me splits a branch's net change into small commits in an order a reader c
 [![npm](https://img.shields.io/npm/v/@shiyuphan/follow-me)](https://www.npmjs.com/package/@shiyuphan/follow-me)
 [![ci](https://github.com/phanshiyu/follow-me/actions/workflows/ci.yml/badge.svg)](https://github.com/phanshiyu/follow-me/actions/workflows/ci.yml)
 
-<p align="center"><img src="assets/playback.gif" width="960" alt="Playback of an eight-commit branch: each commit opens with its narration, then its changed lines appear chunk by chunk beside a sequence diagram"></p>
-
-*Playback at 1x, sped up 1.5 times for the GIF. The voice is not in the GIF; the browser reads the narration aloud.*
-
 ## Why
 
 People commit in the order things happened: wip, fix, actually fix, revert. A reviewer then reads that history or gives up and reads one big diff. Neither shows how the change was thought through.
@@ -20,40 +16,32 @@ The blob with its tongue out is you, on commit 31 of someone's 47-commit branch.
 follow-me is for two people:
 
 - **The author** commits however they like, then wants a branch that reads like a story before asking for review.
-- **The reviewer** wants to watch someone else's branch being written, one line at a time, with the author's reasoning read aloud.
+- **The reviewer** wants to read someone else's branch in an order that makes sense, ask questions about it, and post the review to the merge request.
 
-## Install
+## Use it
 
-You need Node 24 or newer and git.
+You do not run follow-me yourself. Your coding agent does.
 
-```sh
-npm i -g @shiyuphan/follow-me
-```
+1. Install it once, with Node 24 or newer and git: `npm i -g @shiyuphan/follow-me`.
+2. Tell your agent to review a branch with follow-me. The first time it runs, follow-me copies its skill into the skill directory of every agent it finds (Claude Code, OpenCode, Codex CLI, Cursor, Gemini CLI, GitHub Copilot CLI), so every repo sees it. The agent plans the commits, and a review page opens in your browser.
+3. Use the page. Read the commits in order, flag what is wrong, ask what you do not understand. Questions go to the agent at once and it answers under them. Flags are held until you press **Submit**.
+4. Tell the agent to post the review. It reads `follow-me report --json` and posts the items you did not exclude to your GitLab merge request or GitHub pull request with `glab` or `gh`. follow-me never holds a token.
 
-follow-me never calls a model and holds no API key. Your coding agent writes the plan, so the Agent Skill that teaches it to drive the CLI is part of the install. Install it once:
+follow-me never calls a model and holds no API key; your agent writes the plan. [Using follow-me from your coding agent](docs/harnesses.md) has the per-harness details. `follow-me uninstall` removes exactly the skill files the agent run wrote.
 
-```sh
-follow-me install
-```
+## What the agent runs
 
-`install` looks in your home directory for the config directories of Claude Code, OpenCode, Codex CLI, Cursor, Gemini CLI, and GitHub Copilot CLI. It copies the skill into the user-level skill directory of each one it finds, for example `~/.claude/skills/follow-me/SKILL.md`, so every repo sees it. Add `--project` to install into the current repo instead. Other flags are `--harness claude,codex`, `--all`, and `--dry-run`.
+An agent runs `follow-me` with no command, again and again. Each call does the next thing that is missing and ends with a `next:` line: it writes `.follow-me/<branch>/prompt.md` for the agent to answer, prints the problems with the agent's draft, applies a valid draft to `<branch>-split` and opens the page, then listens to the reviewer for up to 60 seconds (`--wait <seconds>`) and prints what they flagged or asked. When the reviewer submits it prints the report. `follow-me help` lists the other commands an agent uses (`reply`, `explain`, `report`); `follow-me help --all` lists the steps by hand:
 
-```sh
-follow-me install --list    # each harness, where its skill goes, and its docs
-follow-me uninstall         # removes exactly the files install writes
-```
+### Splitting your own branch
 
-[Using follow-me from your coding agent](docs/harnesses.md) has the per-harness details.
-
-## Split your own branch
-
-Check out the branch you want to split and run this from the repo root:
+With the branch checked out, from the repo root:
 
 ```sh
 follow-me split --base main     # extract, apply your agent's draft and open the review in one go
 ```
 
-Until there is a valid draft, `split` writes `.follow-me/<branch>/prompt.md` and stops: ask your coding agent to follow it, then run `follow-me check` and `follow-me split` again. Every command ends with a `next:` line naming the step after it. The steps `split` runs are also commands of their own:
+Until there is a valid draft, `split` writes `.follow-me/<branch>/prompt.md` and stops: the agent follows it, then runs `follow-me check` and `follow-me split` again. Every command ends with a `next:` line naming the step after it. The steps `split` runs are also commands of their own:
 
 ```sh
 follow-me extract --base main   # snapshot the diff from main to the tip, list the units
@@ -62,7 +50,7 @@ follow-me prompt                # instructions and every unit, for your coding a
 follow-me check                 # print every problem with the draft at once
 follow-me apply                 # write the commits to <branch>-split
 follow-me review                # open the review page in your browser
-follow-me feedback              # print the review as markdown for the agent
+follow-me report [--json]       # print the review as markdown, or as items to post
 ```
 
 A unit is a text hunk (`h_…`), a whole file that cannot be split by line (`f_…`), or a mode change (`m_…`). The draft assigns every change line to exactly one commit. `h_x:0-3,7` takes change lines 0 to 3 and 7 of hunk `h_x`, so one hunk can spread across several commits.
@@ -92,31 +80,18 @@ The red blob in the party hat is your branch tip. Nothing follow-me does moves i
 
 On the review page, `n` or `j` goes to the next commit, `p` or `k` to the previous one. **End review** saves `.follow-me/<branch>/reviews/vN.json`. An unfinished review autosaves and comes back when you open the session again.
 
-## Watch someone else's branch
+### Reviewing someone else's branch
 
-Check out their branch and run:
+When the branch is not yours, `follow-me` plans a reading order instead of a split: nothing is applied and no branch is written. You read the commits in order and comment on the code, and `follow-me report` prints it as a code review for the author, grouped by file, with each comment quoting its hunk as it reads in that commit and its line number on the branch. `--reviewer` and `--author` override the guess, which is whether you wrote every commit of the branch.
 
-```sh
-follow-me walk --base main
-```
+### One server for every review
 
-`walk` extracts the branch and plans it as a narrated story. When there is no plan yet, it prints `follow-me prompt --walk` for your coding agent, and you run `follow-me walk` again once the agent's draft passes `follow-me check`. `walk` applies nothing and writes no branch.
-
-![Playback: chunk 2 of 2 of commit 3, its narration card above the two lines it introduces, the progress strip in the player bar and the unit's sequence diagram beside the code](assets/screenshots/playback.png)
-*Playback. Each line types in while the narration for its commit or hunk is read aloud. The caption shows the narration being read.*
-
-Playback goes commit by commit. Space pauses, **Previous** and **Next** move between commits, and you can change the speed, pick a voice, or mute. Pause on any line to comment on it. Narration uses the browser's built-in speech synthesis, so it needs no network.
-
-When you end the review, `follow-me feedback --walk` prints it as a code review for the author, grouped by file. Code reviews are saved apart from the author's plan reviews, in `.follow-me/<branch>/reviews/walk/vN.json`, so you can walk a plan the author already reviewed. Each comment quotes its hunk as it reads in that commit, with the line number on the branch. The author's agent fixes the branch itself. A walk review never feeds the split loop below.
-
-## One server for every review
-
-The first `review` or `walk` starts a review server for your user and serves the page. Every later `review` or `walk`, from any repo or worktree, adds its session to that server, prints the URL, and exits. The server's index page lists every open session.
+The first review starts a review server for your user and serves the page. Every later one, from any repo or worktree, adds its session to that server, prints the URL, and exits. The server's index page lists every open session.
 
 ```sh
 follow-me review --detach       # start the server in the background and return
 follow-me review --no-open      # print the URL without opening a browser
-follow-me review --wait         # return only once the review ends, so an agent can go on to feedback
+follow-me review --wait         # return only once the review ends, so an agent can go on to report
 follow-me server status         # the server, its port, and the sessions it hosts
 follow-me server stop           # stop it, autosaved reviews are kept
 ```
@@ -125,7 +100,7 @@ The server listens on `127.0.0.1` only. If the `--port` you ask for is taken by 
 
 Each worktree has its own `.follow-me/` directory, which git ignores, and each branch has its own session in it. A lock stops two agents from applying or reviewing one session at once. `follow-me clean` removes what no live session needs: sessions of deleted branches, review drafts that a finished review replaced, and locks and temp files of dead processes. It keeps plan versions, because reviews refer to them. `clean --dry-run` lists what it would remove, and `clean --all` removes `.follow-me/` entirely unless a live process holds a session.
 
-## How it works
+### How it works
 
 Every unit comes from one `git diff base..tip`, so the hunks of a file never overlap in base coordinates. A commit's version of a file is therefore the base lines with that commit's change lines swapped in. Nothing is patched. Hunks can go in any order and split at any line, and nothing can fail to apply.
 
@@ -135,9 +110,9 @@ There is one limit. A commit can only contain lines that exist in the base or in
 
 [docs/DESIGN.md](docs/DESIGN.md) has the full design.
 
-## The agent loop
+### The agent loop
 
-Each `apply` freezes the draft as the next plan version, `.follow-me/<branch>/plans/vN.json`. Each review belongs to one version. `follow-me feedback` gives every comment an id like `c_abc234`. After a review, `follow-me prompt` includes the previous plan and the open comments, and the agent answers each comment in the next draft:
+Each `apply` freezes the draft as the next plan version, `.follow-me/<branch>/plans/vN.json`. Each review belongs to one version. `follow-me report` gives every comment an id like `c_abc234`. After a review, `follow-me prompt` includes the previous plan and the open comments, and the agent answers each comment in the next draft:
 
 ```json
 "responses": [

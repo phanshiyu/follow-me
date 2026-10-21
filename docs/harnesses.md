@@ -9,6 +9,11 @@ whatever model and credentials your harness already has.
 
 ## Install
 
+You normally do nothing here: the first time an agent runs `follow-me`, it copies the skill into
+every detected harness at user scope and prints one `wrote` line per file, and it does so again
+whenever the copy differs from the one shipped. The commands below are for installing into a
+project, into a harness that was not detected, or by hand.
+
 Run this from the repo root to install into every harness whose config directory exists in your
 home directory:
 

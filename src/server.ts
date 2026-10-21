@@ -624,6 +624,7 @@ function hostSession(
       mode: view.loaded.state.mode,
       version: view.loaded.state.version,
       comments: view.comments.size,
+      openedAt: new Date(openedAt).toISOString(),
     }),
     snapshot: () => ({
       ...view.loaded.state,

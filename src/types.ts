@@ -425,4 +425,6 @@ export type HostedSummary = {
   readonly mode: ReviewMode;
   readonly version: PlanVersion;
   readonly comments: number;
+  /** ISO time this session was registered; with the id it names one event log. */
+  readonly openedAt: string;
 };

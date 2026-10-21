@@ -384,6 +384,7 @@ test("one server hosts two sessions, lists them, and saves each review in its ow
       mode: "split",
       version: 3,
       comments: 1,
+      openedAt: first.summary.openedAt,
     },
     {
       id: sessionIdOf(two),
@@ -393,6 +394,7 @@ test("one server hosts two sessions, lists them, and saves each review in its ow
       mode: "split",
       version: 3,
       comments: 2,
+      openedAt: second.summary.openedAt,
     },
   ]);
   const index = await (await fetch(host.url)).text();

@@ -286,11 +286,12 @@ async function call(port: number, method: string, path: string, body?: unknown):
 
 function parseSummary(raw: unknown): HostedSummary | null {
   if (!isFields(raw)) return null;
-  const { id, url, repo, branch, mode, version, comments } = raw;
+  const { id, url, repo, branch, mode, version, comments, openedAt } = raw;
   if (typeof url !== "string" || typeof repo !== "string") return null;
   if (typeof branch !== "string" || (mode !== "split" && mode !== "walk")) return null;
   if (!isSessionId(id) || !isPlanVersion(version) || typeof comments !== "number") return null;
-  return { id, url, repo, branch, mode, version, comments };
+  if (typeof openedAt !== "string") return null;
+  return { id, url, repo, branch, mode, version, comments, openedAt };
 }
 
 /** Registers a session with the server on this port; the same session yields the same URL. */

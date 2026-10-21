@@ -154,6 +154,27 @@ export function runInstall(
   });
 }
 
+/**
+ * Keeps the skill current in every harness found at user scope: writes what is missing or differs
+ * from the shipped copy and says so, one line per file; says nothing when all is current. A host
+ * with no harness, or a package without its skill folder, is not an error here.
+ */
+export function syncSkills(home: string, say: (line: string) => void, skillDir?: string): void {
+  try {
+    const dir = skillDir ?? findSkillDir();
+    const targets = { harness: undefined, all: false, project: false, dryRun: false };
+    for (const file of planSkillFiles(targets, home, home)) {
+      const line = writeSkill(dir, file, false);
+      if (line.startsWith("wrote ")) say(line);
+    }
+  } catch (error) {
+    if (error instanceof InstallError) return;
+    process.stderr.write(
+      `follow-me: could not update the skill: ${error instanceof Error ? error.message : error}\n`,
+    );
+  }
+}
+
 export function runUninstall(
   options: SkillTargets,
   home: string,
