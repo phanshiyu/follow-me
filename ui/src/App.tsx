@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { ReviewPage } from "./components/ReviewPage.tsx";
 import { api } from "./lib/api.ts";
 import type { State } from "./lib/wire.ts";
 import { ReviewProvider } from "./store.tsx";
@@ -31,11 +32,7 @@ export function App() {
     return <main className="p-10 text-muted-foreground text-sm">Loading the review…</main>;
   return (
     <ReviewProvider initial={state}>
-      <Shell />
+      <ReviewPage />
     </ReviewProvider>
   );
-}
-
-function Shell() {
-  return <main className="p-6">follow-me</main>;
 }

@@ -10,7 +10,8 @@ import {
 } from "react";
 import { api, sessionPrefix } from "./lib/api.ts";
 import { applyEvent } from "./lib/live.ts";
-import type { ServerEvent, State } from "./lib/wire.ts";
+import { type LineNumber, lineNumbers, ownership } from "./lib/rows.ts";
+import type { ServerEvent, State, Unit, UnitId } from "./lib/wire.ts";
 
 type Store = {
   readonly state: State;
@@ -94,4 +95,24 @@ export function ReviewProvider({ initial, children }: { initial: State; children
     [state, ended, error, run, refresh],
   );
   return <ReviewContext value={store}>{children}</ReviewContext>;
+}
+
+export type Derived = {
+  readonly units: ReadonlyMap<UnitId, Unit>;
+  readonly owners: ReadonlyMap<UnitId, ReadonlyMap<number, number>>;
+  readonly numbers: ReadonlyMap<UnitId, readonly LineNumber[]>;
+};
+
+/** Lookups that change only with the plan, not with every comment. */
+export function useDerived(): Derived {
+  const { state } = useReview();
+  const { units, commits } = state;
+  return useMemo(
+    () => ({
+      units: new Map(units.map((u) => [u.id, u])),
+      owners: ownership(commits),
+      numbers: lineNumbers(units),
+    }),
+    [units, commits],
+  );
 }

@@ -756,3 +756,52 @@
     @apply font-sans;
   }
 }
+
+/* Syntax tones, the few groups highlight.ts maps Prism's tokens to. */
+:root {
+  --tok-comment: #5b6472;
+  --tok-keyword: #a8227e;
+  --tok-string: #8a4b08;
+  --tok-number: #00687d;
+  --tok-function: #1a4fc4;
+  --tok-type: #6b3fc0;
+  --tok-property: #3b5f8f;
+  --tok-tag: #b0261e;
+}
+
+.dark {
+  --tok-comment: #adb5c3;
+  --tok-keyword: #ff8fd6;
+  --tok-string: #f0c674;
+  --tok-number: #5fd8ee;
+  --tok-function: #8fb4ff;
+  --tok-type: #c3a6ff;
+  --tok-property: #9db7d8;
+  --tok-tag: #ff9a8f;
+}
+
+.tok-comment {
+  color: var(--tok-comment);
+  font-style: italic;
+}
+.tok-keyword {
+  color: var(--tok-keyword);
+}
+.tok-string {
+  color: var(--tok-string);
+}
+.tok-number {
+  color: var(--tok-number);
+}
+.tok-function {
+  color: var(--tok-function);
+}
+.tok-type {
+  color: var(--tok-type);
+}
+.tok-property {
+  color: var(--tok-property);
+}
+.tok-tag {
+  color: var(--tok-tag);
+}
