@@ -197,6 +197,7 @@ test("extract, check, apply and status drive the whole flow from the command lin
     [
       "  1  docs: readme  (1 unit, 1 file)",
       "  2  feat: everything else  (8 units, 7 files)",
+      "syntax: 4 writes checked, 2 files skipped (no checker for .md, no checker for .txt)",
       "next: follow-me apply",
       "",
     ].join("\n"),
@@ -249,6 +250,44 @@ test("extract, check, apply and status drive the whole flow from the command lin
   assert.equal(prompt.code, 0, prompt.err);
   assert.match(prompt.out, /^# follow-me: plan the commits\n/);
   assert.match(prompt.out, /## Previous plan/);
+});
+
+test("check and apply refuse a commit that ends inside a function, until --allow-syntax-errors", async (t) => {
+  const { run } = cliIn(t);
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  assert.equal(run(repo.dir, "extract").code, 0);
+  const diff = await loadDiff(repo.dir, "main", "feature");
+  const guard = [...diff.units.values()].find((u) => u.path === "src/guard.js")?.id;
+  assert.ok(guard);
+  const others = [...diff.units.keys()].filter((id) => id !== guard);
+  const commits = [
+    { message: "feat: open assertNumber", units: [`${guard}:0-1`] },
+    { message: "feat: close it, then the rest", units: [guard, ...others] },
+  ];
+  writeFileSync(
+    join(repo.dir, ".follow-me", "feature", "draft.json"),
+    JSON.stringify({ schema: "follow-me/plan@1", base: repo.base, tip: repo.branch, commits }),
+  );
+
+  const checked = run(repo.dir, "check");
+  assert.equal(checked.code, 1);
+  assert.match(
+    checked.out,
+    /^\$\.commits\[0\]: src\/guard\.js: line 3: SyntaxError: Unexpected end of input\n/m,
+  );
+  const refused = run(repo.dir, "apply");
+  assert.equal(refused.code, 1);
+  assert.match(
+    refused.out,
+    /\nrefusing to apply: fix the commits above, or pass --allow-syntax-errors\n$/,
+  );
+  assert.equal(git(repo.dir, "branch", "--list", "feature-split"), "");
+
+  const allowed = run(repo.dir, "apply", "--allow-syntax-errors");
+  assert.equal(allowed.code, 0, allowed.err);
+  assert.match(allowed.out, /^warning: \$\.commits\[0\]: src\/guard\.js: line 3: /);
+  assert.match(allowed.out, /\nproof: feature-split\^\{tree\} (\w+) equals feature\^\{tree\} \1\n/);
 });
 
 test("each step of a review names the next one, ending with feedback for the agent", async (t) => {

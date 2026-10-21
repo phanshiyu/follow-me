@@ -229,7 +229,8 @@ const RULES = (
 - Use the unit ids exactly as printed. Do not invent ids.
 - "f_…" and "m_…" units are taken whole, never with a line list.
 - Every commit needs a non-empty message and at least one unit.
-- Check your work with \`${checkCommand}\` and fix every issue it prints.`;
+- Keep every file syntactically whole in every commit: a function with its closing brace, a block with both ends, an import before or with its first use. Commits need not build or pass tests, but each file a commit writes must parse.
+- Check your work with \`${checkCommand}\` and fix every issue it prints, syntax errors included.`;
 
 /** The planner prompt for a coding agent. Pure and deterministic for the same input. */
 export function renderPrompt(input: PromptInput): string {

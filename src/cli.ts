@@ -54,6 +54,7 @@ import {
   SessionLockedError,
   type StoredReview,
 } from "./session.ts";
+import { checkSyntax, type SyntaxReport } from "./syntax.ts";
 import type {
   Diff,
   HostedSummary,
@@ -382,8 +383,39 @@ async function check(cwd: string, args: Args): Promise<number> {
   }
   listPlan(verdict.plan);
   for (const w of verdict.warnings) say(formatWarning(w));
+  const syntax = await checkSyntax(verdict.plan, syntaxOverride(args));
+  for (const line of formatSyntax(syntax)) say(line);
+  if (syntax.issues.length > 0) {
+    next(`fix the commits above so every file parses, then follow-me check${branchFlag(args)}`);
+    return 1;
+  }
   next("follow-me apply");
   return 0;
+}
+
+function syntaxOverride(args: Args): { override?: string } {
+  const override = args.values.get("syntax");
+  if (override === undefined) return {};
+  if (!override.includes("{file}")) throw new UsageError("--syntax needs {file} in the command");
+  return { override };
+}
+
+function formatSyntax(report: SyntaxReport, mark = ""): string[] {
+  const out = report.issues.map(
+    (i) => `${mark}$.commits[${i.commit}]: ${show(i.path)}: ${i.message}`,
+  );
+  for (const i of report.tip) {
+    out.push(
+      `${mark}${show(i.path)}: ${i.message} (the tip itself does not parse here, so earlier commits are not checked for it)`,
+    );
+  }
+  const reasons = [...new Set(report.skipped.map((s) => s.reason))];
+  const skipped =
+    reasons.length === 0
+      ? ""
+      : `, ${plural(report.skipped.length, "file")} skipped (${reasons.join(", ")})`;
+  out.push(`syntax: ${plural(report.checked, "write")} checked${skipped}`);
+  return out;
 }
 
 function listPlan(plan: ValidPlan): void {
@@ -462,6 +494,15 @@ async function applyLocked(session: Session, args: Args): Promise<number> {
   const verdict = validate(session, session.readDraft());
   if (!verdict.ok) return 1;
   const { plan } = verdict;
+  const syntax = await checkSyntax(plan, syntaxOverride(args));
+  const allowed = args.flags.has("allow-syntax-errors");
+  if (syntax.issues.length > 0) {
+    for (const line of formatSyntax(syntax, allowed ? "warning: " : "")) say(line);
+    if (!allowed) {
+      say("refusing to apply: fix the commits above, or pass --allow-syntax-errors");
+      return 1;
+    }
+  }
   const version = session.freeze(plan);
   const name = args.values.get("name") ?? splitBranch(session);
   const signed = await signing(session.root, mode);
@@ -1226,11 +1267,14 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
         return 0;
       }
       case "check":
-        return await check(cwd, parseArgs(rest, { values: ["branch"] }));
+        return await check(cwd, parseArgs(rest, { values: ["branch", "syntax"] }));
       case "apply":
         return await apply(
           cwd,
-          parseArgs(rest, { values: ["name"], flags: ["force", "sign", "no-sign"] }),
+          parseArgs(rest, {
+            values: ["name", "syntax"],
+            flags: ["force", "sign", "no-sign", "allow-syntax-errors"],
+          }),
         );
       case "status":
         parseArgs(rest, {});
@@ -1244,7 +1288,10 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
       case "plan":
         return await plan(cwd, parseArgs(rest, { values: ["model", "branch"], flags: ["walk"] }));
       case "split": {
-        const spec = { values: ["base", "branch", "model"], flags: ["no-open"] };
+        const spec = {
+          values: ["base", "branch", "model", "syntax"],
+          flags: ["no-open", "allow-syntax-errors"],
+        };
         return await split(cwd, parseArgs(rest, spec));
       }
       case "review": {
