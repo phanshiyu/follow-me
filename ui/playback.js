@@ -472,22 +472,22 @@ export function lineNumbers(units) {
 }
 
 /**
- * How a comment names the lines it is on: tip line numbers, with removed lines by their old
- * number, runs collapsed. "line 4", "lines 4-5", "lines 4-5, old 3".
+ * How a comment names the rows it is on: tip line numbers, with removed rows by their old number,
+ * runs collapsed. "line 4", "lines 4-5", "lines 4-5, old 3". Context rows count by tip number.
  * @param {readonly HunkLine[]} body
  * @param {readonly { old: number | null, new: number | null }[]} numbers
- * @param {readonly number[]} changes
+ * @param {readonly number[]} rows body indices, in any order
  */
-export function describeLines(body, numbers, changes) {
-  const picked = new Set(changes);
+export function describeRows(body, numbers, rows) {
   /** @type {{ side: "new" | "old", n: number }[]} */
   const marks = [];
-  body.forEach((line, i) => {
-    if (line.op === " " || !picked.has(line.change)) return;
-    const side = line.op === "+" ? "new" : "old";
-    const n = numbers[i]?.[side];
-    if (n !== null && n !== undefined) marks.push({ side, n });
-  });
+  [...new Set(rows)]
+    .sort((a, b) => a - b)
+    .forEach((i) => {
+      const side = body[i]?.op === "-" ? "old" : "new";
+      const n = numbers[i]?.[side];
+      if (n !== null && n !== undefined) marks.push({ side, n });
+    });
   /** @param {"new" | "old"} side */
   const ranges = (side) => {
     const ns = marks.filter((m) => m.side === side).map((m) => m.n);
@@ -511,6 +511,18 @@ export function describeLines(body, numbers, changes) {
       : []),
   ];
   return text.join(", ");
+}
+
+/**
+ * The same for change indices: the rows of the hunk that carry them.
+ * @param {readonly HunkLine[]} body
+ * @param {readonly { old: number | null, new: number | null }[]} numbers
+ * @param {readonly number[]} changes
+ */
+export function describeLines(body, numbers, changes) {
+  const picked = new Set(changes);
+  const rows = body.flatMap((line, i) => (line.op !== " " && picked.has(line.change) ? [i] : []));
+  return describeRows(body, numbers, rows);
 }
 
 /**

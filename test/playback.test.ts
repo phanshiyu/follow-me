@@ -8,6 +8,7 @@ import {
   chunkOf,
   commitOf,
   describeLines,
+  describeRows,
   diagramAt,
   duration,
   hasDiagrams,
@@ -386,4 +387,26 @@ test("the preselected voice is the saved one, else the default in the reader's l
   assert.equal(pickVoice(voices, "Gone", "en-US"), "Samantha");
   assert.equal(pickVoice(voices, null, "fr-CA"), "Thomas");
   assert.equal(pickVoice(voices, null, "de-DE"), null);
+});
+
+test("describeRows names context rows by their tip line and removed rows by the old one", () => {
+  const body: HunkLine[] = [
+    { op: " ", text: "a\n" },
+    { op: "-", text: "b\n", change: 0 },
+    { op: "+", text: "c\n", change: 1 },
+    { op: " ", text: "d\n" },
+  ];
+  const numbers = lineNumbers([{ kind: "hunk", id: "h_x", path: "a.ts", oldStart: 9, body }]).get(
+    "h_x",
+  );
+  assert.ok(numbers);
+  assert.deepEqual(
+    [
+      describeRows(body, numbers, [0]),
+      describeRows(body, numbers, [3, 0]),
+      describeRows(body, numbers, [0, 1, 2, 3]),
+      describeRows(body, numbers, [1]),
+    ],
+    ["line 10", "lines 10, 12", "lines 10-12, old 11", "old line 11"],
+  );
 });

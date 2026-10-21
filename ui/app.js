@@ -22,6 +22,7 @@ import {
   chunkOf,
   commitOf,
   describeLines,
+  describeRows,
   diagramAt,
   duration,
   hasDiagrams,
@@ -50,6 +51,15 @@ import {
   kindCounts,
   statusLine,
 } from "/questions.js";
+import {
+  anchorFor,
+  lastShown,
+  pickRow,
+  rowsOfAnchor,
+  selectionRange,
+  snapshotRows,
+  stepRow,
+} from "/selection.js";
 import { endSummary, reportPath } from "/summary.js";
 
 const $ = (id) => document.getElementById(id);
@@ -79,10 +89,14 @@ let numbers = new Map();
 /** unit id -> (change index -> index of the commit that owns the line) */
 let owners = new Map();
 /**
- * The lines picked for a comment: a contiguous run of one commit's own lines in one unit, as hunk
- * body indices. from is where a shift-click range starts.
+ * The rows picked for a comment: a contiguous run of rows of one hunk as one commit shows it,
+ * context and changes alike, as hunk body indices. from is where a range started.
  */
 let selection = null;
+/** The row to focus after the next render, as a data-line key. */
+let focusRow = null;
+/** A gutter drag in progress: the hunk element, the unit, and the rows it began and now ends on. */
+let drag = null;
 /** The comment box to focus after the next render. */
 let focusKey = null;
 /** Unsent textarea contents survive re-renders, keyed like the boxes. */
@@ -242,8 +256,11 @@ function firstLine(message) {
 /** Where a hunk comment points, by file line numbers; the stored anchor keeps change indices. */
 function describeAnchor(anchor) {
   const unit = unitsById.get(anchor.unit);
-  if (anchor.changes === null || unit?.kind !== "hunk") return "whole hunk";
-  return describeLines(unit.body, numbers.get(unit.id) ?? [], anchor.changes);
+  if (unit?.kind !== "hunk") return "whole hunk";
+  const rows = numbers.get(unit.id) ?? [];
+  if (anchor.offsets !== undefined) return describeRows(unit.body, rows, anchor.offsets);
+  if (anchor.changes === null) return "whole hunk";
+  return describeLines(unit.body, rows, anchor.changes);
 }
 
 /**
@@ -792,31 +809,68 @@ function ownLines(unit, commitIndex) {
   );
 }
 
-/** Picks a line for a comment; shift extends the pick to a range. Pauses playback. */
-function pickLine(unit, commitIndex, line, extend) {
-  const own = ownLines(unit, commitIndex);
-  const same = extend && selection?.unit === unit.id && selection.commit === commitIndex;
-  const from = same ? selection.from : line;
-  const [a, b] = [own.indexOf(from), own.indexOf(line)].sort((x, y) => x - y);
-  selection = { commit: commitIndex, unit: unit.id, from, lines: own.slice(a, b + 1) };
-  focusKey = `line:${commitIndex}:${unit.id}`;
+/** The row a .dl element shows, as an index into its hunk body. */
+function rowIndex(node) {
+  return Number(node.dataset.line.slice(node.dataset.line.lastIndexOf(":") + 1));
+}
+
+/** The rows a hunk shows right now, in order; playback hides the ones not yet revealed. */
+function shownRows(diff) {
+  return [...diff.querySelectorAll(".dl:not(.pending)")].map(rowIndex);
+}
+
+function hunkOf(unit, commitIndex) {
+  return { id: unit.id, commit: commitIndex, body: unit.body, owners: ownersOf(unit) };
+}
+
+function boxKey(commitIndex, unit) {
+  return `line:${commitIndex}:${unit.id}`;
+}
+
+/**
+ * Makes a pick the page's selection and redraws. A mouse pick takes you to the comment box; a key
+ * pick keeps focus on the row, so the next arrow can extend it. Pauses playback.
+ */
+function setPick(unit, commitIndex, pick, { box, focus }) {
+  selection = pick === null ? null : { commit: commitIndex, unit: unit.id, ...pick };
+  if (box && pick !== null) focusKey = boxKey(commitIndex, unit);
+  else focusRow = focus === undefined ? null : lineKey(unit.id, focus);
   if (player.playing) pause();
   render();
 }
 
+/** The pick in this hunk, or null when the selection is elsewhere. */
+function pickIn(unit, commitIndex) {
+  return selection?.unit === unit.id && selection.commit === commitIndex ? selection : null;
+}
+
+/** Click or shift-click on a row. */
+function pickLine(unit, commitIndex, line, diff, extend) {
+  const next = pickRow(shownRows(diff), pickIn(unit, commitIndex), line, { extend });
+  setPick(unit, commitIndex, next, { box: true, focus: line });
+}
+
+function clearPick() {
+  if (selection === null) return;
+  const { unit, from } = selection;
+  selection = null;
+  focusRow = lineKey(unit, from);
+  render();
+}
+
 function lineBox(unit, commit) {
-  const changes = selection.lines.map((i) => unit.body[i].change);
+  const anchor = anchorFor(hunkOf(unit, commit.index), selection.lines);
   return commentForm({
-    key: `line:${commit.index}:${unit.id}`,
-    placeholder: `Comment on ${describeLines(unit.body, numbers.get(unit.id) ?? [], changes)}`,
+    key: boxKey(commit.index, unit),
+    placeholder: `Comment on ${describeRows(unit.body, numbers.get(unit.id) ?? [], selection.lines)}`,
     kinds: true,
     submit: (body, kind, severity) =>
       api("POST", "/api/comments", {
-        anchor: { kind: "hunk", unit: unit.id, commit: commit.index, changes },
+        anchor,
         context: {
           commitMessage: commit.message,
           path: unit.path,
-          lines: selection.lines.map((i) => unit.body[i].text.replace(/\n$/, "")),
+          lines: snapshotRows(unit.body, selection.lines),
         },
         body,
         ...kindField(kind),
@@ -828,8 +882,8 @@ function lineBox(unit, commit) {
   });
 }
 
-/** One line of a hunk. Only the commit's own change lines can be picked for a comment. */
-function diffLine(unit, commit, index, mine) {
+/** One row of a hunk. Every row can be picked for a comment: context, changes, all of them. */
+function diffLine(unit, commit, index, mine, marked) {
   const line = unit.body[index];
   const key = lineKey(unit.id, index);
   const spans = spansOf(unit)?.[index];
@@ -846,19 +900,6 @@ function diffLine(unit, commit, index, mine) {
   const gutter = el(
     "span",
     { class: "gutter" },
-    el("span", { class: "ln", text: at?.old == null ? "" : String(at.old) }),
-    el("span", { class: "ln", text: at?.new == null ? "" : String(at.new) }),
-  );
-  if (!mine) {
-    return el(
-      "div",
-      { class: "dl", "data-line": key },
-      gutter,
-      el("span", { class: "op", text: " " }),
-      text,
-    );
-  }
-  gutter.prepend(
     el("button", {
       type: "button",
       class: "add-comment",
@@ -866,13 +907,15 @@ function diffLine(unit, commit, index, mine) {
       "aria-label": "Comment on this line",
       text: "+",
     }),
+    el("span", { class: "ln", text: at?.old == null ? "" : String(at.old) }),
+    el("span", { class: "ln", text: at?.new == null ? "" : String(at.new) }),
   );
-  const picked =
-    selection?.commit === commit.index &&
-    selection.unit === unit.id &&
-    selection.lines.includes(index);
-  const classes = ["dl", line.op === "+" ? "add" : "del", "mine"];
+  const picked = pickIn(unit, commit.index)?.lines.includes(index) ?? false;
+  const classes = ["dl"];
+  if (mine) classes.push(line.op === "+" ? "add" : "del", "mine");
   if (picked) classes.push("picked");
+  if (marked) classes.push("marked");
+  const what = mine ? (line.op === "+" ? "Added" : "Removed") : "Context";
   return el(
     "div",
     {
@@ -881,44 +924,92 @@ function diffLine(unit, commit, index, mine) {
       onmousedown: (event) => {
         // Shift-click extends the pick; without this it also selects page text.
         if (event.shiftKey) event.preventDefault();
+        else if (event.button === 0 && event.target.closest(".gutter")) {
+          event.preventDefault();
+          drag = {
+            diff: event.currentTarget.closest(".diff"),
+            unit,
+            commit: commit.index,
+            from: index,
+            to: index,
+          };
+        }
       },
-      onclick: (event) => pickLine(unit, commit.index, index, event.shiftKey),
+      onclick: (event) => {
+        // Dragging over text to copy it is not a pick.
+        if (!event.shiftKey && window.getSelection()?.toString()) return;
+        pickLine(unit, commit.index, index, event.currentTarget.closest(".diff"), event.shiftKey);
+      },
       onkeydown: (event) => lineKeys(event, unit, commit.index, index),
       tabindex: "-1",
-      "aria-label": `${line.op === "+" ? "Added" : "Removed"}: ${line.text.trim() || "blank line"}`,
+      "aria-label": `${what}: ${line.text.trim() || "blank line"}`,
+      "aria-selected": picked ? "true" : undefined,
     },
     gutter,
-    el("span", { class: "op", text: line.op }),
+    el("span", { class: "op", text: mine ? line.op : " " }),
     text,
   );
 }
 
+/** Gutter drag: rows under the pointer light up, and letting go makes them the pick. */
+document.addEventListener("mouseover", (event) => {
+  if (drag === null) return;
+  const row = event.target.closest?.(".dl");
+  if (!row || row.closest(".diff") !== drag.diff || rowIndex(row) === drag.to) return;
+  drag.to = rowIndex(row);
+  const range = new Set(selectionRange(shownRows(drag.diff), drag.from, drag.to));
+  for (const node of drag.diff.querySelectorAll(".dl")) {
+    node.classList.toggle("picked", range.has(rowIndex(node)));
+  }
+});
+
+document.addEventListener("mouseup", () => {
+  if (drag === null) return;
+  const done = drag;
+  drag = null;
+  // A gutter click that never left its row is an ordinary click, which picks the row itself.
+  if (done.from === done.to) return;
+  const lines = selectionRange(shownRows(done.diff), done.from, done.to);
+  setPick(done.unit, done.commit, { from: done.from, lines }, { box: true });
+});
+
 /**
- * Inside a hunk the commit's own lines are one tab stop: arrows move between them, Space or
- * Enter picks one for a comment and Shift extends the pick.
+ * Inside a hunk every row is one roving tab stop: arrows move between rows, Shift extends the
+ * pick, Space or Enter picks the row, Escape clears the pick.
  */
 function lineKeys(event, unit, commitIndex, index) {
-  const lines = [...event.currentTarget.parentElement.querySelectorAll(".dl.mine:not(.pending)")];
-  const at = lines.indexOf(event.currentTarget);
+  const diff = event.currentTarget.closest(".diff");
   const move = { ArrowDown: 1, ArrowUp: -1 }[event.key];
   if (move !== undefined) {
-    const to = lines[at + move];
-    if (to) {
-      event.currentTarget.tabIndex = -1;
-      to.tabIndex = 0;
-      to.focus();
+    const to = stepRow(shownRows(diff), index, move);
+    if (event.shiftKey) {
+      const base = pickIn(unit, commitIndex) ?? { from: index, lines: [index] };
+      const next = pickRow(shownRows(diff), base, to, { extend: true });
+      setPick(unit, commitIndex, next, { box: false, focus: to });
+    } else {
+      const target = diff.querySelector(`[data-line="${lineKey(unit.id, to)}"]`);
+      if (target) {
+        event.currentTarget.tabIndex = -1;
+        target.tabIndex = 0;
+        target.focus();
+      }
     }
   } else if (event.key === " " || event.key === "Enter") {
-    pickLine(unit, commitIndex, index, event.shiftKey);
+    const next = pickRow(shownRows(diff), pickIn(unit, commitIndex), index, {
+      extend: event.shiftKey,
+    });
+    setPick(unit, commitIndex, next, { box: false, focus: index });
+  } else if (event.key === "Escape" && selection !== null) {
+    clearPick();
   } else return;
   event.preventDefault();
   event.stopPropagation();
 }
 
-/** Gives each hunk one tab stop, on its first own line. */
+/** Gives each hunk one tab stop, on its first shown row. */
 function rovingLines() {
   for (const diff of $("main").querySelectorAll(".diff")) {
-    const first = diff.querySelector(".dl.mine:not(.pending)");
+    const first = diff.querySelector(".dl:not(.pending)");
     if (first) first.tabIndex = 0;
   }
 }
@@ -939,12 +1030,12 @@ function ownersOf(unit) {
   return Array.from({ length: unit.changeCount }, (_, c) => byChange?.get(c));
 }
 
-function unitComments(unit, commit) {
+function unitComments(unit, commit, loose) {
   const anchor = { kind: "hunk", unit: unit.id, commit: commit.index, changes: null };
   return el(
     "div",
     { class: "comments" },
-    ...commentsAt(anchor).map(commentView),
+    ...loose.map(commentView),
     el(
       "div",
       { class: "controls" },
@@ -969,6 +1060,12 @@ function unitView(unit, commit) {
   const ref = commit.refs.find((r) => r.unit === unit.id);
   const head = el("div", { class: "unit-head", title: unit.id });
   let content;
+  let looseComments = commentsAt({
+    kind: "hunk",
+    unit: unit.id,
+    commit: commit.index,
+    changes: null,
+  });
   if (unit.kind === "hunk") {
     const rows = rowsOf(unit.body, ownersOf(unit), commit.index);
     const first = rows.find((r) => r.kind === "line" && r.mine);
@@ -981,8 +1078,20 @@ function unitView(unit, commit) {
         text: `${mineCount} of ${unit.changeCount} changed lines in this commit`,
       }),
     );
-    const picking = selection?.commit === commit.index && selection.unit === unit.id;
+    const picking = pickIn(unit, commit.index) !== null;
     const boxAfter = picking ? Math.max(...selection.lines) : -1;
+    const shown = new Set(rows.flatMap((r) => (r.kind === "line" ? [r.line] : [])));
+    // A comment sits under its last row; one on the whole hunk, or whose rows are gone, under it.
+    const sitting = new Map();
+    const loose = [];
+    const marked = new Set();
+    for (const comment of commentsAt({ kind: "hunk", unit: unit.id, commit: commit.index })) {
+      const anchored = rowsOfAnchor(comment.anchor, unit.body);
+      const under = lastShown(anchored, shown);
+      for (const row of anchored) marked.add(row);
+      if (under === null) loose.push(comment);
+      else sitting.set(under, [...(sitting.get(under) ?? []), comment]);
+    }
     const own = ownLines(unit, commit.index);
     const raised = (commit.concerns ?? []).filter((c) => c.unit === unit.id);
     const under = new Map();
@@ -995,18 +1104,29 @@ function unitView(unit, commit) {
         bodyIndexes(unit.body, c.lines ?? []).map((i) => [i, severityOf(c, state.decisions)]),
       ),
     );
+    looseComments = loose;
     content = el(
       "div",
       { class: "diff" },
       ...rows.flatMap((row) => {
         if (row.kind === "fold") return [foldRow(row.lines, row.commit)];
-        const line = diffLine(unit, commit, row.line, row.mine);
+        const line = diffLine(unit, commit, row.line, row.mine, marked.has(row.line));
         const level = flagged.get(row.line);
         if (level) line.classList.add("flagged", `flag-${level}`);
         const cardsUnder = (under.get(row.line) ?? []).map((c) =>
           concernView(c, { after: lineKey(unit.id, row.line) }),
         );
-        return [line, ...cardsUnder, ...(row.line === boxAfter ? [lineBox(unit, commit)] : [])];
+        const said = (sitting.get(row.line) ?? []).map((comment) => {
+          const node = commentView(comment);
+          node.dataset.after = lineKey(unit.id, row.line);
+          return node;
+        });
+        return [
+          line,
+          ...cardsUnder,
+          ...said,
+          ...(row.line === boxAfter ? [lineBox(unit, commit)] : []),
+        ];
       }),
     );
   } else {
@@ -1029,7 +1149,7 @@ function unitView(unit, commit) {
     ).map(answerView),
     staticNarration(ref?.narration?.trim()),
     content,
-    unitComments(unit, commit),
+    unitComments(unit, commit, looseComments),
   );
 }
 
@@ -1243,6 +1363,14 @@ function render() {
   if (focusKey !== null) {
     document.querySelector(`[data-box="${focusKey}"] textarea`)?.focus();
     focusKey = null;
+  } else if (focusRow !== null) {
+    const row = document.querySelector(`[data-line="${focusRow}"]`);
+    if (row) {
+      for (const other of row.closest(".diff").querySelectorAll(".dl")) other.tabIndex = -1;
+      row.tabIndex = 0;
+      row.focus();
+    }
+    focusRow = null;
   } else if (typing !== null) {
     const area = document.querySelector(`[data-box="${typing.key}"] textarea`);
     if (area instanceof HTMLTextAreaElement) {
@@ -1505,7 +1633,8 @@ function applyPlayback() {
     for (const node of main.querySelectorAll("[data-line], .unit")) {
       node.classList.remove("pending", "struck", "in-chunk");
     }
-    for (const node of main.querySelectorAll(".concern")) node.classList.remove("pending");
+    for (const node of main.querySelectorAll(".concern, .comment"))
+      node.classList.remove("pending");
     return;
   }
   const { states, upcoming, current } = lineStates(beats, steps, player.position, selected);
@@ -1518,7 +1647,7 @@ function applyPlayback() {
     node.classList.toggle("struck", look === "struck");
     node.classList.toggle("in-chunk", inChunk.has(key) && look !== "hidden");
   }
-  for (const node of main.querySelectorAll(".concern[data-after]")) {
+  for (const node of main.querySelectorAll(".concern[data-after], .comment[data-after]")) {
     node.classList.toggle("pending", states.get(node.dataset.after) === "hidden");
   }
   for (const node of main.querySelectorAll(".unit")) {
@@ -1737,9 +1866,21 @@ function previousCommit() {
   toBeat(again ? introOf(beats, selected - 1) : intro);
 }
 
+/** c and q: comment on the picked rows when there are any, else on the chunk on screen. */
+function commentOnPick(kind) {
+  if (selection === null) return commentOnChunk(kind);
+  if (player.playing) pause();
+  focusKey = `line:${selection.commit}:${selection.unit}`;
+  kindDrafts.set(focusKey, { kind, touched: true, severity: "" });
+  render();
+}
+
 /** Pauses and opens a comment of a kind on the chunk on screen, its lines preselected. */
 function commentOnChunk(kind) {
-  if (player.view !== "play") return;
+  if (player.view !== "play") {
+    report(new Error("Pick a line first, then press c or q."));
+    return;
+  }
   const at = currentBeat();
   const beat = beats[at];
   if (beat?.kind !== "chunk") {
@@ -1987,8 +2128,9 @@ const KEYS = {
   p: previousCommit,
   k: previousCommit,
   r: () => player.view === "play" && toBeat(currentBeat()),
-  c: () => commentOnChunk("change"),
-  q: () => commentOnChunk("question"),
+  c: () => commentOnPick("change"),
+  q: () => commentOnPick("question"),
+  Escape: clearPick,
   y: () => decideCurrent("kept"),
   x: () => decideCurrent("dismissed"),
   m: toggleMute,
