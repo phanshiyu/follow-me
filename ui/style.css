@@ -14,6 +14,8 @@
   --select-bg: #fff3c4;
   --select-edge: #b38600;
   --comment-bg: #eef3ff;
+  --question-bg: #eef1f4;
+  --question-edge: #5f6774;
   --tok-comment: #5b6472;
   --tok-keyword: #a8227e;
   --tok-string: #8a4b08;
@@ -43,6 +45,8 @@
     --select-bg: #4a4012;
     --select-edge: #e0b830;
     --comment-bg: #1b2538;
+    --question-bg: #222831;
+    --question-edge: #8d96a5;
     --tok-comment: #adb5c3;
     --tok-keyword: #ff8fd6;
     --tok-string: #f0c674;
@@ -1002,7 +1006,8 @@ body.index {
     text-align: center;
   }
 
-  .sidebar:not(.open) .plan-note {
+  .sidebar:not(.open) .plan-note,
+  .sidebar:not(.open) .answers {
     display: none;
   }
 
@@ -1023,4 +1028,124 @@ body.index {
     font-size: 13px;
     pointer-events: none;
   }
+}
+
+.comment.question {
+  background: var(--question-bg);
+  box-shadow: inset 3px 0 0 var(--question-edge);
+}
+
+.reply {
+  margin: 6px 0 0 14px;
+  padding: 4px 10px;
+  border-left: 2px solid var(--border);
+}
+
+.reply.agent {
+  border-left-color: var(--accent);
+}
+
+.reply .said {
+  white-space: pre-wrap;
+}
+
+.reply-diagram {
+  overflow-x: auto;
+  margin: 6px 0;
+}
+
+.reply-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.kind {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+.kind button[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+.badge.question {
+  background: var(--question-bg);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--question-edge);
+}
+
+.answers {
+  border-top: 1px solid var(--border);
+  padding: 8px 12px;
+  max-height: 45%;
+  overflow-y: auto;
+}
+
+.answers[hidden] {
+  display: none;
+}
+
+.answer-row {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  text-align: left;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.answer-row.done {
+  color: var(--muted);
+}
+
+.answer {
+  margin: 8px 10px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--comment-bg);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.answer .said {
+  white-space: pre-wrap;
+}
+
+.answer .meta {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.answer-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.answer.resolved {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: var(--muted);
+  background: none;
+  box-shadow: none;
+  padding: 2px 12px;
+}
+
+.answers .answer {
+  margin: 6px 0;
+}
+
+.quote {
+  margin: 6px 0;
+  padding: 4px 8px;
+  overflow-x: auto;
+  font: 12px / 1.5 var(--font-mono);
+  background: var(--panel);
+  border-radius: 4px;
 }

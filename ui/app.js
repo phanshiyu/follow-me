@@ -25,6 +25,16 @@ import {
   speechRate,
   speechTimeout,
 } from "/playback.js";
+import {
+  answerCards,
+  answeredCount,
+  askAgain,
+  cardsAt,
+  holdAt,
+  inferKind,
+  kindCounts,
+  statusLine,
+} from "/questions.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -63,6 +73,12 @@ let focusKey = null;
 const drafts = new Map();
 const openBoxes = new Set();
 const editing = new Set();
+/** key -> the kind picked for the box, and whether the reviewer chose it or the text implied it. */
+const kindDrafts = new Map();
+/** Answers shown or paused on, so a replay does not stop again. */
+const seenAnswers = new Set();
+/** The previous version's questions with where they now sit, refreshed on every render. */
+let cards = [];
 
 /** Component scripts already requested, so a language shared by two files loads once. */
 const scripts = new Map();
@@ -216,15 +232,41 @@ function describeAnchor(anchor) {
  * A comment textarea with its buttons. Cmd or Ctrl+Enter saves and Escape cancels; neither
  * resumes playback.
  */
-function commentForm({ key, placeholder, action = "Comment", initial = "", submit, close }) {
+function commentForm({
+  key,
+  placeholder,
+  action = "Comment",
+  initial = "",
+  submit,
+  close,
+  kinds = false,
+}) {
+  const choice = kindDrafts.get(key) ?? { kind: inferKind(drafts.get(key) ?? ""), touched: false };
+  if (kinds) kindDrafts.set(key, choice);
+  const toggles = new Map();
+  const paint = () => {
+    for (const [kind, button] of toggles) {
+      button.setAttribute("aria-pressed", String(choice.kind === kind));
+    }
+  };
   const area = el("textarea", {
     placeholder,
     "aria-label": placeholder,
-    oninput: () => drafts.set(key, area.value),
+    oninput: () => {
+      drafts.set(key, area.value);
+      if (kinds && !choice.touched) {
+        choice.kind = inferKind(area.value);
+        paint();
+      }
+    },
   });
   area.value = drafts.get(key) ?? initial;
-  const cancel = () => {
+  const done = () => {
     drafts.delete(key);
+    kindDrafts.delete(key);
+  };
+  const cancel = () => {
+    done();
     close();
     render();
   };
@@ -232,8 +274,8 @@ function commentForm({ key, placeholder, action = "Comment", initial = "", submi
     guarded(async () => {
       const body = area.value.trim();
       if (!body) return;
-      await submit(body);
-      drafts.delete(key);
+      await submit(body, choice.kind);
+      done();
       close();
       if (player.view === "play") notice = "Comment saved. Space to continue.";
       await reloadComments();
@@ -247,9 +289,29 @@ function commentForm({ key, placeholder, action = "Comment", initial = "", submi
       cancel();
     }
   });
+  const toggle = el("div", { class: "kind", role: "group", "aria-label": "Kind of comment" });
+  for (const [kind, text] of [
+    ["question", "Ask a question"],
+    ["change", isWalk() ? "Code comment" : "Request a change"],
+  ]) {
+    const button = el("button", {
+      type: "button",
+      text,
+      onclick: () => {
+        choice.kind = kind;
+        choice.touched = true;
+        paint();
+        area.focus();
+      },
+    });
+    toggles.set(kind, button);
+    toggle.append(button);
+  }
+  paint();
   return el(
     "div",
     { class: "box", "data-box": key },
+    kinds ? toggle : null,
     area,
     el(
       "div",
@@ -259,6 +321,58 @@ function commentForm({ key, placeholder, action = "Comment", initial = "", submi
       el("span", { class: "hint", text: "⌘/Ctrl+Enter to save, Esc to cancel" }),
     ),
   );
+}
+
+/** Mermaid sources a reply carried, drawn once each, so a re-render only copies the picture. */
+const replyDiagrams = new Map();
+
+function fillDiagram(node, drawn) {
+  if (drawn.svg !== undefined) {
+    // Mermaid sanitizes its own output under securityLevel "strict".
+    node.innerHTML = drawn.svg;
+  } else {
+    node.replaceChildren(el("pre", { class: "diagram-error", text: drawn.error }));
+  }
+}
+
+async function drawReplyDiagram(source) {
+  if (replyDiagrams.has(source)) return;
+  replyDiagrams.set(source, null);
+  drawing += 1;
+  let drawn;
+  try {
+    const { svg } = await (await loadMermaid()).render(`reply-diagram-${drawing}`, source);
+    drawn = { svg };
+  } catch (error) {
+    drawn = { error: `Mermaid could not draw this diagram: ${error?.message ?? String(error)}` };
+  }
+  replyDiagrams.set(source, drawn);
+  for (const node of document.querySelectorAll(".reply-diagram")) {
+    if (node.getAttribute("data-source") === source) fillDiagram(node, drawn);
+  }
+}
+
+function diagramSlot(source) {
+  const node = el("div", { class: "reply-diagram", "data-source": source });
+  const drawn = replyDiagrams.get(source);
+  if (drawn) fillDiagram(node, drawn);
+  else drawReplyDiagram(source);
+  return node;
+}
+
+function replyView(reply) {
+  return el(
+    "div",
+    { class: `reply ${reply.author}` },
+    el("div", { class: "meta", text: reply.author === "agent" ? "Agent" : "You" }),
+    el("div", { class: "said", text: reply.body }),
+    reply.diagram ? diagramSlot(reply.diagram) : null,
+  );
+}
+
+function commentLabel(comment) {
+  if (comment.kind === "question") return "Question";
+  return isWalk() ? "Code comment" : "Change request";
 }
 
 function commentView(comment) {
@@ -276,15 +390,40 @@ function commentView(comment) {
       }),
     );
   }
+  const question = comment.kind === "question";
   const where = comment.anchor.kind === "hunk" ? ` · ${describeAnchor(comment.anchor)}` : "";
+  const again = comment.follows ? " · asked again" : "";
+  const replyKey = `reply:${comment.id}`;
   return el(
     "div",
-    { class: "comment" },
-    el("div", { class: "meta" }, `${comment.id}${where}`),
+    { class: question ? "comment question" : "comment" },
+    el("div", { class: "meta" }, `${commentLabel(comment)} · ${comment.id}${where}${again}`),
     el("div", { class: "text", text: comment.body }),
+    ...(comment.replies ?? []).map(replyView),
+    openBoxes.has(replyKey)
+      ? commentForm({
+          key: replyKey,
+          placeholder: "Reply",
+          action: "Reply",
+          submit: (body) =>
+            api("POST", `/api/comments/${comment.id}/replies`, { author: "reviewer", body }),
+          close: () => openBoxes.delete(replyKey),
+        })
+      : null,
     el(
       "div",
       { class: "meta" },
+      question || comment.replies?.length
+        ? el("button", {
+            class: "link",
+            text: "reply",
+            onclick: () => {
+              openBoxes.add(replyKey);
+              focusKey = replyKey;
+              render();
+            },
+          })
+        : null,
       el("button", {
         class: "link",
         text: "edit",
@@ -307,6 +446,129 @@ function commentView(comment) {
   );
 }
 
+/** Marks a previous question resolved or reopens it; the server's event repeats it harmlessly. */
+function setResolved(card, resolved) {
+  return guarded(async () => {
+    await api("POST", "/api/resolved", { comment: card.id, resolved });
+    const others = state.resolved.filter((id) => id !== card.id);
+    state.resolved = resolved ? [...others, card.id] : others;
+    render();
+  });
+}
+
+function explainedIn(card) {
+  const { place } = card;
+  if (place === null) return null;
+  const path = place.unit === null ? null : unitsById.get(place.unit)?.path;
+  return `${path ? `${path} in ` : ""}commit ${place.commit + 1}`;
+}
+
+/** The previous version's question with the agent's answer, where it now lives. */
+function answerView(card) {
+  const { comment, response, place } = card;
+  if (card.resolved) {
+    return el(
+      "div",
+      { class: "answer resolved", "data-answer": card.id },
+      el("span", { text: `✓ Resolved · ${firstLine(comment.body)}` }),
+      el("button", { class: "link", text: "Reopen", onclick: () => setResolved(card, false) }),
+    );
+  }
+  const againKey = `again:${card.id}`;
+  const lines = comment.context.lines ?? [];
+  const followUps = state.comments.filter((c) => c.follows === card.id);
+  return el(
+    "section",
+    { class: "answer", "data-answer": card.id, "aria-label": "Answer to your question" },
+    el("div", {
+      class: "meta",
+      text: `You asked (v${state.previous.version}) · ${statusLine(card)}`,
+    }),
+    el("div", { class: "said", text: comment.body }),
+    lines.length > 0 ? el("pre", { class: "quote", text: lines.join("\n") }) : null,
+    response ? el("div", { class: "meta", text: "Answer" }) : null,
+    response ? el("div", { class: "said", text: response.note }) : null,
+    place === null && comment.anchor.kind === "hunk"
+      ? el("div", { class: "meta", text: "The code you asked about has changed since." })
+      : null,
+    place === null ? null : el("div", { class: "meta", text: `Explained in ${explainedIn(card)}` }),
+    ...(place?.continues ?? []).map((commit) =>
+      el("button", {
+        class: "link",
+        text: `continues in commit ${commit + 1}`,
+        onclick: () => select(commit, { focus: true }),
+      }),
+    ),
+    ...followUps.map(commentView),
+    openBoxes.has(againKey)
+      ? commentForm({
+          key: againKey,
+          placeholder: "What is still unclear?",
+          action: "Ask again",
+          submit: (body) => api("POST", "/api/comments", askAgain(card, body)),
+          close: () => openBoxes.delete(againKey),
+        })
+      : el(
+          "div",
+          { class: "answer-actions" },
+          el("button", {
+            class: "primary",
+            text: "Resolved",
+            onclick: () => setResolved(card, true),
+          }),
+          el("button", {
+            text: "Ask again",
+            onclick: () => {
+              openBoxes.add(againKey);
+              focusKey = againKey;
+              render();
+            },
+          }),
+        ),
+  );
+}
+
+/** While playing, an answer waits for its moment; browsing shows every one. */
+function visibleCards(list) {
+  return player.view === "play" ? list.filter((c) => seenAnswers.has(c.id) || c.resolved) : list;
+}
+
+function showAnswer(card) {
+  seenAnswers.add(card.id);
+  if (card.place !== null) select(card.place.commit);
+  else render();
+  document.querySelector(`[data-answer="${card.id}"]`)?.scrollIntoView({ block: "center" });
+}
+
+/** The sidebar list of the previous version's questions. Answers with no place show in full. */
+function renderAnswers() {
+  const panel = $("answers");
+  panel.hidden = cards.length === 0;
+  if (cards.length === 0) return;
+  const open = cards.filter((c) => !c.resolved).length;
+  panel.replaceChildren(
+    el("strong", { text: `Answers · ${open} to read` }),
+    ...cards.map((card) =>
+      el(
+        "div",
+        { class: "answer-entry" },
+        el("button", {
+          type: "button",
+          class: card.resolved ? "answer-row done" : "answer-row",
+          text: `${statusLine(card)} · ${firstLine(card.comment.body)}`,
+          onclick: () => showAnswer(card),
+        }),
+        card.place === null && !card.resolved ? answerView(card) : null,
+      ),
+    ),
+  );
+}
+
+/** Only a question is written with a kind; absent means a change request. */
+function kindField(kind) {
+  return kind === "question" ? { kind } : {};
+}
+
 /** A button that opens into a comment form, focused. */
 function commentBox({ key, label, placeholder, anchor, context }) {
   if (!openBoxes.has(key)) {
@@ -322,7 +584,9 @@ function commentBox({ key, label, placeholder, anchor, context }) {
   return commentForm({
     key,
     placeholder,
-    submit: (body) => api("POST", "/api/comments", { anchor, context, body }),
+    kinds: true,
+    submit: (body, kind) =>
+      api("POST", "/api/comments", { anchor, context, body, ...kindField(kind) }),
     close: () => openBoxes.delete(key),
   });
 }
@@ -356,11 +620,17 @@ function lineBox(unit, commit) {
   return commentForm({
     key: `line:${commit.index}:${unit.id}`,
     placeholder: `Comment on ${describeLines(unit.body, numbers.get(unit.id) ?? [], changes)}`,
-    submit: (body) =>
+    kinds: true,
+    submit: (body, kind) =>
       api("POST", "/api/comments", {
         anchor: { kind: "hunk", unit: unit.id, commit: commit.index, changes },
-        context: { commitMessage: commit.message, path: unit.path },
+        context: {
+          commitMessage: commit.message,
+          path: unit.path,
+          lines: selection.lines.map((i) => unit.body[i].text.replace(/\n$/, "")),
+        },
         body,
+        ...kindField(kind),
       }),
     close: () => {
       selection = null;
@@ -542,6 +812,14 @@ function unitView(unit, commit) {
     "div",
     { class: "unit", "data-unit": unit.id },
     head,
+    ...visibleCards(
+      cardsAt(
+        cards,
+        commit.index,
+        unit.id,
+        commit.refs.map((r) => r.unit),
+      ),
+    ).map(answerView),
     staticNarration(ref?.narration?.trim()),
     content,
     unitComments(unit, commit),
@@ -553,9 +831,7 @@ function renderList() {
   const hadFocus = list.contains(document.activeElement);
   list.replaceChildren(
     ...state.commits.map((commit, i) => {
-      const count = state.comments.filter(
-        (c) => c.anchor.kind !== "plan" && c.anchor.commit === commit.index,
-      ).length;
+      const { questions, changes } = kindCounts(state.comments, commit.index);
       const playing = player.view === "play" && i === selected;
       return el(
         "li",
@@ -578,11 +854,18 @@ function renderList() {
             : watched.has(i)
               ? el("span", { class: "mark", title: "Watched", text: "✓" })
               : null,
-          count > 0
+          questions > 0
+            ? el("span", {
+                class: "badge question",
+                title: `${questions} question${questions === 1 ? "" : "s"}`,
+                text: `${questions} ?`,
+              })
+            : null,
+          changes > 0
             ? el("span", {
                 class: "badge",
-                title: `${count} comment${count === 1 ? "" : "s"}`,
-                text: String(count),
+                title: `${changes} comment${changes === 1 ? "" : "s"}`,
+                text: String(changes),
               })
             : null,
         ),
@@ -674,6 +957,14 @@ function renderMain() {
       el("div", { class: "message", text: commit.message }),
       staticNarration(commit.narration?.trim()),
       ...commentsAt(messageAnchor).map(commentView),
+      ...visibleCards(
+        cardsAt(
+          cards,
+          commit.index,
+          null,
+          commit.refs.map((r) => r.unit),
+        ),
+      ).map(answerView),
       // A walk plan's messages and order are the planner's, not the author's, so only code is
       // up for comment there.
       isWalk()
@@ -722,7 +1013,9 @@ function typingPlace() {
 
 function render() {
   const typing = typingPlace();
+  cards = answerCards(state.previous, state.resolved, state.commits);
   renderList();
+  renderAnswers();
   renderPlanNote();
   renderMain();
   if (focusKey !== null) {
@@ -1089,12 +1382,26 @@ async function perform(step, generation) {
   return read && heard && generation === player.generation;
 }
 
+/** Stops on an answer to the reviewer's own question, once the narration has been heard. */
+function holdForAnswer() {
+  const held = holdAt(beats, steps, player.position, cards, seenAnswers);
+  if (held.length === 0) return;
+  for (const card of held) seenAnswers.add(card.id);
+  notice =
+    held.length === 1
+      ? "Your question is answered here. Space to continue."
+      : `${held.length} of your questions are answered here. Space to continue.`;
+  pause();
+  render();
+}
+
 async function playLoop(generation) {
   while (player.position < steps.length) {
     if (!(await sleep(0, generation))) return;
     if (!(await perform(steps[player.position], generation))) return;
     player.position += 1;
     present();
+    holdForAnswer();
   }
   player.playing = false;
   renderList();
@@ -1176,8 +1483,8 @@ function previousCommit() {
   toBeat(again ? introOf(beats, selected - 1) : intro);
 }
 
-/** Pauses and opens a comment on the chunk on screen, its lines preselected. */
-function commentOnChunk() {
+/** Pauses and opens a comment of a kind on the chunk on screen, its lines preselected. */
+function commentOnChunk(kind) {
   if (player.view !== "play") return;
   const at = currentBeat();
   const beat = beats[at];
@@ -1196,6 +1503,7 @@ function commentOnChunk() {
     selection = { commit: beat.commit, unit: beat.unit, from: beat.lines[0], lines: beat.lines };
     focusKey = `line:${beat.commit}:${beat.unit}`;
   }
+  kindDrafts.set(focusKey, { kind, touched: true });
   render();
 }
 
@@ -1379,7 +1687,8 @@ const KEYS = {
   p: previousCommit,
   k: previousCommit,
   r: () => player.view === "play" && toBeat(currentBeat()),
-  c: commentOnChunk,
+  c: () => commentOnChunk("change"),
+  q: () => commentOnChunk("question"),
   m: toggleMute,
   "?": toggleKeys,
 };
@@ -1447,8 +1756,11 @@ async function adopt(fresh) {
   renderHeader();
 }
 
-function showBanner(text) {
-  $("banner-text").textContent = text;
+/** Says a plan arrived, and offers the answers it brings when it has any. */
+function announceVersion() {
+  const answered = answeredCount(state.previous);
+  $("banner-text").textContent = bannerText(state.version, answered);
+  $("banner-show").hidden = answered === 0;
   $("banner").hidden = false;
 }
 
@@ -1462,7 +1774,7 @@ async function swapVersion() {
   buildPlayback();
   selected = keepCommit(title, was, state.commits);
   watched.clear();
-  showBanner(bannerText(state.version, 0));
+  announceVersion();
   if (player.view === "play") seek(beatStart(steps, introOf(beats, selected)));
   else render();
 }
@@ -1565,6 +1877,12 @@ async function followEvents() {
   if ($("done").hidden) await pollEvents(since);
 }
 
+$("banner-show").addEventListener("click", () => {
+  setListOpen(true);
+  $("answers").scrollIntoView({ block: "nearest" });
+  $("answers").querySelector("button")?.focus();
+});
+
 $("banner-close").addEventListener("click", () => {
   $("banner").hidden = true;
 });
@@ -1574,5 +1892,6 @@ guarded(async () => {
   setUpPlayer();
   if (isWalk()) enterPlay();
   else render();
+  if (answeredCount(state.previous) > 0) announceVersion();
   followEvents();
 });
