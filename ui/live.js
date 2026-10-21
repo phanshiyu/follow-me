@@ -5,7 +5,8 @@
 /**
  * @typedef {{ id: string, author: string, body: string, diagram?: string, createdAt: string }} Reply
  * @typedef {{ id: string, replies?: Reply[], kind?: string, body?: string }} LiveComment
- * @typedef {{ concern: string, decision: "kept" | "dismissed", severity?: string, note?: string }} Decision
+ * @typedef {{ concern: string, decision: "kept" | "dismissed", severity?: string, note?: string,
+ *   decidedAt?: string }} Decision
  * @typedef {{ comments: LiveComment[], decisions?: Record<string, Decision>, resolved?: string[],
  *   version: number, [key: string]: unknown }} LiveState
  * @typedef {{ type: string, seq?: number, data?: unknown, [key: string]: unknown }} LiveEvent
@@ -45,7 +46,7 @@ export function decisionsById(list) {
  * @param {LiveEvent} event
  * @returns {Record<string, unknown>}
  */
-function payload(event) {
+export function eventBody(event) {
   return isRecord(event.data) ? event.data : event;
 }
 
@@ -71,7 +72,7 @@ function upsert(list, item) {
  * @returns {{ state: LiveState, effect: Effect }}
  */
 export function applyEvent(state, event) {
-  const body = payload(event);
+  const body = eventBody(event);
   switch (event.type) {
     case "comment":
     case "comment-updated": {
@@ -109,6 +110,7 @@ export function applyEvent(state, event) {
       const decision = { concern: id, decision: verdict };
       if (typeof body["severity"] === "string") decision.severity = body["severity"];
       if (typeof body["note"] === "string") decision.note = body["note"];
+      if (typeof body["decidedAt"] === "string") decision.decidedAt = body["decidedAt"];
       return {
         state: { ...state, decisions: { ...state.decisions, [id]: decision } },
         effect: null,

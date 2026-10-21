@@ -49,15 +49,31 @@
         <section id="plan-note" class="plan-note"></section>
       </nav>
       <main id="main" class="main"></main>
-      <aside id="diagram" class="diagram-panel" aria-label="Diagram" hidden>
-        <div class="diagram-head">
-          <button id="diagram-toggle" type="button" aria-expanded="true" aria-controls="diagram-body">
-            Diagram
-          </button>
-          <span id="diagram-from" class="muted"></span>
+      <aside id="panel" class="panel" aria-label="Conversation">
+        <button id="panel-tab" type="button" class="panel-tab" aria-expanded="true" aria-controls="panel-body" title="Show or hide the conversation (t)">
+          <span class="tab-label">Conversation</span>
+          <span id="unread" class="unread" hidden></span>
+        </button>
+        <div id="panel-body" class="panel-body">
+          <section id="now" class="now" aria-label="Now">
+            <div class="now-head">
+              <button id="now-toggle" type="button" aria-expanded="true" aria-controls="now-body">Now</button>
+              <span id="now-label" class="muted"></span>
+              <button id="threads-here" type="button" class="threads-here" aria-pressed="false" hidden></button>
+            </div>
+            <div id="now-body" class="now-body"></div>
+          </section>
+          <div class="timeline-wrap">
+            <ol id="timeline" class="timeline" aria-label="Conversation"></ol>
+            <button id="new-pill" type="button" class="new-pill" hidden></button>
+          </div>
+          <div id="composer" class="composer"></div>
         </div>
-        <div id="diagram-body" class="diagram-body"></div>
       </aside>
+    </div>
+    <div id="toast" class="toast" role="status" hidden>
+      <span id="toast-text"></span>
+      <button id="toast-show" type="button">Show</button>
     </div>
     <div id="rail-tip" class="rail-tip" role="tooltip" hidden></div>
     <div id="done" class="done" hidden></div>
@@ -89,6 +105,7 @@
         <dt><kbd>y</kbd></dt><dd>Keep the agent's concern on this chunk</dd>
         <dt><kbd>x</kbd></dt><dd>Dismiss it</dd>
         <dt><kbd>m</kbd></dt><dd>Mute</dd>
+        <dt><kbd>t</kbd></dt><dd>Show or hide the conversation</dd>
         <dt><kbd>⌘ Enter</kbd></dt><dd>Save a comment, <kbd>Esc</kbd> cancels</dd>
       </dl>
       <form method="dialog"><button type="submit">Close</button></form>

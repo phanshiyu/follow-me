@@ -14,7 +14,15 @@ import {
   undecidedPrompt,
 } from "/concerns.js";
 import { componentsForAll, highlightBody, languageFor } from "/highlight.js";
-import { applyEvent, backoffMs, bannerText, decisionsById, keepCommit, nextSince } from "/live.js";
+import {
+  applyEvent,
+  backoffMs,
+  bannerText,
+  decisionsById,
+  eventBody,
+  keepCommit,
+  nextSince,
+} from "/live.js";
 import {
   beatAt,
   beatStart,
@@ -25,7 +33,6 @@ import {
   describeRows,
   diagramAt,
   duration,
-  hasDiagrams,
   hasNarration,
   introOf,
   lineKey,
@@ -61,6 +68,19 @@ import {
   stepRow,
 } from "/selection.js";
 import { endSummary, reportPath } from "/summary.js";
+import {
+  anchorText,
+  atBottom,
+  beatFor,
+  concernLine,
+  dividerText,
+  entriesHere,
+  locate,
+  quoteOf,
+  snippet,
+  timelineOf,
+  unreadAfter,
+} from "/timeline.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -264,6 +284,25 @@ function describeAnchor(anchor) {
 }
 
 /**
+ * While rows are picked, the box under them and the composer in the panel write one comment, so
+ * what is typed in either shows in both. The other one's key, or null.
+ */
+function mirrorOf(key) {
+  if (selection === null) return null;
+  const box = boxKey(selection.commit, selection.unit);
+  if (key === "composer") return box;
+  return key === box ? "composer" : null;
+}
+
+function mirrorDraft(key, value) {
+  const other = mirrorOf(key);
+  if (other === null) return;
+  drafts.set(other, value);
+  const area = document.querySelector(`[data-box="${other}"] textarea`);
+  if (area instanceof HTMLTextAreaElement && area.value !== value) area.value = value;
+}
+
+/**
  * A comment textarea with its buttons. Cmd or Ctrl+Enter saves and Escape cancels; neither
  * resumes playback.
  */
@@ -275,12 +314,13 @@ function commentForm({
   submit,
   close,
   kinds = false,
+  startKind,
 }) {
-  const choice = kindDrafts.get(key) ?? {
-    kind: inferKind(drafts.get(key) ?? ""),
-    touched: false,
-    severity: "",
-  };
+  const fresh =
+    startKind === undefined
+      ? { kind: inferKind(drafts.get(key) ?? ""), touched: false, severity: "" }
+      : { kind: startKind, touched: true, severity: "" };
+  const choice = kindDrafts.get(key) ?? kindDrafts.get(mirrorOf(key)) ?? fresh;
   if (kinds) kindDrafts.set(key, choice);
   const toggles = new Map();
   const paint = () => {
@@ -293,6 +333,7 @@ function commentForm({
     "aria-label": placeholder,
     oninput: () => {
       drafts.set(key, area.value);
+      mirrorDraft(key, area.value);
       if (kinds && !choice.touched) {
         choice.kind = inferKind(area.value);
         paint();
@@ -301,8 +342,10 @@ function commentForm({
   });
   area.value = drafts.get(key) ?? initial;
   const done = () => {
-    drafts.delete(key);
-    kindDrafts.delete(key);
+    for (const k of [key, mirrorOf(key)]) {
+      drafts.delete(k);
+      kindDrafts.delete(k);
+    }
   };
   const cancel = () => {
     done();
@@ -339,8 +382,14 @@ function commentForm({
       onclick: () => {
         choice.kind = kind;
         choice.touched = true;
-        paint();
-        area.focus();
+        if (mirrorOf(key) === null) {
+          paint();
+          area.focus();
+        } else {
+          // The same pick has a box under its rows and the composer; redraw so both show it.
+          focusKey = key;
+          render();
+        }
       },
     });
     toggles.set(kind, button);
@@ -823,8 +872,8 @@ function hunkOf(unit, commitIndex) {
   return { id: unit.id, commit: commitIndex, body: unit.body, owners: ownersOf(unit) };
 }
 
-function boxKey(commitIndex, unit) {
-  return `line:${commitIndex}:${unit.id}`;
+function boxKey(commitIndex, unitId) {
+  return `line:${commitIndex}:${unitId}`;
 }
 
 /**
@@ -833,7 +882,7 @@ function boxKey(commitIndex, unit) {
  */
 function setPick(unit, commitIndex, pick, { box, focus }) {
   selection = pick === null ? null : { commit: commitIndex, unit: unit.id, ...pick };
-  if (box && pick !== null) focusKey = boxKey(commitIndex, unit);
+  if (box && pick !== null) focusKey = boxKey(commitIndex, unit.id);
   else focusRow = focus === undefined ? null : lineKey(unit.id, focus);
   if (player.playing) pause();
   render();
@@ -858,24 +907,27 @@ function clearPick() {
   render();
 }
 
+function postPick(unit, commit, lines, body, kind, severity) {
+  return api("POST", "/api/comments", {
+    anchor: anchorFor(hunkOf(unit, commit.index), lines),
+    context: {
+      commitMessage: commit.message,
+      path: unit.path,
+      lines: snapshotRows(unit.body, lines),
+    },
+    body,
+    ...kindField(kind),
+    ...rated(severity),
+  });
+}
+
 function lineBox(unit, commit) {
-  const anchor = anchorFor(hunkOf(unit, commit.index), selection.lines);
+  const { lines } = selection;
   return commentForm({
-    key: boxKey(commit.index, unit),
-    placeholder: `Comment on ${describeRows(unit.body, numbers.get(unit.id) ?? [], selection.lines)}`,
+    key: boxKey(commit.index, unit.id),
+    placeholder: `Comment on ${describeRows(unit.body, numbers.get(unit.id) ?? [], lines)}`,
     kinds: true,
-    submit: (body, kind, severity) =>
-      api("POST", "/api/comments", {
-        anchor,
-        context: {
-          commitMessage: commit.message,
-          path: unit.path,
-          lines: snapshotRows(unit.body, selection.lines),
-        },
-        body,
-        ...kindField(kind),
-        ...rated(severity),
-      }),
+    submit: (body, kind, severity) => postPick(unit, commit, lines, body, kind, severity),
     close: () => {
       selection = null;
     },
@@ -1356,10 +1408,13 @@ function typingPlace() {
 function render() {
   const typing = typingPlace();
   cards = answerCards(state.previous, state.resolved, state.commits);
+  refreshEntries();
   renderList();
   renderAnswers();
   renderPlanNote();
   renderMain();
+  renderTimeline();
+  renderComposer();
   if (focusKey !== null) {
     document.querySelector(`[data-box="${focusKey}"] textarea`)?.focus();
     focusKey = null;
@@ -1596,17 +1651,44 @@ async function loadMermaid() {
   return mermaid;
 }
 
-/** Draws the diagram for what is on screen into the side panel, or hides the panel. */
-async function renderDiagram() {
-  const panel = $("diagram");
-  const beat = player.view === "play" ? beats[beatAt(steps, player.position)] : undefined;
-  const shown = diagramAt(state.commits[selected], beat);
-  panel.hidden = shown === null;
-  if (shown === null || shown.source === drawn) return;
+/** The server's event log as far as the page holds it; the timeline is built from it and state. */
+let events = [];
+let entries = [];
+/** The last entry the reader has seen. The agent's words after it count as unread. */
+let readUpTo = null;
+let panelSeen = false;
+/** Whether the "threads here" button is filtering the timeline to the chunk on screen. */
+let onlyHere = false;
+/** Entries that arrived while the reader had scrolled up, for the "new" pill. */
+let arrivedBelow = 0;
+/** What is on the chunk on screen: its entry ids and how many threads they make up. */
+let here = { ids: new Set(), threads: 0 };
+/** Questions asked while playing, so the agent's answer to one can raise a toast. */
+const askedWhilePlaying = new Set();
+/** Entries whose quote the reader opened in full. */
+const openQuotes = new Set();
+
+async function loadLog() {
+  const res = await fetch(`${sessionPrefix}/api/events?since=0&timeout=0`).catch(() => null);
+  // A server without a log leaves the timeline to the saved state alone.
+  events = res?.ok ? ((await res.json()).events ?? []) : [];
+}
+
+function logEvent(event) {
+  if (event.seq === undefined || events.some((e) => e.seq === event.seq)) return;
+  events = [...events, event];
+}
+
+/** Draws a diagram for what is on screen into the Now card, or hides the card's body. */
+async function drawNow(shown) {
+  const body = $("now-body");
+  body.hidden = shown === null;
+  if (shown === null) {
+    drawn = null;
+    return;
+  }
+  if (shown.source === drawn) return;
   drawn = shown.source;
-  const unit = shown.unit === null ? null : unitsById.get(shown.unit);
-  $("diagram-from").textContent = unit ? unit.path : "this commit";
-  const body = $("diagram-body");
   drawing += 1;
   const id = `diagram-${drawing}`;
   try {
@@ -1623,9 +1705,435 @@ async function renderDiagram() {
   }
 }
 
+/** The chunk the reader is on: the beat while playing, else the commit being read. */
+function hereNow() {
+  const beat = player.view === "play" ? beats[beatAt(steps, player.position)] : undefined;
+  if (beat?.kind === "chunk") return { commit: beat.commit, unit: beat.unit, rows: beat.lines };
+  return { commit: selected };
+}
+
+/** The Now card: what the planned diagram shows and how many threads sit on this chunk. */
+function renderNow() {
+  const commit = state.commits[selected];
+  if (!commit) return;
+  const beat = player.view === "play" ? beats[beatAt(steps, player.position)] : undefined;
+  const shown = diagramAt(commit, beat);
+  const unit = shown?.unit == null ? null : unitsById.get(shown.unit);
+  const where = `${unit ? `${unit.path}, ` : ""}commit ${selected + 1}`;
+  $("now-label").textContent = shown === null ? `Commit ${selected + 1}` : `Diagram · ${where}`;
+  drawNow(shown);
+  here = entriesHere(state, entries, hereNow());
+  const button = $("threads-here");
+  button.hidden = here.threads === 0 && !onlyHere;
+  button.textContent = onlyHere
+    ? "Show all"
+    : `${here.threads} thread${here.threads === 1 ? "" : "s"} here`;
+  button.setAttribute("aria-pressed", String(onlyHere));
+  if (onlyHere) renderTimeline();
+  else markHere();
+}
+
+/** Entries on the chunk on screen get an accent edge. */
+function markHere() {
+  for (const node of $("timeline").querySelectorAll("[data-entry]")) {
+    node.classList.toggle("here", here.ids.has(node.dataset.entry));
+  }
+}
+
+function entryWho(from) {
+  return from === "agent" ? "Agent" : "You";
+}
+
+/** Where a comment points, as the panel says it. */
+function entryAnchorText(comment) {
+  const { anchor } = comment;
+  const earlier =
+    state.previous?.comments.some((c) => c.id === comment.id) === true &&
+    !state.comments.some((c) => c.id === comment.id);
+  let rows = "";
+  if (anchor.kind === "hunk") {
+    const unit = unitsById.get(anchor.unit);
+    const picked = unit?.kind === "hunk" ? rowsOfAnchor(anchor, unit.body) : [];
+    rows =
+      picked.length === 0
+        ? "whole hunk"
+        : describeRows(unit.body, numbers.get(unit.id) ?? [], picked);
+  }
+  return anchorText(comment, {
+    rows,
+    whole: isWalk() ? "Whole branch" : "Whole plan",
+    version: earlier ? state.previous.version : null,
+  });
+}
+
+/** The button that says where an entry points and takes the reader there. */
+function anchorChip(entry, text) {
+  const place = locate(state, entry);
+  if (place.stale) {
+    return el("span", { class: "anchor-chip stale", text: `${text} · the code has changed since` });
+  }
+  if (place.at === null) return el("span", { class: "anchor-chip", text });
+  return el("button", {
+    type: "button",
+    class: "anchor-chip",
+    title: "Show these lines",
+    text,
+    onclick: () => jump(entry),
+  });
+}
+
+/** The quoted rows of a comment, three of them until the reader asks for the rest. */
+function quoteView(entry, comment) {
+  const lines = comment.context.lines ?? [];
+  if (lines.length === 0) return null;
+  const open = openQuotes.has(entry.id);
+  const { shown, more } = quoteOf(lines, open ? lines.length : 3);
+  return el(
+    "div",
+    { class: "quote-box" },
+    el("pre", { class: "quote", text: shown.join("\n") }),
+    more > 0
+      ? el("button", {
+          type: "button",
+          class: "link",
+          text: `Show ${more} more row${more === 1 ? "" : "s"}`,
+          onclick: () => {
+            openQuotes.add(entry.id);
+            renderTimeline();
+          },
+        })
+      : null,
+  );
+}
+
+function entryView(entry) {
+  const attrs = {
+    "data-entry": entry.id,
+    "data-thread": entry.thread ?? undefined,
+    onclick: (event) => {
+      if (!event.target.closest("button, a, textarea, select, input")) jump(entry);
+    },
+  };
+  switch (entry.kind) {
+    case "comment": {
+      const { comment } = entry;
+      const question = comment.kind === "question";
+      return el(
+        "li",
+        { class: `entry from-${entry.from}${question ? " question" : ""}`, ...attrs },
+        el(
+          "div",
+          { class: "meta" },
+          el("strong", { text: entryWho(entry.from) }),
+          el("span", { class: "chip", text: commentLabel(comment) }),
+          comment.follows ? el("span", { text: "asked again" }) : null,
+          comment.severity ? el("span", { class: "chip", text: comment.severity }) : null,
+        ),
+        anchorChip(entry, entryAnchorText(comment)),
+        quoteView(entry, comment),
+        el("div", { class: "said", text: comment.body }),
+      );
+    }
+    case "reply":
+      return el(
+        "li",
+        { class: `entry from-${entry.from}`, ...attrs },
+        el("div", { class: "meta" }, el("strong", { text: entryWho(entry.from) })),
+        anchorChip(entry, `re: ${snippet(entry.comment.body)} · ${entryAnchorText(entry.comment)}`),
+        el("div", { class: "said", text: entry.reply.body }),
+        entry.reply.diagram ? diagramSlot(entry.reply.diagram) : null,
+      );
+    case "answer":
+      return el(
+        "li",
+        { class: "entry from-agent answer", ...attrs },
+        el(
+          "div",
+          { class: "meta" },
+          el("strong", { text: "Agent" }),
+          el("span", {
+            class: "chip",
+            text: statusLine({ resolved: false, status: entry.response.status }),
+          }),
+        ),
+        anchorChip(entry, `re: ${snippet(entry.comment.body)} · ${entryAnchorText(entry.comment)}`),
+        el("div", { class: "said", text: entry.response.note }),
+      );
+    case "concern": {
+      const paths = Object.fromEntries(state.units.map((u) => [u.id, u.path]));
+      return el(
+        "li",
+        { class: "entry system", ...attrs },
+        el("span", { text: concernLine(entry, paths) }),
+        entry.note ? el("span", { class: "said", text: `“${entry.note}”` }) : null,
+      );
+    }
+    case "resolved":
+      return el("li", {
+        class: "entry system",
+        ...attrs,
+        text: `You ${entry.resolved ? "marked" : "reopened"} “${snippet(entry.comment.body, 40)}”${entry.resolved ? " resolved" : ""}`,
+      });
+    case "version":
+      return el("li", { class: "divider", "data-entry": entry.id, text: dividerText(entry) });
+    default:
+      return el("li", { class: "divider", "data-entry": entry.id, text: "Review ended" });
+  }
+}
+
+function renderTimeline() {
+  const list = $("timeline");
+  const stuck = atBottom(list);
+  const top = list.scrollTop;
+  const shown = onlyHere ? entries.filter((e) => here.ids.has(e.id)) : entries;
+  list.replaceChildren(
+    ...(shown.length === 0
+      ? [
+          el("li", {
+            class: "empty-note",
+            text: onlyHere
+              ? "Nothing here yet."
+              : "Questions, replies and decisions show up here, oldest first.",
+          }),
+        ]
+      : shown.map(entryView)),
+  );
+  list.scrollTop = stuck ? list.scrollHeight : top;
+  following = stuck;
+  markHere();
+  renderUnread();
+}
+
+/** The agent's words the reader has not seen: counted on the tab, and a pill when scrolled up. */
+function renderUnread() {
+  const list = $("timeline");
+  if (panelOpen && atBottom(list) && !player.playing) {
+    readUpTo = entries.at(-1)?.id ?? null;
+    arrivedBelow = 0;
+  }
+  const unread = unreadAfter(entries, readUpTo);
+  const badge = $("unread");
+  badge.hidden = unread === 0;
+  badge.textContent = String(unread);
+  badge.setAttribute("aria-label", `${unread} unread from the agent`);
+  const pill = $("new-pill");
+  pill.hidden = arrivedBelow === 0;
+  pill.textContent = `${arrivedBelow} new ↓`;
+}
+
+/** Rebuilds the entries from state and the log; what arrived while scrolled up is counted. */
+function refreshEntries() {
+  const seen = new Set(entries.map((e) => e.id));
+  const stuck = atBottom($("timeline"));
+  entries = timelineOf(state, events);
+  if (!panelSeen) {
+    panelSeen = true;
+    readUpTo = entries.at(-1)?.id ?? null;
+    return;
+  }
+  if (!stuck) arrivedBelow += entries.filter((e) => !seen.has(e.id)).length;
+}
+
+let panelOpen = true;
+/** Whether the timeline sits at its end and should stay there as its box or its entries change. */
+let following = true;
+
+function setPanelOpen(open) {
+  panelOpen = open;
+  $("app").classList.toggle("panel-closed", !open);
+  $("panel-tab").setAttribute("aria-expanded", String(open));
+  if (open) renderUnread();
+}
+
+function togglePanel() {
+  setPanelOpen(!panelOpen);
+  store("panel", String(panelOpen));
+}
+
+/** The composer: with rows picked it writes to them, else to the whole plan, as a question. */
+function renderComposer() {
+  const pick = selection;
+  const unit = pick === null ? undefined : unitsById.get(pick.unit);
+  const commit = pick === null ? undefined : state.commits[pick.commit];
+  const picked = unit?.kind === "hunk" && commit !== undefined;
+  const rows = picked ? describeRows(unit.body, numbers.get(unit.id) ?? [], pick.lines) : "";
+  const whole = isWalk() ? "Whole branch" : "Whole plan";
+  const lines = picked ? snapshotRows(unit.body, pick.lines) : [];
+  const { shown, more } = quoteOf(lines);
+  const parts = [
+    el(
+      "div",
+      { class: "composer-anchor" },
+      el("span", {
+        class: "anchor-chip",
+        text: picked ? `${unit.path} · ${rows} · commit ${pick.commit + 1}` : whole,
+      }),
+      picked
+        ? el("button", {
+            type: "button",
+            class: "link",
+            text: "×",
+            title: "Clear the picked rows (Esc)",
+            "aria-label": "Clear the picked rows",
+            onclick: clearPick,
+          })
+        : null,
+    ),
+    picked
+      ? el("pre", { class: "quote", text: shown.join("\n") + (more > 0 ? `\n… ${more} more` : "") })
+      : null,
+    commentForm({
+      key: "composer",
+      placeholder: picked
+        ? `Comment on ${rows}`
+        : isWalk()
+          ? "Ask about the whole branch"
+          : "Ask about the whole plan",
+      action: "Send",
+      kinds: true,
+      startKind: picked ? undefined : "question",
+      submit: (body, kind, severity) =>
+        picked
+          ? postPick(unit, commit, pick.lines, body, kind, severity)
+          : api("POST", "/api/comments", {
+              anchor: { kind: "plan" },
+              context: { commitMessage: "", path: null },
+              body,
+              ...kindField(kind),
+              ...rated(severity),
+            }),
+      close: () => {
+        selection = null;
+      },
+    }),
+  ];
+  $("composer").replaceChildren(...parts.filter(Boolean));
+}
+
+function flash(nodes) {
+  for (const node of nodes) node.classList.add("flash");
+  setTimeout(() => {
+    for (const node of nodes) node.classList.remove("flash");
+  }, 1200);
+}
+
+/** Scrolls the code to the place an entry is about, flashes it and moves focus there. */
+function revealAt(at) {
+  const main = $("main");
+  const rows = at.rows
+    .map((r) => main.querySelector(`[data-line="${lineKey(at.unit, r)}"]:not(.pending)`))
+    .filter(Boolean);
+  const target =
+    rows[0] ??
+    (at.unit === null
+      ? main.querySelector(".commit-head")
+      : main.querySelector(`[data-unit="${at.unit}"]`));
+  if (!target) return;
+  scrollToChunk(target);
+  flash(rows.length > 0 ? rows : [target]);
+  if (rows[0]) {
+    for (const other of rows[0].closest(".diff").querySelectorAll(".dl")) other.tabIndex = -1;
+    rows[0].tabIndex = 0;
+    rows[0].focus({ preventScroll: true });
+  }
+}
+
+/**
+ * Takes the reader to the lines an entry is about. While playing it pauses and moves to the beat
+ * that reveals them, so they are not hidden. An anchor whose code is gone shows nothing to scroll to.
+ */
+function jump(entry) {
+  const place = locate(state, entry);
+  if (place.stale || place.at === null) return;
+  const { at } = place;
+  if (player.view === "play") {
+    if (player.playing) pause();
+    const beat = beatFor(beats, at);
+    if (beat !== null) seek(steps.findIndex((s) => s.kind === "show" && s.beat === beat));
+    else if (at.commit !== selected) seek(beatStart(steps, introOf(beats, at.commit)));
+  } else if (at.commit !== selected) {
+    selected = at.commit;
+    render();
+  }
+  revealAt(at);
+}
+
+/** Brings one entry into view in the timeline, for a toast's Show. */
+function revealEntry(id) {
+  if (!panelOpen) togglePanel();
+  const node = $("timeline").querySelector(`[data-entry="${id}"]`);
+  if (!node) return;
+  node.scrollIntoView({ block: "center" });
+  flash([node]);
+}
+
+let toastTimer = null;
+let toastTarget = null;
+
+function showToast(text, target) {
+  $("toast-text").textContent = text;
+  toastTarget = target;
+  $("toast").hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    $("toast").hidden = true;
+  }, 8000);
+}
+
+/** What an event means for the reader beyond the page state: a toast for an answer they waited on. */
+function noticeEvent(event) {
+  const body = eventBody(event);
+  if (event.type === "comment" && player.view === "play") {
+    const comment = body.comment ?? body;
+    if (comment.author !== "agent" && typeof comment.id === "string") {
+      askedWhilePlaying.add(comment.id);
+    }
+  } else if (event.type === "reply" && player.view === "play") {
+    const { reply } = body;
+    if (reply?.author === "agent" && askedWhilePlaying.has(body.commentId)) {
+      showToast("Agent replied", `r:${reply.id}`);
+    }
+  }
+}
+
+function setUpPanel() {
+  $("panel-tab").addEventListener("click", togglePanel);
+  $("now-toggle").addEventListener("click", () => {
+    const open = $("now-toggle").getAttribute("aria-expanded") !== "true";
+    $("now-toggle").setAttribute("aria-expanded", String(open));
+    $("now").classList.toggle("collapsed", !open);
+    store("now", String(open));
+  });
+  const open = stored("now") !== "false";
+  $("now-toggle").setAttribute("aria-expanded", String(open));
+  $("now").classList.toggle("collapsed", !open);
+  $("threads-here").addEventListener("click", () => {
+    onlyHere = !onlyHere;
+    renderNow();
+    renderTimeline();
+  });
+  $("timeline").addEventListener("scroll", () => {
+    following = atBottom($("timeline"));
+    renderUnread();
+  });
+  // A diagram drawing above changes the timeline's height; a reader at the end stays at the end.
+  new ResizeObserver(() => {
+    if (following) $("timeline").scrollTop = $("timeline").scrollHeight;
+  }).observe($("timeline"));
+  $("new-pill").addEventListener("click", () => {
+    $("timeline").scrollTop = $("timeline").scrollHeight;
+    renderUnread();
+  });
+  $("toast-show").addEventListener("click", () => {
+    $("toast").hidden = true;
+    if (toastTarget !== null) revealEntry(toastTarget);
+  });
+  setPanelOpen(stored("panel") !== "false");
+}
+
 function applyPlayback() {
   const main = $("main");
-  if (hasDiagrams(state.commits)) renderDiagram();
+  renderNow();
   for (const node of main.querySelectorAll(".ph, .countdown")) node.remove();
   card.remove();
   renderStage();
@@ -1927,11 +2435,6 @@ function updatePlayer() {
   mute.setAttribute("aria-pressed", String(player.muted));
 }
 
-function setDiagramOpen(open) {
-  $("diagram-toggle").setAttribute("aria-expanded", String(open));
-  $("diagram").classList.toggle("collapsed", !open);
-}
-
 function toggleMute() {
   if (!narrated || synth === null) return;
   player.muted = !player.muted;
@@ -1985,12 +2488,7 @@ function setUpPlayer() {
   $("next-beat").addEventListener("click", () => stepBeat(1));
   $("keys-button").addEventListener("click", toggleKeys);
   $("mute").addEventListener("click", toggleMute);
-  $("diagram-toggle").addEventListener("click", () => {
-    const open = $("diagram-toggle").getAttribute("aria-expanded") !== "true";
-    setDiagramOpen(open);
-    store("diagram", String(open));
-  });
-  setDiagramOpen(stored("diagram") !== "false");
+  setUpPanel();
   $("view-toggle").addEventListener("click", () => {
     if (player.view === "play") enterBrowse();
     else play();
@@ -2134,6 +2632,7 @@ const KEYS = {
   y: () => decideCurrent("kept"),
   x: () => decideCurrent("dismissed"),
   m: toggleMute,
+  t: togglePanel,
   "?": toggleKeys,
 };
 
@@ -2242,6 +2741,8 @@ function showEnded() {
 }
 
 async function receive(event) {
+  logEvent(event);
+  noticeEvent(event);
   const { state: next, effect } = applyEvent(state, event);
   state = next;
   if (effect === "refetch") await swapVersion();
@@ -2257,6 +2758,7 @@ async function resync() {
   const title = state.commits[selected] ? firstLine(state.commits[selected].message) : null;
   const was = selected;
   await adopt(fresh);
+  await loadLog();
   buildPlayback();
   selected = keepCommit(title, was, state.commits);
   render();
@@ -2335,6 +2837,7 @@ $("banner-close").addEventListener("click", () => {
 
 guarded(async () => {
   await adopt(await api("GET", "/api/state"));
+  await loadLog();
   setUpPlayer();
   if (isWalk()) enterPlay();
   else render();
