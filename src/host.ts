@@ -12,6 +12,7 @@ import {
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { type NewReply, parseEvent, parseEventBatch } from "./comments.ts";
+import { carryComments } from "./evolve.ts";
 import { isPlanVersion, serializePlanFile, validatePlan } from "./plan.ts";
 import {
   HEALTH_APP,
@@ -26,6 +27,7 @@ import {
 } from "./server.ts";
 import {
   BranchMovedError,
+  diffOfPlan,
   isAlive,
   openSessionAt,
   SessionFileError,
@@ -164,6 +166,12 @@ async function loadHosted(
             comments: prior.comments,
             responses: stored.file.responses,
           };
+    const priorPlan = session.plans().find((p) => p.version === previous?.version);
+    const before = priorPlan === undefined ? null : await diffOfPlan(session, priorPlan);
+    const carried =
+      previous === null
+        ? []
+        : carryComments(previous.comments, before?.units ?? new Map(), session.diff.units);
     const command = "review";
     // A version swap runs inside the server that already owns this session's lock.
     const release =
@@ -174,6 +182,7 @@ async function loadHosted(
       reviewsDir,
       release,
       previous,
+      carried,
       state: {
         mode,
         anchor: session.anchor,

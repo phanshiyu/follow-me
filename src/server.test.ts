@@ -14,7 +14,7 @@ import {
   sessionIdOf,
   startServer,
 } from "./server.ts";
-import type { PreviousVersion, Review } from "./types.ts";
+import type { CarriedComment, PreviousVersion, Review } from "./types.ts";
 
 const HUNK_A = "h_aaaaaaaaaaaa";
 const HUNK_B = "h_bbbbbbbbbbbb";
@@ -128,6 +128,7 @@ function fixedLoader(states: ReadonlyMap<string, ReviewState>, released: string[
       state,
       release: () => released.push(r.dir),
       previous: null,
+      carried: [],
     };
   };
 }
@@ -516,22 +517,45 @@ function versionedLoader(released: string[], refuse = 0): Loader {
   return async (r, held) => {
     if (r.version === refuse) throw new RegistrationError(`plan v${r.version} no longer fits`);
     // JSON.parse is the only brand-free way to build branded literals without a cast.
-    const previous: PreviousVersion | null =
-      r.version > 3
-        ? JSON.parse(
-            JSON.stringify({
-              version: 3,
-              comments: [],
-              responses: [{ comment: "c_abcdef", status: "answered", note: "see v4" }],
-            }),
-          )
-        : null;
+    const asked = {
+      id: "c_abcdef",
+      kind: "question",
+      anchor: hunkAnchor,
+      context: { commitMessage: "add parser", path: "src/a.ts" },
+      body: "why drop old1?",
+      createdAt: "2026-10-21T12:00:00.000Z",
+    };
+    const later = r.version > 3;
+    const previous: PreviousVersion | null = later
+      ? JSON.parse(
+          JSON.stringify({
+            version: 3,
+            comments: [asked],
+            responses: [{ comment: "c_abcdef", status: "answered", note: "see v4" }],
+          }),
+        )
+      : null;
+    const carried: CarriedComment[] = later
+      ? JSON.parse(
+          JSON.stringify([
+            {
+              comment: asked,
+              unit: HUNK_A,
+              offsets: null,
+              changed: true,
+              path: "src/a.ts",
+              newLine: 12,
+            },
+          ]),
+        )
+      : [];
     return {
       repo: "/repo",
       reviewsDir: join(r.dir, "reviews"),
       state: { ...twoCommitState(), version: r.version, planHash: r.hash },
       release: held ?? (() => released.push(r.dir)),
       previous,
+      carried,
     };
   };
 }
@@ -802,7 +826,14 @@ test("a version swap keeps the URL, finalizes the old draft and starts a fresh c
   await assert.rejects(stat(join(run.reviews, "v3.draft.json")), { code: "ENOENT" });
 
   const events = await eventsOf(run.url, 2, 10);
-  assert.deepEqual(events.events, [{ seq: 3, type: "version", version: 4, hash: "hash-of-v4" }]);
+  assert.deepEqual(
+    events.events.map((e: { type: string; version: number; carried: unknown[] }) => [
+      e.type,
+      e.version,
+      e.carried.length,
+    ]),
+    [["version", 4, 1]],
+  );
 
   // New comments belong to v4, and a swap with nothing said writes no review.
   const next = await jsonOf(await post(run.url, "api/comments", newComment("and now?")));
@@ -811,6 +842,55 @@ test("a version swap keeps the URL, finalizes the old draft and starts a fresh c
   await run.done;
   assert.deepEqual(run.released, [run.dir]);
   assert.equal(JSON.parse(await readFile(join(run.reviews, "v4.json"), "utf8")).planVersion, 4);
+});
+
+test("after a swap the carried threads come with the state and the event, and take replies", async (t) => {
+  const run = await startVersioned(t);
+  await post(run.url, "api/version", { version: 4, hash: "hash-of-v4" });
+  const [swap] = (await eventsOf(run.url, 0, 10)).events;
+  const carriedShape = {
+    unit: HUNK_A,
+    offsets: null,
+    changed: true,
+    path: "src/a.ts",
+    newLine: 12,
+  };
+  assert.deepEqual(
+    { ...swap.carried[0], comment: swap.carried[0].comment.id },
+    {
+      ...carriedShape,
+      comment: "c_abcdef",
+    },
+  );
+
+  const res = await post(run.url, "api/comments/c_abcdef/replies", {
+    author: "agent",
+    body: "Changed the guard in src/a.ts:12.",
+  });
+  assert.equal(res.status, 201);
+  const state = await jsonOf(await fetch(new URL("api/state", run.url)));
+  assert.deepEqual(
+    state.previous.comments[0].replies.map((r: { body: string }) => r.body),
+    ["Changed the guard in src/a.ts:12."],
+  );
+  assert.deepEqual(
+    state.carried[0].comment.replies.map((r: { body: string }) => r.body),
+    ["Changed the guard in src/a.ts:12."],
+  );
+  const [, reply] = (await eventsOf(run.url, 0, 10)).events;
+  assert.deepEqual([reply.type, reply.commentId], ["reply", "c_abcdef"]);
+  const draft = JSON.parse(await readFile(join(run.reviews, "v4.draft.json"), "utf8"));
+  assert.deepEqual(
+    draft.earlierReplies.map((e: { comment: string; replies: unknown[] }) => [
+      e.comment,
+      e.replies.length,
+    ]),
+    [["c_abcdef", 1]],
+  );
+  assert.equal(
+    (await post(run.url, "api/comments/c_zzzzzz/replies", { author: "agent", body: "x" })).status,
+    404,
+  );
 });
 
 test("a swap with nothing said writes no review, and bad swaps change nothing", async (t) => {

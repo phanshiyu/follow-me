@@ -16,6 +16,7 @@ import { isConcernId, isPlanVersion } from "./plan.ts";
 import { renderReport, reportItems } from "./prompt.ts";
 import { isLockToken } from "./session.ts";
 import type {
+  CarriedComment,
   Comment,
   CommentId,
   ConcernDecision,
@@ -67,6 +68,8 @@ export type Loaded = {
   readonly release: () => void;
   /** The review before this version and what this plan answered in it; null at the first. */
   readonly previous: PreviousVersion | null;
+  /** Each comment of `previous` placed on this version's diff, in the same order. */
+  readonly carried: readonly CarriedComment[];
 };
 
 /**
@@ -185,7 +188,13 @@ export async function loadDraft(reviewsDir: string, version: PlanVersion): Promi
     text = await readFile(draftPath(reviewsDir, version), "utf8");
   } catch (error) {
     if (isRecord(error) && error["code"] === "ENOENT") {
-      return { comments: [], concerns: [], resolved: [], excluded: { comments: [], concerns: [] } };
+      return {
+        comments: [],
+        concerns: [],
+        resolved: [],
+        excluded: { comments: [], concerns: [] },
+        earlierReplies: [],
+      };
     }
     throw error;
   }
@@ -353,6 +362,8 @@ type View = {
   readonly resolved: Set<CommentId>;
   readonly excludedComments: Set<CommentId>;
   readonly excludedConcerns: Set<ConcernId>;
+  /** Replies posted during this version to comments of `previous`. */
+  readonly earlierReplies: Map<CommentId, readonly Reply[]>;
   readonly unitIds: ReadonlySet<string>;
   /** Body length of each hunk, the bound for an anchor's row offsets. */
   readonly hunkRows: ReadonlyMap<string, number>;
@@ -371,6 +382,7 @@ function viewOf(registration: Registration, loaded: Loaded, draft: ReviewDraft):
     resolved: new Set(draft.resolved),
     excludedComments: new Set(draft.excluded.comments),
     excludedConcerns: new Set(draft.excluded.concerns),
+    earlierReplies: new Map(draft.earlierReplies.map((e) => [e.comment, e.replies])),
     unitIds: new Set(state.units.map((u) => u.id)),
     hunkRows: new Map(
       state.units.flatMap((u): [string, number][] =>
@@ -386,6 +398,28 @@ function viewOf(registration: Registration, loaded: Loaded, draft: ReviewDraft):
 function withReplies(comment: Comment, replies: readonly Reply[] | undefined): Comment {
   const { replies: _dropped, ...rest } = comment;
   return replies === undefined || replies.length === 0 ? rest : { ...rest, replies };
+}
+
+/** A comment of the previous version with the replies it got during this one. */
+function withEarlier(view: View, comment: Comment): Comment {
+  const later = view.earlierReplies.get(comment.id) ?? [];
+  return later.length === 0
+    ? comment
+    : withReplies(comment, [...(comment.replies ?? []), ...later]);
+}
+
+function previousOf(view: View): PreviousVersion | null {
+  const { previous } = view.loaded;
+  if (previous === null) return null;
+  return { ...previous, comments: previous.comments.map((c) => withEarlier(view, c)) };
+}
+
+function carriedOf(view: View): CarriedComment[] {
+  return view.loaded.carried.map((c) => ({ ...c, comment: withEarlier(view, c.comment) }));
+}
+
+function earlierOf(view: View) {
+  return [...view.earlierReplies].map(([comment, replies]) => ({ comment, replies }));
 }
 
 function mintReplyId(taken: ReadonlySet<string>): ReplyId {
@@ -467,6 +501,7 @@ function hostSession(
     const concerns = [...view.decisions.values()];
     const resolved = [...view.resolved];
     const excluded = excludedOf();
+    const earlierReplies = earlierOf(view);
     const snapshot = JSON.stringify(
       {
         schema: "follow-me/review-draft@1",
@@ -475,6 +510,7 @@ function hostSession(
         ...(concerns.length === 0 ? {} : { concerns }),
         ...(resolved.length === 0 ? {} : { resolved }),
         ...(excluded === null ? {} : { excluded }),
+        ...(earlierReplies.length === 0 ? {} : { earlierReplies }),
       },
       null,
       2,
@@ -511,6 +547,7 @@ function hostSession(
     const concerns = [...view.decisions.values()];
     const resolved = [...view.resolved];
     const excluded = excludedOf();
+    const earlierReplies = earlierOf(view);
     return {
       schema: "follow-me/review@1",
       mode: view.loaded.state.mode,
@@ -521,6 +558,7 @@ function hostSession(
       ...(concerns.length === 0 ? {} : { concerns }),
       ...(resolved.length === 0 ? {} : { resolved }),
       ...(excluded === null ? {} : { excluded }),
+      ...(earlierReplies.length === 0 ? {} : { earlierReplies }),
     };
   };
 
@@ -543,7 +581,8 @@ function hostSession(
     return view.reviewFile;
   };
 
-  const hasWork = (): boolean => view.comments.size > 0 || view.decisions.size > 0;
+  const hasWork = (): boolean =>
+    view.comments.size > 0 || view.decisions.size > 0 || view.earlierReplies.size > 0;
 
   return {
     id,
@@ -569,7 +608,8 @@ function hostSession(
       resolved: [...view.resolved],
       excluded: { comments: [...view.excludedComments], concerns: [...view.excludedConcerns] },
       seq: events.length,
-      previous: view.loaded.previous,
+      previous: previousOf(view),
+      carried: carriedOf(view),
     }),
     /** Events after `since`, now and as they happen, until unfollowed or the review ends. */
     latest: () => events.length,
@@ -647,22 +687,32 @@ function hostSession(
       emit({ type: "comment-deleted", id: gone.id });
       await saveDraft();
     },
+    /** Replies under a comment of this version, or of the previous one, as after a swap. */
     reply: async (target: string, raw: unknown): Promise<ReplyId> => {
       open();
       const comment = view.comments.get(target);
-      if (comment === undefined) throw new HttpError(404, "no such comment");
+      const earlier = view.loaded.previous?.comments.find((c) => c.id === target);
+      const owner = comment ?? earlier;
+      if (owner === undefined) throw new HttpError(404, "no such comment");
       const parsed = parseNewReply(raw);
       if (typeof parsed === "string") throw new HttpError(400, `malformed reply: ${parsed}`);
       const taken = new Set(
-        [...view.comments.values()].flatMap((c) => c.replies ?? []).map((r) => r.id),
+        [...view.comments.values(), ...(previousOf(view)?.comments ?? [])]
+          .flatMap((c) => c.replies ?? [])
+          .map((r) => r.id),
       );
       const reply: Reply = {
         id: mintReplyId(taken),
         ...parsed,
         createdAt: new Date().toISOString(),
       };
-      view.comments.set(comment.id, { ...comment, replies: [...(comment.replies ?? []), reply] });
-      emit({ type: "reply", commentId: comment.id, reply });
+      if (comment !== undefined) {
+        view.comments.set(comment.id, { ...comment, replies: [...(comment.replies ?? []), reply] });
+      } else if (earlier !== undefined) {
+        const later = view.earlierReplies.get(earlier.id) ?? [];
+        view.earlierReplies.set(earlier.id, [...later, reply]);
+      }
+      emit({ type: "reply", commentId: owner.id, reply });
       await saveDraft();
       return reply.id;
     },
@@ -759,7 +809,7 @@ function hostSession(
           next,
           await loadDraft(next.reviewsDir, version),
         );
-        emit({ type: "version", version, hash });
+        emit({ type: "version", version, hash, carried: carriedOf(view) });
       } finally {
         swapping = false;
       }

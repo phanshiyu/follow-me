@@ -1,3 +1,4 @@
+import { tipStartOf } from "./diff.ts";
 import type { Evolution } from "./evolve.ts";
 import type {
   Anchor,
@@ -491,16 +492,6 @@ function excerpt(hunk: TextHunk, tipStart: number, owners: readonly (number | nu
     if (line.op !== "-") tipLine += 1;
   }
   return lines;
-}
-
-/** Where the hunk starts in the tip: its base position shifted by earlier hunks of the file. */
-function tipStartOf(hunk: TextHunk, units: ReadonlyMap<UnitId, Unit>): number {
-  let shift = 0;
-  for (const u of units.values()) {
-    if (u.kind !== "hunk" || u.path !== hunk.path || u.oldStart >= hunk.oldStart) continue;
-    for (const line of u.body) shift += line.op === "+" ? 1 : line.op === "-" ? -1 : 0;
-  }
-  return hunk.oldStart + shift + 1;
 }
 
 /** A fence longer than any backtick run in the content, so quoted code cannot close it. */

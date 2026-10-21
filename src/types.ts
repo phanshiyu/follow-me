@@ -328,6 +328,8 @@ export type Review = {
   readonly resolved?: readonly CommentId[];
   /** Items the reviewer left out of the hand-off to the merge request. */
   readonly excluded?: Excluded;
+  /** Replies to comments of earlier versions, which keep their own review file as written. */
+  readonly earlierReplies?: readonly EarlierReplies[];
 };
 
 /** Comments and agent concerns kept out of the report's main list and of `report --json`. */
@@ -342,6 +344,7 @@ export type ReviewDraft = {
   readonly concerns: readonly ConcernDecision[];
   readonly resolved: readonly CommentId[];
   readonly excluded: Excluded;
+  readonly earlierReplies: readonly EarlierReplies[];
 };
 
 /** The version before a swap or a fresh open: its comments and what the new plan answered. */
@@ -350,6 +353,25 @@ export type PreviousVersion = {
   readonly comments: readonly Comment[];
   readonly responses: readonly CommentResponse[];
 };
+
+/**
+ * A comment of the previous version placed on this version's diff. A unit whose hunk is unchanged
+ * keeps its id and the picked rows. When the hunk changed, unit is the hunk of the same path whose
+ * tip lines cover or come closest to where the comment pointed, changed is true and offsets is
+ * null. unit is null when nothing on that path is left, and for comments not on a hunk. newLine
+ * is the 1-based line of the branch tip the comment now points at, or null when there is none.
+ */
+export type CarriedComment = {
+  readonly comment: Comment;
+  readonly unit: UnitId | null;
+  readonly offsets: readonly number[] | null;
+  readonly changed: boolean;
+  readonly path: RepoPath | null;
+  readonly newLine: number | null;
+};
+
+/** Replies posted during this review to a comment of an earlier version. */
+export type EarlierReplies = { readonly comment: CommentId; readonly replies: readonly Reply[] };
 
 /** One entry of the hosted session's append-only log. seq starts at 1 and never repeats. */
 export type ServerEvent = { readonly seq: number } & (
@@ -365,7 +387,12 @@ export type ServerEvent = { readonly seq: number } & (
       readonly decidedAt?: string;
     }
   | { readonly type: "resolved"; readonly commentId: CommentId; readonly resolved: boolean }
-  | { readonly type: "version"; readonly version: PlanVersion; readonly hash: string }
+  | {
+      readonly type: "version";
+      readonly version: PlanVersion;
+      readonly hash: string;
+      readonly carried: readonly CarriedComment[];
+    }
   /** The reviewer pressed Submit: the review is done, though the page stays open. */
   | { readonly type: "submitted" }
   | { readonly type: "ended"; readonly review: string }

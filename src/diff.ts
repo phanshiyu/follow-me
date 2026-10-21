@@ -392,3 +392,13 @@ export function parseUnitRef(s: string): UnitRef | { readonly error: string } {
   }
   return { unit, select: { kind: "lines", changes } };
 }
+
+/** Where the hunk starts in the tip: its base position shifted by earlier hunks of the file. */
+export function tipStartOf(hunk: TextHunk, units: ReadonlyMap<UnitId, Unit>): number {
+  let shift = 0;
+  for (const u of units.values()) {
+    if (u.kind !== "hunk" || u.path !== hunk.path || u.oldStart >= hunk.oldStart) continue;
+    for (const line of u.body) shift += line.op === "+" ? 1 : line.op === "-" ? -1 : 0;
+  }
+  return hunk.oldStart + shift + 1;
+}

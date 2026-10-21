@@ -525,6 +525,21 @@ export async function openSessionAt(dir: string): Promise<Session> {
 }
 
 /**
+ * The diff a stored plan was made on: the session's own when the plan is for this tip, else the
+ * plan's base and tip loaded again. Null when those commits are gone from the repo.
+ */
+export async function diffOfPlan(session: Session, plan: StoredPlan): Promise<Diff | null> {
+  const { base, tip } = plan.file;
+  if (base === session.anchor.base && tip === session.anchor.tip) return session.diff;
+  try {
+    return await loadDiff(session.root, base, tip);
+  } catch (error) {
+    if (error instanceof GitError) return null;
+    throw error;
+  }
+}
+
+/**
  * How the latest plan carries over to the branch as it is now, or null when that plan was made
  * for this tip. The old diff is loaded from the plan's own base and tip, so this gives the same
  * answer however many times it runs after the move.

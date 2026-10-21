@@ -3,10 +3,11 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { evolvePlan } from "../src/evolve.ts";
+import { parseComment } from "../src/comments.ts";
+import { carryComments, evolvePlan } from "../src/evolve.ts";
 import { loadDiff } from "../src/git.ts";
 import { isCommentId, PLAN_SCHEMA, serializePlanFile, validatePlan } from "../src/plan.ts";
-import type { Diff, PlanFile, Unit, UnitId } from "../src/types.ts";
+import type { Comment, Diff, PlanFile, Unit, UnitId } from "../src/types.ts";
 import { type FixtureRepo, makeFixtureRepo } from "./fixture-repo.ts";
 
 function git(dir: string, ...args: string[]): string {
@@ -140,4 +141,97 @@ test("a tip that moved without changing the diff keeps the whole plan", async (t
   assert.deepEqual(draft.commits, oldPlan.commits);
   assert.deepEqual([vanished, added], [[], []]);
   assert.equal(validatePlan(newDiff, serializePlanFile(draft)).ok, true);
+});
+
+function rowOf(unit: Unit | undefined, text: string): number {
+  assert.ok(unit?.kind === "hunk");
+  const row = unit.body.findIndex((r) => r.text === text);
+  assert.notEqual(row, -1, text);
+  return row;
+}
+
+function commentOn(id: string, unit: UnitId, offsets: number[], path: string): Comment {
+  const comment = parseComment({
+    id,
+    anchor: { kind: "hunk", unit, commit: 0, changes: [], offsets },
+    context: { commitMessage: "feat: the rest", path },
+    body: "change this",
+    createdAt: "2026-10-21T12:00:00.000Z",
+  });
+  assert.ok(typeof comment !== "string");
+  return comment;
+}
+
+test("comments follow the agent's edit: an edited hunk's thread moves and is marked changed", async (t) => {
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  const oldDiff = await loadDiff(repo.dir, "main", "feature");
+  const [first, second] = idsOn(oldDiff, "src/lib.js");
+  const [notes] = idsOn(oldDiff, "notes.txt");
+  assert.ok(first && second && notes);
+  const guard = "  if (b === 0) throw new RangeError('division by zero');\n";
+  const comments = [
+    commentOn(
+      "c_aaaaaa",
+      first,
+      [rowOf(oldDiff.units.get(first), "  assertNumber(a);\n")],
+      "src/lib.js",
+    ),
+    commentOn("c_bbbbbb", second, [rowOf(oldDiff.units.get(second), guard)], "src/lib.js"),
+    commentOn("c_cccccc", notes, [0], "notes.txt"),
+  ];
+  const message = parseComment({
+    id: "c_dddddd",
+    anchor: { kind: "message", commit: 0 },
+    context: { commitMessage: "feat: the rest", path: null },
+    body: "reword",
+    createdAt: "2026-10-21T12:00:00.000Z",
+  });
+  assert.ok(typeof message !== "string");
+
+  // The agent documents div's guard one line above it and drops the notes change.
+  commitEdit(
+    repo,
+    "src/lib.js",
+    "export function div(a, b) {\n",
+    "export function div(a, b) {\n  // b is never zero here\n",
+  );
+  writeFileSync(join(repo.dir, "notes.txt"), "line one\nline two");
+  git(repo.dir, "commit", "-q", "-am", "drop notes");
+  const newDiff = await loadDiff(repo.dir, "main", "feature");
+  const [, replacement] = idsOn(newDiff, "src/lib.js");
+
+  const carried = carryComments([...comments, message], oldDiff.units, newDiff.units);
+
+  assert.deepEqual(
+    carried.map(({ comment, ...where }) => ({ id: comment.id, ...where })),
+    [
+      {
+        id: "c_aaaaaa",
+        unit: first,
+        offsets: comments[0]?.anchor.kind === "hunk" ? comments[0].anchor.offsets : null,
+        changed: false,
+        path: "src/lib.js",
+        newLine: 4,
+      },
+      {
+        id: "c_bbbbbb",
+        unit: replacement,
+        offsets: null,
+        changed: true,
+        path: "src/lib.js",
+        newLine: 21,
+      },
+      {
+        id: "c_cccccc",
+        unit: null,
+        offsets: null,
+        changed: true,
+        path: "notes.txt",
+        newLine: null,
+      },
+      { id: "c_dddddd", unit: null, offsets: null, changed: false, path: null, newLine: null },
+    ],
+  );
+  assert.notEqual(replacement, second);
 });

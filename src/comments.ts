@@ -10,10 +10,12 @@ import {
 } from "./plan.ts";
 import type {
   Anchor,
+  CarriedComment,
   Comment,
   CommentId,
   ConcernDecision,
   ConcernId,
+  EarlierReplies,
   Excluded,
   Reply,
   ReplyAuthor,
@@ -253,6 +255,43 @@ function parseCommentId(item: unknown): CommentId | string {
   return asCommentId(item) ?? "not a comment id";
 }
 
+function parseEarlierReplies(v: unknown): EarlierReplies | string {
+  if (!isFields<"comment" | "replies">(v)) return "not an object";
+  const comment = asCommentId(v.comment);
+  if (comment === null) return "comment is not a comment id";
+  const replies = parseList(v.replies, parseReply, "replies");
+  return typeof replies === "string" ? replies : { comment, replies };
+}
+
+function isLine(v: unknown): v is number {
+  return typeof v === "number" && Number.isInteger(v) && v >= 1;
+}
+
+export function parseCarried(v: unknown): CarriedComment | string {
+  if (!isFields<"comment" | "unit" | "offsets" | "changed" | "path" | "newLine">(v)) {
+    return "not an object";
+  }
+  const comment = parseComment(v.comment);
+  if (typeof comment === "string") return comment;
+  const { unit, offsets, changed, path, newLine } = v;
+  if (unit !== null && !(typeof unit === "string" && isUnitId(unit)))
+    return "unit is not a unit id";
+  if (offsets !== null && !(isArray(offsets) && offsets.every(isIndex))) {
+    return "offsets is not null or a list of rows";
+  }
+  if (typeof changed !== "boolean") return "changed is not a boolean";
+  if (path !== null && !(typeof path === "string" && isRepoPath(path))) return "path is not a path";
+  if (newLine !== null && !isLine(newLine)) return "newLine is not null or a line";
+  return {
+    comment,
+    unit,
+    offsets: offsets === null ? null : offsets.filter(isIndex),
+    changed,
+    path,
+    newLine,
+  };
+}
+
 /** Boundary parse of reviews/vN.json. Files written before walk mode existed have no mode. */
 export function parseReview(v: unknown): Review | string {
   if (
@@ -266,6 +305,7 @@ export function parseReview(v: unknown): Review | string {
       | "concerns"
       | "resolved"
       | "excluded"
+      | "earlierReplies"
     >(v)
   ) {
     return "not an object";
@@ -287,6 +327,8 @@ export function parseReview(v: unknown): Review | string {
   const excluded = parseExcluded(v.excluded);
   if (typeof excluded === "string") return excluded;
   const anyExcluded = excluded.comments.length + excluded.concerns.length > 0;
+  const earlier = parseList(v.earlierReplies, parseEarlierReplies, "earlierReplies");
+  if (typeof earlier === "string") return earlier;
   return {
     schema: v.schema,
     mode,
@@ -297,6 +339,7 @@ export function parseReview(v: unknown): Review | string {
     ...(concerns.length === 0 ? {} : { concerns }),
     ...(resolved.length === 0 ? {} : { resolved }),
     ...(anyExcluded ? { excluded } : {}),
+    ...(earlier.length === 0 ? {} : { earlierReplies: earlier }),
   };
 }
 
@@ -313,7 +356,8 @@ function lenient<T>(items: unknown, parse: (item: unknown) => T | string): T[] {
  * item that does not parse is dropped, so one bad entry never loses the rest of an autosave.
  */
 export function parseDraft(v: unknown): ReviewDraft | string {
-  if (!isFields<"comments" | "concerns" | "resolved" | "excluded">(v) || !isArray(v.comments)) {
+  type Fields = "comments" | "concerns" | "resolved" | "excluded" | "earlierReplies";
+  if (!isFields<Fields>(v) || !isArray(v.comments)) {
     return "not a review draft";
   }
   const excluded = parseExcluded(v.excluded);
@@ -322,6 +366,7 @@ export function parseDraft(v: unknown): ReviewDraft | string {
     concerns: lenient(v.concerns, parseDecision),
     resolved: lenient(v.resolved, parseCommentId),
     excluded: typeof excluded === "string" ? { comments: [], concerns: [] } : excluded,
+    earlierReplies: lenient(v.earlierReplies, parseEarlierReplies),
   };
 }
 
@@ -340,6 +385,7 @@ type EventFields =
   | "resolved"
   | "version"
   | "hash"
+  | "carried"
   | "review";
 
 export function parseEvent(v: unknown): ServerEvent | string {
@@ -378,7 +424,9 @@ export function parseEvent(v: unknown): ServerEvent | string {
     }
     case "version": {
       if (!isPlanVersion(v.version) || typeof v.hash !== "string") return "malformed version event";
-      return { seq, type: v.type, version: v.version, hash: v.hash };
+      const carried = parseList(v.carried, parseCarried, "carried");
+      if (typeof carried === "string") return carried;
+      return { seq, type: v.type, version: v.version, hash: v.hash, carried };
     }
     case "submitted":
       return { seq, type: v.type };
