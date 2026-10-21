@@ -13,6 +13,7 @@ import {
 import { basename, dirname, join } from "node:path";
 import { parseDraft, parseReview } from "./comments.ts";
 import { isSha } from "./diff.ts";
+import { type Evolution, evolvePlan } from "./evolve.ts";
 import {
   branchExists,
   currentBranch,
@@ -521,6 +522,20 @@ export async function openSessionAt(dir: string): Promise<Session> {
     throw new SessionFileError(`${dir} holds the session of branch ${anchor.branch}`);
   }
   return openSession(dirname(top), { branch: anchor.branch });
+}
+
+/**
+ * How the latest plan carries over to the branch as it is now, or null when that plan was made
+ * for this tip. The old diff is loaded from the plan's own base and tip, so this gives the same
+ * answer however many times it runs after the move.
+ */
+export async function sinceLastPlan(
+  session: Session,
+): Promise<(Evolution & { readonly since: PlanVersion }) | null> {
+  const latest = session.plans().at(-1);
+  if (latest === undefined || latest.file.tip === session.anchor.tip) return null;
+  const oldDiff = await loadDiff(session.root, latest.file.base, latest.file.tip);
+  return { since: latest.version, ...evolvePlan(latest.file, oldDiff, session.diff) };
 }
 
 /** "<name>.<pid>.<random>.tmp" as written by writeJson, the lock and the review server. */

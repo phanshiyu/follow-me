@@ -130,6 +130,13 @@ function git(dir: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd: dir, encoding: "utf8" }).trim();
 }
 
+/** The agent's fix: one edit to src/lib.js, committed on the original branch. */
+function editLib(dir: string, from: string, to: string): void {
+  const file = join(dir, "src", "lib.js");
+  writeFileSync(file, readFileSync(file, "utf8").replace(from, to));
+  git(dir, "commit", "-q", "-am", "fix: say what went wrong");
+}
+
 test("extract, check, apply and status drive the whole flow from the command line", async (t) => {
   const { run } = cliIn(t);
   const repo = makeFixtureRepo();
@@ -1402,6 +1409,45 @@ test("follow-me with no command walks the states: prompt, issues, review, questi
     after.out.endsWith("next: done; the user can port it with follow-me report --json\n"),
     true,
   );
+});
+
+test("follow-me after the branch moved carries the plan over and asks only for the new units", async (t) => {
+  const skillHome = mkdtempSync(join(tmpdir(), "follow-me-skillhome-"));
+  t.after(() => rmSync(skillHome, { recursive: true, force: true }));
+  const { run } = cliIn(t, { HOME: skillHome });
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  git(repo.dir, "config", "user.email", "fixture@example.com");
+  const sub = ".follow-me/feature";
+  const before = await loadDiff(repo.dir, "main", "feature");
+  run(repo.dir, "extract");
+  writeWholeDraft(repo.dir, repo.base, repo.branch, [...before.units.keys()]);
+  assert.equal(run(repo.dir, "apply").code, 0);
+
+  editLib(repo.dir, "division by zero", "cannot divide by zero");
+  const tip = git(repo.dir, "rev-parse", "feature");
+  const moved = run(repo.dir, "--no-open", "--wait", "0");
+  assert.equal(moved.code, 0, moved.err);
+  const handoff = `wrote ${sub}/prompt.md\nnext: assign the new units in ${sub}/draft.json, then run follow-me again\n`;
+  assert.equal(moved.out.endsWith(handoff), true, moved.out);
+  const draft = JSON.parse(readFileSync(join(repo.dir, sub, "draft.json"), "utf8"));
+  assert.equal(draft.tip, tip);
+  assert.equal(draft.commits[0].units.length, before.units.size - 1);
+  const prompt = readFileSync(join(repo.dir, sub, "prompt.md"), "utf8");
+  assert.match(prompt, /^## Changes since v1$/m);
+  assert.match(prompt, /src\/lib\.js, was in commit 1 "feat: everything"/);
+  assert.match(prompt, /cannot divide by zero/);
+  // A second call before the agent acts says the same and keeps the draft.
+  assert.equal(run(repo.dir, "--no-open", "--wait", "0").out.endsWith(handoff), true);
+
+  const after = await loadDiff(repo.dir, "main", "feature");
+  const added = [...after.units.keys()].filter((id) => !before.units.has(id));
+  assert.equal(added.length, 1);
+  draft.commits[0].units.push(...added);
+  writeFileSync(join(repo.dir, sub, "draft.json"), JSON.stringify(draft));
+  const applied = run(repo.dir, "--no-open", "--wait", "0");
+  assert.equal(applied.code, 0, applied.err);
+  assert.match(applied.out, /updated feature-split at [0-9a-f]{12} from plan v2/);
 });
 
 test("follow-me on a branch someone else wrote plans a reviewer's reading and applies nothing", async (t) => {

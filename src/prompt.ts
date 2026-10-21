@@ -1,3 +1,4 @@
+import type { Evolution } from "./evolve.ts";
 import type {
   Anchor,
   Comment,
@@ -5,6 +6,7 @@ import type {
   Diff,
   PlacedConcern,
   PlanFile,
+  PlanVersion,
   ProjectedCommit,
   Review,
   Selection,
@@ -24,6 +26,8 @@ export type PromptInput = {
   readonly draftPath: string;
   /** The exact command that validates the draft, including any --branch the user passed. */
   readonly checkCommand: string;
+  /** Set when the branch moved after plan `since` and the draft carries that plan over. */
+  readonly changes?: Changes;
 } & (
   | {
       readonly mode: "split";
@@ -34,6 +38,8 @@ export type PromptInput = {
     }
   | { readonly mode: "walk" }
 );
+
+export type Changes = { readonly since: PlanVersion } & Pick<Evolution, "vanished" | "added">;
 
 /** Consecutive runs collapse: [0,1,2,3,7] becomes "0-3,7". */
 function formatRanges(changes: readonly number[]): string {
@@ -343,6 +349,45 @@ const RULES = (
 - Keep every file syntactically whole in every commit: a function with its closing brace, a block with both ends, an import before or with its first use. Commits need not build or pass tests, but each file a commit writes must parse.
 - Check your work with \`${checkCommand}\` and fix every issue it prints, syntax errors included.`;
 
+function renderUnit(unit: Unit): string {
+  return unit.kind === "hunk" ? renderHunk(unit) : renderOtherUnit(unit);
+}
+
+/** The vanished and new units, and the reviewer's comments on hunks that vanished, quoted. */
+function renderChanges(changes: Changes, input: PromptInput, ctx: Context): string {
+  const { since, vanished, added } = changes;
+  const gone = new Set<UnitId>(vanished.map((v) => v.unit.id));
+  const review = input.mode === "split" ? input.review : null;
+  const orphans = (review?.comments ?? []).filter(
+    (c) => c.author !== "agent" && c.anchor.kind === "hunk" && gone.has(c.anchor.unit),
+  );
+  const parts = [
+    `## Changes since v${since}\n`,
+    `The branch moved after plan v${since}. ${input.draftPath} already holds that plan on the new tip: every unit whose hunk did not change keeps its commit, and any commit left with no unit was dropped. Put each new unit below into a commit, an existing one or a new one, and keep the rest as it is.`,
+  ];
+  if (vanished.length > 0) {
+    parts.push(
+      `\nThese units of v${since} changed, so their ids are gone:`,
+      ...vanished.map(({ unit, commits }) => {
+        const where = commits
+          .map((c) => `commit ${c.index + 1} ${JSON.stringify(c.message.split("\n")[0] ?? "")}`)
+          .join(", ");
+        return `- ${unit.id}  ${unit.path}, was in ${where}`;
+      }),
+    );
+  }
+  if (added.length > 0) {
+    parts.push("\nNew units, in no commit yet:\n", added.map(renderUnit).join("\n\n"));
+  }
+  if (orphans.length > 0) {
+    parts.push(
+      `\nThe reviewer commented on hunks that changed. Write a response for each saying what you changed, and post the same with \`follow-me reply <id>\`:\n`,
+      orphans.map((c) => renderComment(c, ctx)).join("\n"),
+    );
+  }
+  return parts.join("\n");
+}
+
 /** The planner prompt for a coding agent. Pure and deterministic for the same input. */
 export function renderPrompt(input: PromptInput): string {
   const { diff, draftPath } = input;
@@ -356,13 +401,24 @@ export function renderPrompt(input: PromptInput): string {
   if (input.mode === "walk") {
     const sections = [
       ...head,
+      ...(input.changes === undefined
+        ? []
+        : [renderChanges(input.changes, input, { commits: [], units: diff.units })]),
       `## Concerns\n\n${CONCERNS}`,
       `## Questions from the reviewer\n\n${QUESTIONS}\n\n${CONTEXT_RULE}`,
       units,
     ];
     return `${sections.join("\n\n")}\n`;
   }
-  const sections = [...head, units];
+  const ctx: Context = {
+    commits: input.previousCommits ?? [],
+    units: diff.units,
+  };
+  const sections = [
+    ...head,
+    ...(input.changes === undefined ? [] : [renderChanges(input.changes, input, ctx)]),
+    units,
+  ];
   const { previousPlan, review } = input;
   if (previousPlan) {
     sections.push(
@@ -372,7 +428,6 @@ export function renderPrompt(input: PromptInput): string {
   const theirs = review?.comments.filter((c) => c.author !== "agent") ?? [];
   const asked = theirs.filter((c) => c.kind === "question");
   const changes = theirs.filter((c) => c.kind !== "question");
-  const ctx: Context = { commits: input.previousCommits ?? [], units: diff.units };
   const questions = [`## Questions from the reviewer\n`, QUESTIONS, `\n${CONTEXT_RULE}`];
   if (review && asked.length > 0) {
     questions.push(

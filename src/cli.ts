@@ -42,6 +42,7 @@ import { runInstall, runUninstall, type SkillTargets, syncSkills } from "./insta
 import { naiveDraft } from "./naive.ts";
 import { serializePlanFile, type ValidPlan, validatePlan } from "./plan.ts";
 import {
+  type Changes,
   type PromptInput,
   renderEvents,
   renderPrompt,
@@ -62,6 +63,7 @@ import {
   SessionFileError,
   SessionLockedError,
   type StoredReview,
+  sinceLastPlan,
 } from "./session.ts";
 import { checkSyntax, type SyntaxReport } from "./syntax.ts";
 import type {
@@ -586,11 +588,17 @@ async function applyLocked(session: Session, args: Args): Promise<number> {
   return same ? 0 : 1;
 }
 
-function promptInput(session: Session, mode: ReviewMode, args: Args): PromptInput {
+function promptInput(
+  session: Session,
+  mode: ReviewMode,
+  args: Args,
+  changes?: Changes,
+): PromptInput {
   const common = {
     diff: session.diff,
     draftPath: session.draftPath,
     checkCommand: `follow-me check${branchFlag(args)}`,
+    ...(changes === undefined ? {} : { changes }),
   };
   if (mode === "walk") return { ...common, mode };
   const previous = session.plans().at(-1);
@@ -988,6 +996,36 @@ function finished(session: Session, stored: StoredReview): number {
   return 0;
 }
 
+type Moved = NonNullable<Awaited<ReturnType<typeof sinceLastPlan>>>;
+
+/** Whether draft.json was written for the branch's current tip; a missing draft was not. */
+function draftForTip(session: Session): boolean {
+  try {
+    const raw = session.readDraft();
+    return (
+      typeof raw === "object" && raw !== null && "tip" in raw && raw.tip === session.anchor.tip
+    );
+  } catch (error) {
+    if (error instanceof MissingDraftError) return false;
+    throw error;
+  }
+}
+
+/**
+ * The branch moved after the latest plan. The first call writes that plan carried over to the new
+ * tip as draft.json; while the draft does not validate, each call writes the prompt with what
+ * changed and hands off. Null when the draft is ready, so the entry applies it as usual.
+ */
+function evolveHandoff(session: Session, cwd: string, mode: ReviewMode, args: Args, moved: Moved) {
+  if (!draftForTip(session)) session.writeDraft(serializePlanFile(moved.draft));
+  if (draftState(session).kind === "valid") return null;
+  const { since, vanished, added } = moved;
+  session.writePrompt(renderPrompt(promptInput(session, mode, args, { since, vanished, added })));
+  say(`wrote ${relative(cwd, session.promptPath)}`);
+  next(`assign the new units in ${relative(cwd, session.draftPath)}, then run follow-me again`);
+  return 0;
+}
+
 /** Writes the prompt for the agent and says where; used whenever there is no plan to review. */
 function promptHandoff(session: Session, cwd: string, mode: ReviewMode, args: Args): number {
   session.writePrompt(renderPrompt(promptInput(session, mode, args)));
@@ -1099,9 +1137,14 @@ async function entry(cwd: string, args: Args): Promise<number> {
   syncSkills(homedir(), say);
   const session = await openFresh(cwd, args);
   const hosted = await openOnServer(session, null);
+  const mode = await entryMode(session, args);
+  const moved = await sinceLastPlan(session);
+  if (moved !== null) {
+    const handed = evolveHandoff(session, cwd, mode, args, moved);
+    if (handed !== null) return handed;
+  }
   if (hosted !== null) return listen(session, hosted, args);
 
-  const mode = await entryMode(session, args);
   const state = draftState(session);
   if (state.kind === "invalid") {
     next("fix the draft, then run follow-me again");
