@@ -123,3 +123,20 @@ export function aReportItem(overrides: Partial<ReportItem> = {}): ReportItem {
     ...overrides,
   });
 }
+
+/** The two-commit state with six more commits after it, so the page is long enough to scroll. */
+export function aLongState(overrides: Partial<State> = {}): State {
+  const base = aState();
+  return aState({
+    commits: [
+      ...base.commits,
+      ...Array.from({ length: 6 }, (_, i) =>
+        aCommit(i + 2, {
+          message: `Step ${i + 3}`,
+          refs: [{ unit: aHunk().id, select: { kind: "lines", changes: [i + 10] } }],
+        }),
+      ),
+    ],
+    ...overrides,
+  });
+}

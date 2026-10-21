@@ -861,3 +861,15 @@
   border: 1px solid var(--border);
   padding: 2px 8px;
 }
+
+@keyframes thread-flash {
+  from {
+    box-shadow: 0 0 0 4px rgb(14 165 233 / 0.65);
+  }
+  to {
+    box-shadow: 0 0 0 4px rgb(14 165 233 / 0);
+  }
+}
+.thread-flash {
+  animation: thread-flash 1.6s ease-out;
+}

@@ -15,6 +15,7 @@ import { arrival, type Placement, placeCarried } from "./lib/carried.ts";
 import { titleOf } from "./lib/commit.ts";
 import { applyEvent } from "./lib/live.ts";
 import { type LineNumber, lineNumbers, ownership } from "./lib/rows.ts";
+import { type Notice, noticeOf, unreadOf } from "./lib/unread.ts";
 import type { ServerEvent, State, Unit, UnitId } from "./lib/wire.ts";
 
 type Store = {
@@ -27,6 +28,11 @@ type Store = {
   /** The one-line notice that a new plan version arrived, until the reviewer dismisses it. */
   readonly arrived: string | null;
   dismissArrived(): void;
+  /** Every event so far that told the reviewer something, for toasts and the unread badge. */
+  readonly events: readonly ServerEvent[];
+  /** What the agent said that the reviewer has not looked at yet. */
+  readonly unread: readonly Notice[];
+  markSeen(keys: readonly string[]): void;
 };
 
 const ReviewContext = createContext<Store | null>(null);
@@ -70,6 +76,8 @@ export function ReviewProvider({ initial, children }: { initial: State; children
   const [ended, setEnded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [arrived, setArrived] = useState<string | null>(null);
+  const [events, setEvents] = useState<readonly ServerEvent[]>([]);
+  const [seen, setSeen] = useState<ReadonlySet<string>>(new Set());
   const seq = useRef(initial.seq);
   seq.current = state.seq;
   const latest = useRef(state);
@@ -91,6 +99,7 @@ export function ReviewProvider({ initial, children }: { initial: State; children
       source.onmessage = (message: MessageEvent<string>) => {
         const event: ServerEvent = JSON.parse(message.data);
         setState((current) => applyEvent(current, event));
+        if (noticeOf(event) !== null) setEvents((before) => [...before, event]);
         if (event.type === "version") {
           keep.current = topCommit(latest.current);
           void refresh().then(() => setArrived(`v${event.version}`));
@@ -135,6 +144,12 @@ export function ReviewProvider({ initial, children }: { initial: State; children
     }
   }, []);
 
+  const unread = useMemo(() => unreadOf(seen, events), [seen, events]);
+  const markSeen = useCallback(
+    (keys: readonly string[]) => setSeen((before) => new Set([...before, ...keys])),
+    [],
+  );
+
   const store = useMemo(
     () => ({
       state,
@@ -144,8 +159,11 @@ export function ReviewProvider({ initial, children }: { initial: State; children
       refresh,
       arrived: arrived === null ? null : arrival(state.version, state.carried ?? []),
       dismissArrived: () => setArrived(null),
+      events,
+      unread,
+      markSeen,
     }),
-    [state, ended, error, run, refresh, arrived],
+    [state, ended, error, run, refresh, arrived, events, unread, markSeen],
   );
   return <ReviewContext value={store}>{children}</ReviewContext>;
 }

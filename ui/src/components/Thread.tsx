@@ -1,4 +1,4 @@
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { api } from "../lib/api.ts";
@@ -71,6 +71,23 @@ export function ThreadCard({
   const { run } = useReview();
   const { resolved, setLocallyResolved } = usePage();
   const [replying, setReplying] = useState(false);
+  const { unread, markSeen } = useReview();
+  const mine = unread.filter((n) => n.thread === comment.id).map((n) => n.key);
+  const watched = mine.join();
+  // biome-ignore lint/correctness/useExhaustiveDependencies: watched stands for mine
+  useEffect(() => {
+    if (mine.length === 0) return;
+    const card = document.querySelector(`[data-thread-id="${CSS.escape(comment.id)}"]`);
+    if (card === null) return;
+    const watch = new IntersectionObserver(
+      (entries) => {
+        if (!document.hidden && entries.some((e) => e.isIntersecting)) markSeen(mine);
+      },
+      { threshold: 0.6 },
+    );
+    watch.observe(card);
+    return () => watch.disconnect();
+  }, [watched, comment.id, markSeen]);
   if (resolved.has(comment.id)) {
     return (
       <Card

@@ -33,6 +33,10 @@ type Page = {
   /** The comment box under the pick, open with the kind its button chose. */
   readonly box: BoxKind | null;
   setBox(box: BoxKind | null): void;
+  /** Native notifications for the agent's answers while the tab is in the background. */
+  readonly notify: boolean;
+  /** Turning it on asks the browser for permission, once, here and nowhere else. */
+  setNotify(on: boolean): Promise<void>;
 };
 
 const PageContext = createContext<Page | null>(null);
@@ -88,6 +92,18 @@ export function PageProvider({ children }: { children: ReactNode }) {
   const [local, setLocal] = useState(() => loadSet("resolved"));
   const [pick, setPickState] = useState<PagePick | null>(null);
   const [box, setBox] = useState<BoxKind | null>(null);
+  const [notify, setNotifyState] = useState(
+    () =>
+      loadSet("prefs").has("notify") &&
+      "Notification" in window &&
+      Notification.permission === "granted",
+  );
+  const setNotify = useCallback(async (on: boolean) => {
+    const granted =
+      on && "Notification" in window && (await Notification.requestPermission()) === "granted";
+    setNotifyState(granted);
+    saveSet("prefs", new Set(granted ? ["notify"] : []));
+  }, []);
   const setPick = useCallback((next: PagePick | null) => {
     setPickState(next);
     if (next === null) setBox(null);
@@ -131,6 +147,8 @@ export function PageProvider({ children }: { children: ReactNode }) {
       setPick,
       box: pick === null ? null : box,
       setBox,
+      notify,
+      setNotify,
     };
   }, [
     current,
@@ -143,6 +161,8 @@ export function PageProvider({ children }: { children: ReactNode }) {
     pick,
     setPick,
     box,
+    notify,
+    setNotify,
   ]);
 
   return <PageContext value={page}>{children}</PageContext>;

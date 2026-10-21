@@ -6,6 +6,7 @@ import { useReview } from "../store.tsx";
 import { AskBranch, BranchSummary } from "./Branch.tsx";
 import { CommitSection } from "./CommitSection.tsx";
 import { KeySheet } from "./KeySheet.tsx";
+import { Notices, PageOptions, UnreadMenu } from "./Notices.tsx";
 import { StackPicker } from "./StackPicker.tsx";
 import { SubmitDialog } from "./SubmitDialog.tsx";
 
@@ -118,10 +119,12 @@ function Page() {
           </div>
           <StackPicker open={stackOpen} onOpenChange={setStackOpen} />
           <div className="flex items-center justify-end gap-2">
+            <UnreadMenu />
             <AskBranch />
             <Button size="sm" onClick={() => setSubmitOpen(true)}>
               Submit review
             </Button>
+            <PageOptions />
           </div>
         </div>
         {arrived === null ? null : (
@@ -150,6 +153,7 @@ function Page() {
           <CommitSection key={commitKey(commit)} commit={commit} />
         ))}
       </main>
+      <Notices />
       <KeySheet open={sheetOpen} onOpenChange={setSheetOpen} />
       <SubmitDialog open={submitOpen} onOpenChange={setSubmitOpen} />
     </div>
