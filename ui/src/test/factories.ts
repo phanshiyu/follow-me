@@ -108,7 +108,6 @@ export function aReply(overrides: Partial<Reply> = {}): Reply {
 
 export function aReportItem(overrides: Partial<ReportItem> = {}): ReportItem {
   return branded({
-    id: "c_aaaaaa",
     path: "src/lib.js",
     oldPath: "src/lib.js",
     newLine: 5,
@@ -120,6 +119,7 @@ export function aReportItem(overrides: Partial<ReportItem> = {}): ReportItem {
     body: "**major**\n\nGuard both arguments in one call.",
     thread: [{ author: "reviewer", body: "Guard both arguments in one call." }],
     resolved: false,
+    excluded: false,
     ...overrides,
   });
 }

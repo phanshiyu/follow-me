@@ -1,4 +1,4 @@
-import type { NewComment, Report, Severity, State } from "./wire.ts";
+import type { NewComment, ReportItem, Severity, State } from "./wire.ts";
 
 /** "/s/<id>": every session API sits under it, and the page is served at its root. */
 export const sessionPrefix = /^\/s\/[^/]+/.exec(location.pathname)?.[0] ?? "";
@@ -45,7 +45,19 @@ function errorOf(text: string): string | null {
 
 export const api = {
   state: () => call<State>("GET", "/api/state"),
-  comment: (comment: NewComment) => call<{ id: string }>("POST", "/api/comments", comment),
+  /**
+   * Posts a comment. A question starts out of the hand-off, because most are asked to understand
+   * the code; the reviewer can include it there.
+   */
+  comment: async (comment: NewComment) => {
+    const posted = await call<{ id: string }>("POST", "/api/comments", comment);
+    if (comment.kind === "question") {
+      await call("POST", "/api/excluded", { comment: posted.id, excluded: true }).catch(
+        () => undefined,
+      );
+    }
+    return posted;
+  },
   remove: (id: string) => call<unknown>("DELETE", `/api/comments/${id}`),
   reply: (id: string, body: string) =>
     call<{ id: string }>("POST", `/api/comments/${id}/replies`, { author: "reviewer", body }),
@@ -63,6 +75,6 @@ export const api = {
       [id.startsWith("k_") ? "concern" : "comment"]: id,
       excluded,
     }),
-  report: () => call<Report>("GET", "/api/report?format=json&all=1"),
+  report: () => call<readonly ReportItem[]>("GET", "/api/report?format=json"),
   end: () => call<{ saved: string }>("POST", "/api/end"),
 };

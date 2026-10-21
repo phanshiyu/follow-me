@@ -60,15 +60,12 @@ function rowOf(node: Node | null, within: HTMLElement): number | null {
 
 /**
  * What the box offers. A question goes to the agent now, because the answer is wanted while
- * reading; a flag waits for Submit review. Each kind keeps the other path as a second button.
+ * reading, and the server never holds one. A flag waits for Submit review, with Flag now beside it.
  */
 export function boxActions(post: (pending: boolean, draft: Draft) => Promise<boolean>) {
   return (kind: BoxKind): BoxAction[] =>
     kind === "ask"
-      ? [
-          { label: "Add to review", run: (d) => post(true, d) },
-          { label: "Ask now", primary: true, run: (d) => post(false, d) },
-        ]
+      ? [{ label: "Ask now", primary: true, run: (d) => post(false, d) }]
       : [
           { label: "Flag now", run: (d) => post(false, d) },
           { label: "Add to review", primary: true, run: (d) => post(true, d) },

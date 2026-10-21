@@ -43,8 +43,9 @@ export function applyEvent(state: State, event: ServerEvent): State {
       const others = state.resolved.filter((id) => id !== event.commentId);
       return next({ resolved: event.resolved ? [...others, event.commentId] : others });
     }
-    case "version":
-    case "ended":
+    default:
+      // version and ended carry nothing to fold in, and a newer server may send types this page
+      // does not know, such as "submitted" before the released flags arrive as comment events.
       return next({});
   }
 }

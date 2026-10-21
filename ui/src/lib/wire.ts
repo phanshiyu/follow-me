@@ -50,17 +50,22 @@ export type State = {
   readonly resolved: readonly CommentId[];
   readonly seq: number;
   readonly previous: PreviousVersion | null;
-  /** Report items the reviewer left out of the hand-off. */
-  readonly excluded?: readonly string[];
+  /** Hand-off items the reviewer left out of the merge request. */
+  readonly excluded?: {
+    readonly comments: readonly CommentId[];
+    readonly concerns: readonly ConcernId[];
+  };
 };
 
 /** What the page posts to api/comments; the server mints id and createdAt. */
 export type NewComment = Omit<WireComment, "id" | "createdAt" | "replies">;
 
+/** One item of GET api/report?format=json. Line numbers are the original branch's. */
 export type ReportItem = {
-  readonly id: CommentId | ConcernId;
+  /** Not sent by every server yet; the page then finds the item by its words. */
+  readonly id?: string;
   readonly path: string | null;
-  readonly oldPath?: string | null;
+  readonly oldPath: string | null;
   readonly newLine: number | null;
   readonly oldLine: number | null;
   readonly startNewLine: number | null;
@@ -69,24 +74,7 @@ export type ReportItem = {
   readonly kind: "flag" | "question" | "concern";
   /** Markdown, ready to post. */
   readonly body: string;
-  readonly thread: readonly {
-    readonly author: "reviewer" | "agent";
-    readonly body: string;
-    readonly diagram?: string;
-  }[];
+  readonly thread: readonly { readonly author: "reviewer" | "agent"; readonly body: string }[];
   readonly resolved: boolean;
-  /** Present when the report was asked for with the excluded items too. */
-  readonly included?: boolean;
-  /** The picked rows as the commit writes them, for the card's quote. */
-  readonly lines?: readonly string[];
-};
-
-/** GET api/report?format=json, schema follow-me/report@1. */
-export type Report = {
-  readonly schema: string;
-  readonly branch: string;
-  readonly base: string;
-  readonly head: string;
-  readonly summary?: string;
-  readonly items: readonly ReportItem[];
+  readonly excluded: boolean;
 };
