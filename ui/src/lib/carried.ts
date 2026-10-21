@@ -1,5 +1,6 @@
 // Where the previous version's threads sit in the current plan. Pure.
 
+import { titleOf } from "./commit.ts";
 import { type LineNumber, lineNumbers, ownership, ownersOf, rowsOf } from "./rows.ts";
 import { lastShown } from "./selection.ts";
 import type {
@@ -64,11 +65,36 @@ export function rowsAtLine(
   return best === -1 ? [] : [best];
 }
 
+/** The commit with this title, where a comment was made; titles survive a re-plan, indices do not. */
+function commitTitled(commits: readonly ProjectedCommit[], message: string): number | null {
+  const title = titleOf(message);
+  if (title === "") return null;
+  return commits.find((c) => titleOf(c.message) === title)?.index ?? null;
+}
+
+/** The shown row nearest any of the wanted rows, so a card never falls back to the commit's top. */
+function nearestShown(wanted: readonly number[], shown: readonly number[]): number | null {
+  let best: number | null = null;
+  let distance = Number.POSITIVE_INFINITY;
+  for (const row of shown) {
+    for (const want of wanted) {
+      if (Math.abs(row - want) < distance) {
+        best = row;
+        distance = Math.abs(row - want);
+      }
+    }
+  }
+  return best;
+}
+
 /**
- * One placement per carried comment of the previous version.
+ * One placement per carried comment of the previous version. A card stays where the reviewer left
+ * it: a comment on a commit message stays under that commit, a question about the branch stays in
+ * the branch discussion, and a comment on code stays at a row of that code.
  *
- * - Code still there: the commit that owns one of the carried rows, else the first to show the
- *   unit, and the last of those rows that commit shows. Changed code sits in the same place.
+ * - Code still there: the commit that owns one of the carried rows, else the commit the reviewer
+ *   was reading, else the first to show the unit; then the last of the rows that commit shows, or
+ *   the nearest one it does show. A comment on a whole hunk sits at the hunk's last row.
  * - Code gone: the commit that last held the path, else the branch discussion.
  */
 export function placeCarried(state: State): Placement[] {
@@ -78,6 +104,16 @@ export function placeCarried(state: State): Placement[] {
   const numbers = lineNumbers(state.units);
   return carried.flatMap((entry): Placement[] => {
     const { comment } = entry;
+    const { anchor } = comment;
+    if (anchor.kind === "plan") {
+      return [{ comment, carried: entry, kind: "same", commit: null, unit: null, row: null }];
+    }
+    const reading = commitTitled(commits, comment.context.commitMessage);
+    if (anchor.kind !== "hunk") {
+      const last = commits.at(-1)?.index ?? null;
+      const commit = reading ?? (last === null ? null : Math.min(anchor.commit, last));
+      return [{ comment, carried: entry, kind: "same", commit, unit: null, row: null }];
+    }
     const unit = entry.unit === null ? undefined : units.get(entry.unit);
     if (entry.unit === null || unit === undefined) {
       const commit = lastHolder(commits, units, entry.path);
@@ -85,8 +121,9 @@ export function placeCarried(state: State): Placement[] {
     }
     const kind: CarriedKind = entry.changed ? "changed" : "same";
     const shown = holders(commits, unit.id);
+    const readingShows = reading !== null && shown.includes(reading) ? reading : undefined;
     if (unit.kind !== "hunk") {
-      const commit = shown[0] ?? lastHolder(commits, units, entry.path);
+      const commit = readingShows ?? shown[0] ?? lastHolder(commits, units, entry.path);
       return [{ comment, carried: entry, kind, commit, unit: null, row: null }];
     }
     const offsets =
@@ -98,7 +135,7 @@ export function placeCarried(state: State): Placement[] {
         return line !== undefined && line.op !== " " && own[line.change] === index;
       }),
     );
-    const commit = owning ?? shown[0] ?? null;
+    const commit = owning ?? readingShows ?? shown[0] ?? null;
     if (commit === null) {
       const last = lastHolder(commits, units, entry.path);
       return [{ comment, carried: entry, kind: "gone", commit: last, unit: null, row: null }];
@@ -106,14 +143,19 @@ export function placeCarried(state: State): Placement[] {
     const visible = rowsOf(unit.body, own, commit).flatMap((r) =>
       r.kind === "line" ? [r.line] : [],
     );
-    const row = lastShown(offsets, new Set(visible));
+    const row =
+      offsets.length === 0
+        ? (visible.at(-1) ?? null)
+        : (lastShown(offsets, new Set(visible)) ?? nearestShown(offsets, visible));
     return [{ comment, carried: entry, kind, commit, unit: unit.id, row }];
   });
 }
 
 /** "Plan v3 arrived: 2 threads moved to changed code", or just the arrival when none moved. */
 export function arrival(version: number, carried: readonly Carried[]): string {
-  const moved = carried.filter((c) => c.changed || c.unit === null).length;
+  const moved = carried.filter(
+    (c) => c.comment.anchor.kind === "hunk" && (c.changed || c.unit === null),
+  ).length;
   if (moved === 0) return `Plan v${version} arrived`;
   return `Plan v${version} arrived: ${moved} thread${moved === 1 ? "" : "s"} moved to changed code`;
 }

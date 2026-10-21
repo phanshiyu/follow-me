@@ -235,3 +235,58 @@ test("comments follow the agent's edit: an edited hunk's thread moves and is mar
   );
   assert.notEqual(replacement, second);
 });
+
+test("a comment on a whole hunk keeps no line when its hunk is kept or replaced", async (t) => {
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  const oldDiff = await loadDiff(repo.dir, "main", "feature");
+  const [first, second] = idsOn(oldDiff, "src/lib.js");
+  assert.ok(first && second);
+  const whole = (id: string, unit: string) => {
+    const parsed = parseComment({
+      id,
+      anchor: { kind: "hunk", unit, commit: 0, changes: null },
+      context: { commitMessage: "feat: the rest", path: "src/lib.js" },
+      body: "this whole hunk needs a test",
+      createdAt: "2026-10-22T00:00:00.000Z",
+    });
+    assert.ok(typeof parsed !== "string");
+    return parsed;
+  };
+  commitEdit(
+    repo,
+    "src/lib.js",
+    "export function div(a, b) {\n",
+    "export function div(a, b) {\n  // b is never zero here\n",
+  );
+  const newDiff = await loadDiff(repo.dir, "main", "feature");
+  const [, replacement] = idsOn(newDiff, "src/lib.js");
+
+  const carried = carryComments(
+    [whole("c_eeeeee", first), whole("c_ffffff", second)],
+    oldDiff.units,
+    newDiff.units,
+  );
+
+  assert.deepEqual(
+    carried.map(({ comment, ...where }) => ({ id: comment.id, ...where })),
+    [
+      {
+        id: "c_eeeeee",
+        unit: first,
+        offsets: null,
+        changed: false,
+        path: "src/lib.js",
+        newLine: null,
+      },
+      {
+        id: "c_ffffff",
+        unit: replacement,
+        offsets: null,
+        changed: true,
+        path: "src/lib.js",
+        newLine: null,
+      },
+    ],
+  );
+});

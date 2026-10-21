@@ -60,6 +60,45 @@ describe("placeCarried", () => {
     expect(placed).toMatchObject({ kind: "gone", commit: null });
   });
 
+  test("a comment on a commit message stays under that commit's message, not in the branch discussion", () => {
+    const comment = aComment({
+      anchor: JSON.parse('{"kind":"message","commit":1}'),
+      context: JSON.parse('{"commitMessage":"Guard add","path":null}'),
+    });
+    const [placed] = placeCarried(
+      v3({ comment, unit: null, offsets: null, path: null, newLine: null }),
+    );
+    expect(placed).toMatchObject({ kind: "same", commit: 1, unit: null, row: null });
+  });
+
+  test("a question about the whole branch stays in the branch discussion and is not gone", () => {
+    const comment = aComment({
+      anchor: JSON.parse('{"kind":"plan"}'),
+      context: JSON.parse('{"commitMessage":"","path":null}'),
+    });
+    const [placed] = placeCarried(
+      v3({ comment, unit: null, offsets: null, path: null, newLine: null }),
+    );
+    expect(placed).toMatchObject({ kind: "same", commit: null });
+  });
+
+  test("a context-line comment on changed code stays in the commit the reviewer was reading", () => {
+    // Tip line 3 is the context row "export function add", which commit 0 also shows; the reviewer
+    // commented while reading commit 1, so the card must not jump back to commit 0.
+    const [placed] = placeCarried(v3({ changed: true, offsets: null, newLine: 3 }));
+    expect(placed).toMatchObject({ kind: "changed", commit: 1, unit: HUNK, row: 2 });
+  });
+
+  test("a comment on a whole hunk stays at the end of the hunk, not the top of the commit", () => {
+    const comment = aComment({
+      anchor: JSON.parse(`{"kind":"hunk","unit":"${HUNK}","commit":1,"changes":null}`),
+    });
+    for (const changed of [false, true]) {
+      const [placed] = placeCarried(v3({ comment, changed, offsets: null, newLine: null }));
+      expect(placed).toMatchObject({ commit: 1, unit: HUNK, row: 6 });
+    }
+  });
+
   test("a state without carried threads places nothing", () => {
     expect(placeCarried(aState())).toEqual([]);
   });
@@ -73,4 +112,8 @@ test("the banner counts changed and gone threads, and says nothing of threads th
     "Plan v3 arrived: 1 thread moved to changed code",
   );
   expect(arrival(3, [carry({})])).toBe("Plan v3 arrived");
+  const onMessage = aComment({ anchor: JSON.parse('{"kind":"message","commit":1}') });
+  expect(arrival(3, [carry({ comment: onMessage, unit: null, path: null })])).toBe(
+    "Plan v3 arrived",
+  );
 });

@@ -125,10 +125,14 @@ function carry(comment: Comment, oldUnits: Units, newUnits: Units): CarriedComme
   const { anchor } = comment;
   const nowhere = { comment, unit: null, offsets: null, newLine: null };
   if (anchor.kind !== "hunk") return { ...nowhere, changed: false, path: comment.context.path };
+  // A comment on a whole hunk has no line; inventing one moves its card off the hunk's end.
+  const whole = anchor.changes === null && anchor.offsets === undefined;
   const kept = newUnits.get(anchor.unit);
   if (kept !== undefined) {
     const newLine =
-      kept.kind === "hunk" ? (tipLines(kept, newUnits)[firstRow(comment, kept)] ?? null) : null;
+      kept.kind === "hunk" && !whole
+        ? (tipLines(kept, newUnits)[firstRow(comment, kept)] ?? null)
+        : null;
     return {
       comment,
       unit: kept.id,
@@ -155,6 +159,6 @@ function carry(comment: Comment, oldUnits: Units, newUnits: Units): CarriedComme
   return {
     ...moved,
     unit: nearest.id,
-    newLine: landing(nearest, newUnits, oldLine, old.body[row]?.text),
+    newLine: whole ? null : landing(nearest, newUnits, oldLine, old.body[row]?.text),
   };
 }
