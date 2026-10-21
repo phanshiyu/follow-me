@@ -61,11 +61,7 @@ Design C, Spotlight over the finished commit (the change highlighted while the n
 
 How they compare on the things the owner asked about:
 
-- Comprehension. A is weakest because statements arrive in fragments. B is strong. C is strongest for context but weakest for focus.
-- Narration sync. In A the narration overlaps typing. In B the narration comes before the change it explains. In C it plays on top of the highlighted change.
-- Pacing control. A has one knob. B and C have a natural unit (the beat), so "next chunk" means something.
-- The product's identity. A keeps "watch it being written". B keeps it at chunk level. C turns playback into a guided tour.
-- Effort. A is S to M. B is M: a new script shape in `playback.js`, a new stage UI, and the same tests rewritten. C is M and similar to B.
+Comprehension. A is weakest because statements arrive in fragments. B is strong. C is strongest for context but weakest for focus. Narration sync. In A the narration overlaps typing. In B the narration comes before the change it explains. In C it plays on top of the highlighted change. Pacing control. A has one knob. B and C have a natural unit (the beat), so "next chunk" means something. The product's identity. A keeps "watch it being written". B keeps it at chunk level. C turns playback into a guided tour. Effort. A is S to M. B is M: a new script shape in `playback.js`, a new stage UI, and the same tests rewritten. C is M and similar to B.
 
 ### Recommendation: Design B with C's context rules
 
@@ -85,13 +81,7 @@ Build the chunk stepper. Borrow one thing from C: chunks already presented in th
 
 #### States
 
-- `ready`: the page is loaded and shows the intro card for commit 1 with a Play button. Nothing moves until the reviewer acts.
-- `intro(c)`: the commit card is shown and its narration is spoken.
-- `chunk(c, k)`: the chunk is presented, with its narration first and then its lines.
-- `outro(c)`: the finished commit is held on screen.
-- `paused(of any of the above)`: everything is frozen and speech is paused. The beat remembers how much of its dwell has run.
-- `commenting`: a paused state entered through a comment box. Playback cannot resume while a comment box has focus.
-- `finished`: the end card.
+`ready`: the page is loaded and shows the intro card for commit 1 with a Play button. Nothing moves until the reviewer acts. `intro(c)`: the commit card is shown and its narration is spoken. `chunk(c, k)`: the chunk is presented, with its narration first and then its lines. `outro(c)`: the finished commit is held on screen. `paused(of any of the above)`: everything is frozen and speech is paused. The beat remembers how much of its dwell has run. `commenting`: a paused state entered through a comment box. Playback cannot resume while a comment box has focus. `finished`: the end card.
 
 #### Timings at 1x
 
@@ -117,13 +107,7 @@ For the fixture this comes to about 2.5 minutes at 1x instead of 15.6 seconds. S
 
 #### Controls and keyboard
 
-- Space: play or pause. In `ready` and `finished`, Space starts from the top.
-- Right arrow or `l`: next beat. Left arrow or `h`: previous beat, which replays its narration if playing.
-- `n` or `j` (or Shift+Right): next commit intro. `p` or `k` (or Shift+Left): restart this commit, and press again within 1.5s to go to the previous commit.
-- `r`: replay the narration of the current beat.
-- `c`: comment on the current chunk. This pauses, opens the chunk's comment box with the chunk's lines preselected, and focuses the textarea.
-- In a comment box, Cmd/Ctrl+Enter saves, Escape cancels, and neither resumes. Space resumes once focus has left the box.
-- `m`: mute. `?`: a shortcut sheet. Manual stepping while playing keeps playing from the new beat. While paused, it stays paused.
+Space: play or pause. In `ready` and `finished`, Space starts from the top. Right arrow or `l`: next beat. Left arrow or `h`: previous beat, which replays its narration if playing. `n` or `j` (or Shift+Right): next commit intro. `p` or `k` (or Shift+Left): restart this commit, and press again within 1.5s to go to the previous commit. `r`: replay the narration of the current beat. `c`: comment on the current chunk. This pauses, opens the chunk's comment box with the chunk's lines preselected, and focuses the textarea. In a comment box, Cmd/Ctrl+Enter saves, Escape cancels, and neither resumes. Space resumes once focus has left the box. `m`: mute. `?`: a shortcut sheet. Manual stepping while playing keeps playing from the new beat. While paused, it stays paused.
 
 #### Comments inside playback
 
@@ -206,3 +190,154 @@ The index page (idx.png) is an unstyled bullet list: "feature review of plan v1 
 8. Add a `follow-me split` entry command and `review --wait`, so the author-agent loop closes without the user relaying anything. M.
 9. Let a reviewer `walk` a plan the author already reviewed (separate walk review files), and turn "This belongs elsewhere" into a structured move. M.
 10. Accessibility: focusable commit rows and lines, focus management, smooth scroll that respects reduced motion, AA contrast for ownership marks, a fixed-width Play button, and a styled index and done page. M.
+
+## 7. Follow-ups
+
+These answers were written against the tree at `8730ff2`. By then the chunk stepper, the stage header, `review --wait` and separate walk review slots had landed, and plans could carry a Mermaid `diagram` on a commit or a unit.
+
+### 7.1 Long commit titles in the sidebar
+
+What I observed. The sidebar is a fixed 300px column (`.layout { grid-template-columns: 300px 1fr }`). Each row holds the index, the title, a play or check mark and a comment badge. The title is `white-space: nowrap; text-overflow: ellipsis`, which leaves about 220px, or roughly 30 characters at 14px. The fixture fits. Real titles do not: `feat(walk): give walk reviews their own slot` is 44 characters and loses its last third, which is the part that says what the commit does. The selected row also turns bold, which widens the text and cuts it shorter still. Rows are still `li` elements with a click handler and no tabindex, so hover is the only way to reach a tooltip today.
+
+Why it hurts. The sidebar is the table of contents of the story. A reviewer reads it to see the plot before pressing Play, and to judge "This belongs elsewhere". When titles are cut, they have to open each commit to learn what it is.
+
+The options:
+
+- Wrap to two lines at a tighter size. Every title becomes readable and nothing is hidden. It costs some vertical space.
+- Full title on hover and focus. It only helps once you already suspect a title is cut, it is invisible on touch, and it needs focusable rows. It is a supplement, not a fix.
+- A resizable or collapsible sidebar. Resizing adds a control and a stored width, and it puts the problem on the user. Experience first says no. Collapsing is useful only at narrow widths.
+- Compact mode, numbers only, with the title in the stage header. The stage header now names the current commit, so this works well when space is short. It hides the plot outline, though, so it should not be the default.
+- Short titles by rule. The prompt asks for "a short imperative title" and sets no number. A 50-character cap is the git convention and fits two lines easily. It is free, but it only governs follow-me's own plans, not the commit titles a walk reviewer meets on someone else's branch.
+
+Recommendation. The primary is a two-line clamp. The fallback, below 900px, is a compact rail. Add the 50-character rule to the prompt as well, so the clamp rarely triggers.
+
+Primary spec (S):
+
+```css
+.commit-list li      { align-items: flex-start; padding: 6px 12px; }
+.commit-list .title  { white-space: normal; overflow-wrap: anywhere;
+                       font-size: 13px; line-height: 1.35;
+                       display: -webkit-box; -webkit-box-orient: vertical;
+                       -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+.commit-list li.selected .title { -webkit-line-clamp: unset; line-clamp: none; }
+.commit-list li.selected { font-weight: 400; }   /* the accent bar and background mark it */
+.commit-list .index, .commit-list .mark, .badge { line-height: 1.35; margin-top: 1px; }
+```
+
+The selected row is never clamped, so the commit you are on always shows its full title. The selected row does not turn bold. Bolding re-wraps the text and makes the list jump. Each row becomes a `<button>` inside its `li`, with `title` set to the full first line only when it is clamped (`scrollHeight > clientHeight`). That gives hover and focus the full text for free.
+
+Fallback spec, with breakpoints (S to M):
+
+1200px and wider: a 300px sidebar with the two-line clamp. 900 to 1199px: a 240px sidebar, same clamp, same 13px. Below 900px: a 56px rail. It shows the number, the mark and the badge stacked, with `.title` hidden. The stage header carries the title. Hover and focus show the full title in a tooltip anchored right of the row (`role="tooltip"`, `aria-describedby`). A "Commits" button at the top of the rail opens the full list as an overlay 300px wide. Escape or picking a commit closes it.
+
+Prompt rule (S). Add to ORDERING: "Keep the title to 50 characters or fewer; put detail in the body." `check` warns, without failing, when a title is over 72 characters: `$.commits[3]: title is 81 characters; keep it to 50`.
+
+### 7.2 A question loop
+
+What I observed. A comment is free text with one of five anchors: hunk with optional change lines, message, position, plan. Every comment is treated as a change request. The prompt says "Answer every comment below with one entry in `responses`, changing the plan where you agree". The only statuses are `addressed`, `declined` and `deferred`. Nothing in `ui/app.js` or `src/server.ts` reads `responses`. The agent's answers are written into `plans/vN.json` and never shown to the reviewer. `lastReview` also ignores walk reviews entirely, so a reviewer's question during a walk can never reach a planner.
+
+Why it hurts. "I don't understand this" is the most common reaction to someone else's code, and today it has to be phrased as a change request. The agent is then pushed to move lines around to "address" it. Its answer, a note in a JSON file, never reaches the person who asked.
+
+#### Question or change request: chosen at creation, with a default inferred from the text (S)
+
+- Every comment box gets a two-option toggle above the textarea: "Ask a question" and "Request a change". In walk mode the second option reads "Code comment".
+- The toggle defaults to Question when the text ends in `?` or starts with why, what, how, when, where, is, does, can or should. It flips as the reviewer types until they touch the toggle themselves. After that, inference stops. The kind is never decided silently after saving.
+- Questions carry a distinct "?" marker and a neutral blue-grey card (`--question-bg`), not the accent colour. The commit list badge splits into two counts, for example "2 ?" and "1".
+- Keyboard: during playback, `q` pauses and opens a question on the current chunk with its lines preselected, and `c` stays as a change request. In browse, select lines and then press `q` or `c`.
+
+#### The wire format change: three optional fields and one status value
+
+1. `Comment.kind?: "question"`. Absent means a change request, so every existing review reads the same. Only `"question"` is ever written.
+2. `Comment.follows?: CommentId`. This is set on an "Ask again" comment and names the question it continues.
+3. `CommentResponse.status` gains `"answered"`, which is valid only for a question. `CommentResponse.at?: { "commit": number, "unit"?: UnitId }` says where in this plan the explanation lives. `commit` is 1-based, matching how the prompt numbers commits. `unit` names a unit ref in that commit.
+4. `Review.resolved?: CommentId[]`. These are the questions from earlier versions that the reviewer marked resolved during this review.
+
+A worked example:
+
+```json
+"responses": [
+  { "comment": "c_6hnbcw", "status": "answered",
+    "note": "The guard sits in each function because callers import them one by one; there is no module boundary to guard.",
+    "at": { "commit": 3, "unit": "h_0bf3afdec5e8" } }
+]
+```
+
+Validation (S). `at.commit` must exist. When `at.unit` is given, that commit must reference it, and that commit or unit ref must carry `narration` or `diagram`. Anything else is an error, because an answer that points at nothing is not an answer. `answered` on a change request is an error. `addressed` on a question is a warning: the agent changed the plan, which is allowed, but probably not what was asked. Optional fields are serialised only when present, so existing plan hashes do not change.
+
+#### Anchoring the answer in the new version (M)
+
+The coordinator's note says change indices are not stable. That is only partly true. A hunk id is a hash of its path and body, so while the id exists its change indices mean the same lines. What moves between versions is which commit holds those lines, and whether they are now split across several commits. The page places each answer like this:
+
+1. If `at` is present, show the answer card on that commit, above the chunk that contains `at.unit`, or under the commit message when there is no unit.
+2. Else, for a hunk anchor whose unit still exists, find the commits in the new plan whose refs select any of `anchor.changes` (or any line of the unit when `changes` is null). Show the card at the first one, above the chunk that holds the lowest selected change. If the lines are now spread over several commits, add "continues in commit N" links.
+3. Else, if the unit is gone because the branch moved and the hunk was rewritten, show the card only in the Answers panel, labelled "The code you asked about has changed since". It quotes the old lines from the comment snapshot.
+4. Message, position and plan anchors use `at`. Without it, they appear only in the Answers panel.
+
+For step 3 to work, the comment snapshot needs the asked-about lines. Add `context.lines?: string[]` to `Comment`, holding the selected change lines as text. That is the only other wire change, and it is also optional.
+
+#### What the reviewer sees in the next version (M)
+
+- On opening a version that answers questions, a banner under the stage header reads "The agent answered 3 of your 4 questions", with a "Show answers" button and a dismiss button.
+- An Answers panel in the sidebar, between the commit list and the plan note, lists every question from the previous review. Each entry shows a status: answered, deferred, or not answered (the last is a warning, matching `check`). Selecting an entry seeks to its anchored place.
+- An answer card sits inline at the anchored place. It shows:
+  - "You asked (v1)" with the question and the quoted lines;
+  - "Answer" with the note;
+  - "Explained in" naming the narration or diagram it points at. That narration is outlined, and the diagram is drawn right there.
+  - Two actions. "Resolved" collapses the card to a single row with a check and adds the id to `Review.resolved`. "Ask again" opens a question box prefilled with `follows` set, and its card shows the whole thread.
+- In playback, when a beat reaches a chunk with an unresolved answer, the narration plays first. Then the answer card appears and playback pauses with "Space to continue". The question was the reviewer's own, so this is the moment they care about. Once resolved, the card no longer pauses playback.
+- Ending a review with unresolved answers is allowed. The end summary says "2 answers not marked resolved". `follow-me status` reports questions separately: `questions: 4 asked, 3 answered, 1 resolved, 1 asked again`.
+
+#### What the agent must be told (S)
+
+In both `prompt` and `prompt --walk`, add a "## Questions from the reviewer" section. It comes before the change-request comments, and each question is printed with its quoted lines and, for an ask-again, the whole thread. The instruction text:
+
+> A question is not a request to change the plan. Answer it by explaining, not by moving lines. Where the asked-about lines now live, add or rewrite the `narration` of that commit or unit so it answers the question, in plain spoken sentences. When the answer is about flow, structure or order across files, add a `diagram` there too. Then write one response with `"status": "answered"`, a `note` of one to three sentences that answers the question directly, and `"at"` naming the commit (1-based) and unit that carry the explanation. Move lines only if answering shows the order itself was wrong. Say so in the note, and answer the question as well. If the diff cannot answer it, use `"deferred"` and say what is missing.
+
+In walk mode, questions are the one kind of walk comment that does reach the planner. `lastReview` should return a walk review's questions to `prompt --walk` and keep leaving its code comments to `follow-me feedback`. In `feedback`, questions get their own section before the code review, so the author sees them too.
+
+Effort per piece:
+
+Comment kind toggle, inference, markers and the `q` key: S. Wire fields (`kind`, `follows`, `context.lines`, `answered`, `at`, `resolved`) with validation and tests: S to M. Prompt section, walk questions reaching `prompt --walk`, and the `feedback` section: S. Answer placement (`at`, then unit and changes, then the Answers panel): M. Answers panel, inline answer cards, rendering the diagram in place, pausing playback on answers, and Resolved and Ask again: M.
+
+### 7.3 The agent as co-reviewer, and one consolidated report
+
+What I observed. The planning agent only narrates. The plan format has no place for "this looks wrong", so anything it notices while reading every line is lost. `follow-me feedback` for a walk already groups the reviewer's comments by file and quotes each hunk with its line on the branch (`renderCodeReview` in `src/prompt.ts`). Within a file, though, it lists comments in the order they were written, not by line, and it has no severity. The done page shows only "Code review saved to reviews/vN.json" and the command to run, with nothing the reviewer can copy or send.
+
+Why it hurts. The agent has read the whole diff and is well placed to spot a missing test or an unguarded edge. The reviewer then has to find and phrase every issue alone, and send it by running a CLI command.
+
+(a) Wire format (S to M). Add `concerns?: Concern[]` to a commit and to a unit ref object, next to `narration` and `diagram`. The agent writes `Concern` as `{ "severity": "blocker" | "major" | "minor", "kind": "bug" | "missing-test" | "naming" | "risk", "text": string, "lines"?: number[] }`. `lines` holds change indices of that unit and is allowed only on a unit ref. Validation derives an id `k_` plus 8 hex of sha256 over unit ref, lines and text, so the agent never writes ids and they survive re-planning unchanged. The review records the reviewer's decisions as `Review.concerns?: { "concern": "k_…", "decision": "kept" | "dismissed", "note"?: string }[]`. Reviewer comments gain `Comment.severity?: "blocker" | "major" | "minor"`, absent meaning unrated. Plans without concerns serialise and hash exactly as before.
+
+(b) In the review page (M). A concern is a card in reviewer voice, never read aloud and visually distinct from narration. It carries an "Agent" label, a severity chip (blocker red, major amber, minor grey, each with a text label and not colour alone) and the kind. A unit concern sits directly under its lines, with those lines marked in the gutter. A commit concern sits under the message. It has three actions:
+
+Keep: the card turns solid and a "Your words (optional)" field opens. Dismiss: the card collapses to one muted row with Undo. Edit severity: the reviewer can change the agent's severity.
+
+During playback a concern appears after its chunk's narration. A blocker pauses playback; major and minor concerns add `read(text)` to the dwell. The keys `y` (keep) and `x` (dismiss) act on the concern of the current chunk. The commit list shows a severity dot for undecided concerns, and the stage header shows "2 agent concerns to decide". The reviewer's own comment box gains the same optional severity chip. Undecided concerns are left out of the report. Ending the review with any left asks "3 agent concerns undecided: Keep all, Dismiss all, or Go back".
+
+(c) The consolidated report (M). One renderer, `renderReport(review, plan, units)`, produces the markdown. `follow-me feedback` prints it, and the server serves it at `GET /s/<id>/api/report` for the done page, so the two never differ. Its shape:
+
+````
+# Code review: feature (8 commits, 3 issues: 1 blocker, 1 major, 1 minor)
+## src/lib.js
+### line 14 · blocker · bug · raised by the agent, kept by the reviewer
+```diff
+   export function div(a, b) {
++    if (b === 0) throw new RangeError('division by zero');
+```
+Agent: div guards zero but not non-numbers, unlike add and mul.
+Reviewer: Agreed, and pow has the same gap.
+## General
+````
+
+Files appear in diff order, and items within a file by line on the branch. Severity and kind sit in the heading, so the report can be skimmed. A reviewer comment and a kept concern on overlapping lines merge under one heading, and both voices are quoted. Questions from 7.2 come last, under "## Questions", with the agent's answers. The done page shows the report in a scrollable `<pre>` with "Copy markdown" (with a "Copied" confirmation), and the file path `.follow-me/<slug>/reviews/vN.md`, which `End review` also writes.
+
+(d) The prompt (S). Add a "## Concerns" section to `prompt --walk`:
+
+> You are also a careful reviewer. Add a concern only for something you would raise in a pull request: a bug or unhandled case, a change with no test where one is expected, a name that misleads, or a risky change such as a migration, concurrency or security. Pin it to the change lines with `lines`. Say what goes wrong and when, in one or two sentences. Severity: `blocker` breaks behaviour or loses data, `major` should be fixed before merge, `minor` is worth a note. Do not flag style, formatting or taste. Do not repeat the narration. Most commits deserve no concern, and a plan with none is fine. Never write more than one concern per unit. Concerns are in your voice as a reviewer, while narration stays the author's.
+
+`check` prints the concern count by severity, so padding is visible, and enforces the one-per-unit limit as an error.
+
+(e) The split review (S). Yes, with a different audience. In a split review the planner is the author's own agent, so its concerns are a self-review before anyone else sees the branch. The split report has two parts. "Plan feedback" holds the comments the planner answers through `responses`, as today. "Code issues" holds the kept concerns and any comments marked with a severity, which the author fixes on the original branch before running `extract` again. Kept concerns never enter `responses`, because they are about the code, not the order.
+
+Effort per piece:
+
+Wire fields and validation: S to M. Inline concern cards, keep and dismiss, and the end-of-review prompt: M. `renderReport`, the `/api/report` endpoint, the done page, and writing `vN.md`: M. The prompt section: S. The split report's two parts: S.
