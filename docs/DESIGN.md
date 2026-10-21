@@ -60,6 +60,22 @@ New blobs, trees and commits go to a quarantine directory inside the object stor
 (`GIT_OBJECT_DIRECTORY`, with the real store as an alternate) and are hard-linked in right
 before `update-ref`, so a refused or failed apply leaves no refs and no objects.
 
+### Syntax gate
+
+A sliced commit may fail to build or pass tests, but every file it writes should still parse.
+After validation, `check` and `apply` hand each `write` change of each commit to a checker chosen
+by extension and run on a temp file with the projected bytes: `node --check` for `.js .mjs .cjs`,
+`module.stripTypeScriptTypes` in a child node for `.ts .mts .cts` (`node --check` does not strip
+types, so it rejects valid TypeScript), `JSON.parse` for `.json`, `sh -n` or `bash -n` for
+`.sh .bash` (bash when the shebang or extension says so), and `python3 -m py_compile` for `.py`.
+Everything else is skipped and counted, as is a checker whose program is not installed; `.jsx`,
+`.tsx` and yaml have no parser here. `--syntax "<command with {file}>"` replaces the table for every text
+file. Checks run four at a time and identical bytes are checked once. The last commit equals the
+tip by construction, so it is checked once and a failure there is reported as the tip's own state;
+that file is then not checked in earlier commits, where the failure would be blamed on the split.
+Any other failure prints as `$.commits[i]: <path>: <message>`; `check` exits 1 and `apply` refuses
+unless `--allow-syntax-errors`. The gate reads only the `ValidPlan`, so it adds no git calls.
+
 ## Review loop
 
 `.follow-me/<branch-slug>/` holds `session.json` (the anchor), `draft.json`
@@ -75,8 +91,10 @@ they pointed at. A comment is answered when a later plan lists it in
 `responses`; nothing is stored on the comment. Unanswered comments are warnings,
 not errors, so a human can still apply.
 
-Two planners write the same draft format. An agent reads `follow-me prompt`
-and writes `draft.json` itself. `follow-me plan` asks the Anthropic API.
+Three planners write the same draft format. An agent reads `follow-me prompt`
+and writes `draft.json` itself. `follow-me plan` asks the Anthropic API. `follow-me plan --naive`
+needs neither: one `wip: <path>` commit per touched file in diff order, so the pipeline runs on a
+real branch with no planner. `scripts/dogfood.sh` runs it on this repo's last commits in CI.
 
 ## Many sessions
 

@@ -86,10 +86,18 @@ Split your own branch:
   plan [--walk] [--model <id>] [--branch <name>]
                                             the same draft as prompt, written by the
                                             Anthropic API
-  check [path] [--branch <name>]            validate draft.json or the given plan file
-  apply [--name <branch>] [--force] [--sign|--no-sign]
-                                            write the draft as commits on <branch>-split or
-                                            --name; never on <branch> or a checked-out branch
+  plan --naive [--branch <name>]            no API, no agent: one "wip: <path>" commit per
+                                            touched file, in diff order
+  check [path] [--branch <name>] [--syntax "<cmd {file}>"]
+                                            validate draft.json or the given plan file, and
+                                            check that every file each commit writes parses;
+                                            --syntax runs <cmd> on every text file instead of
+                                            the checker for its extension
+  apply [--name <branch>] [--force] [--sign|--no-sign] [--syntax "<cmd {file}>"]
+        [--allow-syntax-errors]             write the draft as commits on <branch>-split or
+                                            --name; never on <branch> or a checked-out branch;
+                                            refuses a commit with a file that does not parse
+                                            unless --allow-syntax-errors
   review [--port <n>] [--detach] [--no-open] [--wait [--timeout <seconds>]]
                                             open the plan review, commit by commit; --wait
                                             returns only once the review ends

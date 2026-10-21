@@ -69,6 +69,8 @@ A unit is a text hunk (`h_â€¦`), a whole file that cannot be split by line (`f_â
 
 If you skip the agent, `follow-me plan` asks the Anthropic API for the draft. It needs `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` in the environment, and takes `--model <id>`.
 
+`check` and `apply` also parse every file each commit writes, so a split can leave a commit that does not build but never one that ends inside a function. `.js`, `.ts`, `.json`, `.sh` and `.py` files are checked and other types are listed as skipped; `--syntax "<command with {file}>"` swaps in your own checker and `apply --allow-syntax-errors` goes ahead anyway. With no API key and no agent, `follow-me plan --naive` writes one `wip: <path>` commit per touched file, which is enough to run `check`, `apply` and the tree proof on any branch.
+
 `apply` never writes your original branch, your index, or your working tree. It builds the commits in a temporary index and points `<branch>-split` at them, or the branch you name with `--name`. It refuses the branch being split and any branch checked out in a worktree, even with `--force`. `--force` only lets it move a branch follow-me did not create. Then it compares the last commit's tree hash with the original tip's and prints both:
 
 ```text
