@@ -14,6 +14,7 @@ import type {
   CommentId,
   ConcernDecision,
   ConcernId,
+  Excluded,
   Reply,
   ReplyAuthor,
   ReplyId,
@@ -236,6 +237,20 @@ function parseList<T>(
   return out;
 }
 
+function parseConcernId(item: unknown): ConcernId | string {
+  return isConcernId(item) ? item : "not a concern id";
+}
+
+/** Absent reads as nothing excluded. */
+export function parseExcluded(v: unknown): Excluded | string {
+  if (v === undefined) return { comments: [], concerns: [] };
+  if (!isFields<"comments" | "concerns">(v)) return "excluded is not an object";
+  const comments = parseList(v.comments, parseCommentId, "excluded.comments");
+  if (typeof comments === "string") return comments;
+  const concerns = parseList(v.concerns, parseConcernId, "excluded.concerns");
+  return typeof concerns === "string" ? concerns : { comments, concerns };
+}
+
 function asCommentId(item: unknown): CommentId | null {
   return typeof item === "string" && isCommentId(item) ? item : null;
 }
@@ -256,6 +271,7 @@ export function parseReview(v: unknown): Review | string {
       | "comments"
       | "concerns"
       | "resolved"
+      | "excluded"
     >(v)
   ) {
     return "not an object";
@@ -274,6 +290,9 @@ export function parseReview(v: unknown): Review | string {
   if (typeof concerns === "string") return concerns;
   const resolved = parseList(v.resolved, parseCommentId, "resolved");
   if (typeof resolved === "string") return resolved;
+  const excluded = parseExcluded(v.excluded);
+  if (typeof excluded === "string") return excluded;
+  const anyExcluded = excluded.comments.length + excluded.concerns.length > 0;
   return {
     schema: v.schema,
     mode,
@@ -283,6 +302,7 @@ export function parseReview(v: unknown): Review | string {
     comments,
     ...(concerns.length === 0 ? {} : { concerns }),
     ...(resolved.length === 0 ? {} : { resolved }),
+    ...(anyExcluded ? { excluded } : {}),
   };
 }
 
@@ -299,13 +319,15 @@ function lenient<T>(items: unknown, parse: (item: unknown) => T | string): T[] {
  * item that does not parse is dropped, so one bad entry never loses the rest of an autosave.
  */
 export function parseDraft(v: unknown): ReviewDraft | string {
-  if (!isFields<"comments" | "concerns" | "resolved">(v) || !isArray(v.comments)) {
+  if (!isFields<"comments" | "concerns" | "resolved" | "excluded">(v) || !isArray(v.comments)) {
     return "not a review draft";
   }
+  const excluded = parseExcluded(v.excluded);
   return {
     comments: lenient(v.comments, parseComment),
     concerns: lenient(v.concerns, parseDecision),
     resolved: lenient(v.resolved, parseCommentId),
+    excluded: typeof excluded === "string" ? { comments: [], concerns: [] } : excluded,
   };
 }
 

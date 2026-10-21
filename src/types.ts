@@ -331,6 +331,14 @@ export type Review = {
   readonly concerns?: readonly ConcernDecision[];
   /** Questions from earlier versions the reviewer marked resolved during this review. */
   readonly resolved?: readonly CommentId[];
+  /** Items the reviewer left out of the hand-off to the merge request. */
+  readonly excluded?: Excluded;
+};
+
+/** Comments and agent concerns kept out of the report's main list and of `report --json`. */
+export type Excluded = {
+  readonly comments: readonly CommentId[];
+  readonly concerns: readonly ConcernId[];
 };
 
 /** The autosave of an unfinished review, in the same shape its Review will have. */
@@ -338,6 +346,7 @@ export type ReviewDraft = {
   readonly comments: readonly Comment[];
   readonly concerns: readonly ConcernDecision[];
   readonly resolved: readonly CommentId[];
+  readonly excluded: Excluded;
 };
 
 /** The version before a swap or a fresh open: its comments and what the new plan answered. */

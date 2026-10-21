@@ -40,7 +40,13 @@ import {
 import { runInstall, runUninstall, type SkillTargets } from "./install.ts";
 import { naiveDraft } from "./naive.ts";
 import { serializePlanFile, type ValidPlan, validatePlan } from "./plan.ts";
-import { type PromptInput, renderEvents, renderPrompt, renderReport } from "./prompt.ts";
+import {
+  type PromptInput,
+  renderEvents,
+  renderPrompt,
+  renderReport,
+  reportItems,
+} from "./prompt.ts";
 import { type Registration, RegistrationError, sessionIdOf } from "./server.ts";
 import {
   BranchMovedError,
@@ -954,7 +960,11 @@ async function walkPlan(session: Session, args: Args): Promise<Prepared | null> 
 }
 
 /** The consolidated report of a saved review, or null after saying why it cannot be rendered. */
-function renderStored(session: Session, stored: StoredReview): string | null {
+function renderStored(
+  session: Session,
+  stored: StoredReview,
+  format: "markdown" | "json" = "markdown",
+): string | null {
   const plan = session.plans().find((p) => p.version === stored.version);
   if (plan === undefined) {
     console.error(`follow-me: review v${stored.version} refers to a plan that is missing`);
@@ -970,10 +980,12 @@ function renderStored(session: Session, stored: StoredReview): string | null {
     .plans()
     .filter((p) => p.version > stored.version)
     .flatMap((p) => p.file.responses);
-  return renderReport(stored.review, verdict.plan.commits, session.diff.units, {
-    branch: session.anchor.branch,
-    responses,
-  });
+  const opts = { branch: session.anchor.branch, responses };
+  if (format === "json") {
+    const items = reportItems(stored.review, verdict.plan.commits, session.diff.units, opts);
+    return `${JSON.stringify(items, null, 2)}\n`;
+  }
+  return renderReport(stored.review, verdict.plan.commits, session.diff.units, opts);
 }
 
 async function feedback(cwd: string, args: Args): Promise<number> {
@@ -1007,9 +1019,13 @@ async function feedback(cwd: string, args: Args): Promise<number> {
 /** The consolidated report of the hosted review as it stands, else of the last one that ended. */
 async function report(cwd: string, args: Args): Promise<number> {
   const session = await openSession(cwd, sessionOpts(args));
+  const format = args.flags.has("json") ? "json" : "markdown";
   const open = await openOnServer(session, null);
   if (open !== null) {
-    process.stdout.write(await fetchReport(open.port, open.summary));
+    const text = await fetchReport(open.port, open.summary, format);
+    process.stdout.write(
+      format === "json" ? `${JSON.stringify(JSON.parse(text), null, 2)}\n` : text,
+    );
     return 0;
   }
   const ended = [...session.reviews(), ...session.walkReviews()].sort((a, b) =>
@@ -1020,7 +1036,7 @@ async function report(cwd: string, args: Args): Promise<number> {
     console.error("follow-me: no review is open and none has ended; run `follow-me review` first");
     return 1;
   }
-  const text = renderStored(session, stored);
+  const text = renderStored(session, stored, format);
   if (text === null) return 1;
   process.stdout.write(text);
   return 0;
@@ -1462,7 +1478,7 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
         return await explain(cwd, parseArgs(rest, spec));
       }
       case "report":
-        return await report(cwd, parseArgs(rest, { values: ["branch"] }));
+        return await report(cwd, parseArgs(rest, { values: ["branch"], flags: ["json"] }));
       case "clean": {
         const args = parseArgs(rest, { flags: ["all", "dry-run"] });
         const opts = { all: args.flags.has("all"), dryRun: args.flags.has("dry-run") };

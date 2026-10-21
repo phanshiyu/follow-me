@@ -394,8 +394,12 @@ export async function postComment(
 }
 
 /** The consolidated report of the hosted session as it stands. */
-export async function fetchReport(port: number, summary: HostedSummary): Promise<string> {
-  const res = await fetch(`${sessionUrl(port, summary)}api/report`);
+export async function fetchReport(
+  port: number,
+  summary: HostedSummary,
+  format: "markdown" | "json" = "markdown",
+): Promise<string> {
+  const res = await fetch(`${sessionUrl(port, summary)}api/report?format=${format}`);
   if (!res.ok) throw new RegistrationError(`GET api/report failed with ${res.status}`);
   return res.text();
 }

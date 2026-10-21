@@ -820,6 +820,212 @@ function renderPlanFeedback(ctx: Context, comments: readonly Comment[]): string[
   return out;
 }
 
+/** One line of a hunk with its numbers on the original branch: the tip's, and the base's. */
+type NumberedRow = { readonly op: string; readonly tip: number; readonly base: number };
+
+/** The rows `want` picks, numbered as the quoting code numbers them. */
+function numberedRows(
+  hunk: TextHunk,
+  units: ReadonlyMap<UnitId, Unit>,
+  want: (offset: number, change: number | null) => boolean,
+): NumberedRow[] {
+  let tip = tipStartOf(hunk, units);
+  let base = hunk.oldStart + 1;
+  const rows: NumberedRow[] = [];
+  hunk.body.forEach((line, i) => {
+    if (want(i, line.op === " " ? null : line.change)) rows.push({ op: line.op, tip, base });
+    if (line.op !== "-") tip += 1;
+    if (line.op !== "+") base += 1;
+  });
+  return rows;
+}
+
+type Span = {
+  readonly newLine: number | null;
+  readonly oldLine: number | null;
+  readonly startNewLine: number | null;
+  readonly startOldLine: number | null;
+};
+
+const NO_SPAN: Span = { newLine: null, oldLine: null, startNewLine: null, startOldLine: null };
+
+/** The last row names the line: both sides for context, the tip for an addition, the base for a removal. */
+function spanOf(rows: readonly NumberedRow[]): Span {
+  const first = rows[0];
+  const last = rows.at(-1);
+  if (first === undefined || last === undefined) return NO_SPAN;
+  const range = rows.length > 1;
+  return {
+    newLine: last.op === "-" ? null : last.tip,
+    oldLine: last.op === "+" ? null : last.base,
+    startNewLine: range && first.op !== "-" ? first.tip : null,
+    startOldLine: range && first.op !== "+" ? first.base : null,
+  };
+}
+
+function commentSpan(ctx: Context, c: Comment): Span {
+  const { anchor } = c;
+  if (anchor.kind !== "hunk") return NO_SPAN;
+  const hunk = ctx.units.get(anchor.unit);
+  if (hunk?.kind !== "hunk") return NO_SPAN;
+  const { offsets, changes } = anchor;
+  if (offsets !== undefined)
+    return spanOf(numberedRows(hunk, ctx.units, (i) => offsets.includes(i)));
+  return spanOf(
+    numberedRows(
+      hunk,
+      ctx.units,
+      (_, n) => n !== null && (changes === null || changes.includes(n)),
+    ),
+  );
+}
+
+function concernSpan(ctx: Context, concern: PlacedConcern): Span {
+  const hunk = concern.unit === undefined ? undefined : ctx.units.get(concern.unit);
+  if (hunk?.kind !== "hunk") return NO_SPAN;
+  const lines = concern.lines;
+  return spanOf(
+    numberedRows(
+      hunk,
+      ctx.units,
+      (_, n) => n !== null && (lines === undefined || lines.includes(n)),
+    ),
+  );
+}
+
+export type ReportThreadEntry = { readonly author: "agent" | "reviewer"; readonly body: string };
+
+/** One thing to carry to the merge request. Line numbers are the original branch's. */
+export type ReportItem = Span & {
+  readonly path: string | null;
+  readonly oldPath: string | null;
+  readonly severity: Severity | null;
+  readonly kind: "flag" | "concern" | "question";
+  readonly body: string;
+  readonly thread: readonly ReportThreadEntry[];
+  readonly resolved: boolean;
+  readonly excluded: boolean;
+};
+
+/** The item with the label the markdown uses to point at it. */
+type Collected = { readonly item: ReportItem; readonly where: Where };
+
+function threadOf(c: Comment): ReportThreadEntry[] {
+  return (c.replies ?? []).map((r) => ({ author: r.author, body: r.body }));
+}
+
+function withSeverity(severity: Severity | null, text: string): string {
+  return severity === null ? text : `**${severity}**\n\n${text}`;
+}
+
+function collectItems(
+  review: Review,
+  commits: readonly ReportCommit[],
+  units: ReadonlyMap<UnitId, Unit>,
+  responses: readonly CommentResponse[],
+): Collected[] {
+  const ctx: Context = { commits, units };
+  const fromReviewer = review.comments.filter((c) => c.author !== "agent");
+  const walk = review.mode === "walk";
+  const rest = fromReviewer.filter((c) => c.kind !== "question");
+  const issues = walk ? rest : rest.filter((c) => c.severity !== undefined);
+  const noComments = new Set<string>(review.excluded?.comments ?? []);
+  const noConcerns = new Set<string>(review.excluded?.concerns ?? []);
+  const resolved = new Set<string>(review.resolved ?? []);
+  const out: Collected[] = buildItems(ctx, keptConcerns(review, commits), issues).map((it) => {
+    const { kept } = it;
+    const first = it.comments[0];
+    if (kept !== null) {
+      const note = kept.note === null ? "" : `\n\nReviewer: ${kept.note}`;
+      const thread = it.comments.flatMap((c): ReportThreadEntry[] => [
+        { author: "reviewer", body: c.body },
+        ...threadOf(c),
+      ]);
+      return {
+        where: it.where,
+        item: {
+          ...concernSpan(ctx, kept.concern),
+          path: it.where.path,
+          oldPath: it.where.path,
+          severity: it.severity,
+          kind: "concern",
+          body: withSeverity(it.severity, `${kept.concern.text}${note}`),
+          thread,
+          resolved: false,
+          excluded: noConcerns.has(kept.concern.id),
+        },
+      };
+    }
+    if (first === undefined) throw new Error("an item with neither a concern nor a comment");
+    return {
+      where: it.where,
+      item: {
+        ...commentSpan(ctx, first),
+        path: it.where.path,
+        oldPath: it.where.path,
+        severity: it.severity,
+        kind: "flag",
+        body: withSeverity(it.severity, first.body),
+        thread: threadOf(first),
+        resolved: resolved.has(first.id),
+        excluded: noComments.has(first.id),
+      },
+    };
+  });
+  for (const q of fromReviewer.filter((c) => c.kind === "question")) {
+    const where = whereComment(ctx, q);
+    const answer = responses.find((r) => r.comment === q.id)?.note;
+    const lastAgent = (q.replies ?? []).findLast((r) => r.author === "agent")?.body;
+    const said = answer ?? lastAgent;
+    const details =
+      said === undefined ? "" : `\n\n<details><summary>Answer</summary>\n\n${said}\n\n</details>`;
+    out.push({
+      where,
+      item: {
+        ...commentSpan(ctx, q),
+        path: where.path,
+        oldPath: where.path,
+        severity: q.severity ?? null,
+        kind: "question",
+        body: `${q.body}${details}`,
+        thread: threadOf(q),
+        resolved: resolved.has(q.id),
+        excluded: noComments.has(q.id),
+      },
+    });
+  }
+  return sortItems(out, units);
+}
+
+/**
+ * The items of a review for the merge request, in file order then line order, general items last.
+ * Excluded ones are present and marked; whoever posts them skips those.
+ */
+export function reportItems(
+  review: Review,
+  commits: readonly ReportCommit[],
+  units: ReadonlyMap<UnitId, Unit>,
+  opts: ReportOptions,
+): ReportItem[] {
+  return collectItems(review, commits, units, opts.responses).map((c) => c.item);
+}
+
+/** A short list of what the reviewer left out, so nothing vanishes without a trace. */
+function renderExcluded(collected: readonly Collected[]): string[] {
+  const left = collected.filter((c) => c.item.excluded);
+  if (left.length === 0) return [];
+  const out = ["## Excluded", "", "The reviewer left these out of the hand-off:", ""];
+  for (const { item, where } of left) {
+    const place = where.path === null ? where.label : `${where.path} · ${where.label}`;
+    const first = item.body.split("\n").find((l) => l !== "" && !l.startsWith("**")) ?? "";
+    out.push(
+      `- ${place} · ${item.kind}${item.severity === null ? "" : ` · ${item.severity}`}: ${first}`,
+    );
+  }
+  out.push("");
+  return out;
+}
+
 export type ReportOptions = {
   readonly branch: string;
   /** Responses from plans after the review, which answer its questions. */
@@ -834,6 +1040,26 @@ export type ReportOptions = {
  * Concerns the reviewer has not decided are left out, as are those dismissed.
  */
 export function renderReport(
+  full: Review,
+  commits: readonly ReportCommit[],
+  units: ReadonlyMap<UnitId, Unit>,
+  opts: ReportOptions,
+): string {
+  const excluded = full.excluded;
+  if (excluded === undefined) return renderIncluded(full, commits, units, opts);
+  const noComments = new Set<string>(excluded.comments);
+  const noConcerns = new Set<string>(excluded.concerns);
+  const review: Review = {
+    ...full,
+    comments: full.comments.filter((c) => !noComments.has(c.id)),
+    concerns: (full.concerns ?? []).filter((d) => !noConcerns.has(d.concern)),
+  };
+  const tail = renderExcluded(collectItems(full, commits, units, opts.responses));
+  const main = renderIncluded(review, commits, units, opts);
+  return tail.length === 0 ? main : `${main}${main.endsWith("\n") ? "" : "\n"}${tail.join("\n")}`;
+}
+
+function renderIncluded(
   review: Review,
   commits: readonly ReportCommit[],
   units: ReadonlyMap<UnitId, Unit>,
