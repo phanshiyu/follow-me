@@ -1,0 +1,37 @@
+# Token budget
+
+What a coding agent reads from follow-me in one session, measured by
+`node scripts/measure-tokens.ts` (add `--out <dir>` to keep each step's text). The script drives a
+whole session without a model: the skill, the first `follow-me`, prompt.md, a draft and its check,
+the launch, a batch with a comment on changed lines, a comment on a context line and a question, a
+reply round (the agent's reply, a reviewer reply, an edited comment, a concern decision), one idle
+call, a commit that edits one hunk with the re-plan prompt and the swap, and the final report.
+
+It runs on two inputs. The fixture is `test/fixture-repo.ts`. The real branch is this repo's 20
+commits up to `8acfcfc` (v0.4.1), pinned so every row below measures the same input. Its draft is
+one commit per file, as `plan --naive` writes, so the check lists 53 commits.
+
+Tokens are an estimate: bytes / 4. No tokenizer or API was called.
+
+## Baseline (8acfcfc plus the script)
+
+| step | fixture bytes | ~tokens | real branch bytes | ~tokens |
+|---|---:|---:|---:|---:|
+| skill | 3894 | 974 | 3894 | 974 |
+| first follow-me | 251 | 63 | 242 | 61 |
+| prompt.md | 6457 | 1614 | 226413 | 56603 |
+| check | 505 | 126 | 3042 | 761 |
+| launch | 409 | 102 | 401 | 100 |
+| batch: 2 comments, 1 question | 838 | 210 | 2046 | 512 |
+| reply | 51 | 13 | 51 | 13 |
+| reply round | 478 | 120 | 759 | 190 |
+| idle call | 75 | 19 | 75 | 19 |
+| re-plan | 244 | 61 | 235 | 59 |
+| re-plan prompt.md | 9655 | 2414 | 235800 | 58950 |
+| swap | 569 | 142 | 562 | 141 |
+| reply on changed thread | 51 | 13 | 51 | 13 |
+| final report | 837 | 209 | 1368 | 342 |
+| **total** | **24314** | **6079** | **474939** | **118735** |
+
+The two prompts are 66% of the fixture session and 97% of the real one. The re-plan prompt sends
+the whole unit dump again for a commit that changed one hunk, and quotes one comment twice.
