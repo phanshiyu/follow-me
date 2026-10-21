@@ -26,16 +26,17 @@ git push --follow-tags   # the tag triggers publish.yml
 build, so a red suite blocks the release. The workflow also refuses a tag whose
 version differs from `package.json`.
 
-## Approving a staged release
+## If a release lands in staging
 
-The trusted publisher is stage-only, so the workflow's `npm publish` lands the version in
-npm's staging queue instead of making it live. A maintainer approves it with 2FA, either on
-the package page on npmjs.com or from a logged-in terminal:
+Releases go live directly; `0.1.1` and `0.2.0` did. The registry can take a few minutes
+to update `latest` after the version appears. If a future trusted publisher is configured
+as stage-only, the workflow's `npm publish` lands the version in npm's staging queue
+instead, and a maintainer approves it with 2FA on the package page or from a logged-in
+terminal:
 
 ```sh
 npm stage list @shiyuphan/follow-me
 npm stage approve <stage-id>
 ```
 
-To skip the approval step, allow `npm publish` on the trusted publisher in the package
-settings. The `0.0.0-stage` entry in the version list belongs to npm's staging machinery.
+The `0.0.0-stage` entry in the version list belongs to npm's staging machinery.
