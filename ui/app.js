@@ -29,7 +29,6 @@ import {
   buildScript,
   chunkOf,
   commitOf,
-  describeLines,
   describeRows,
   diagramAt,
   duration,
@@ -72,6 +71,7 @@ import {
   anchorText,
   atBottom,
   beatFor,
+  chipText,
   concernLine,
   dividerText,
   entriesHere,
@@ -273,16 +273,6 @@ function firstLine(message) {
   return message.split("\n")[0] ?? "";
 }
 
-/** Where a hunk comment points, by file line numbers; the stored anchor keeps change indices. */
-function describeAnchor(anchor) {
-  const unit = unitsById.get(anchor.unit);
-  if (unit?.kind !== "hunk") return "whole hunk";
-  const rows = numbers.get(unit.id) ?? [];
-  if (anchor.offsets !== undefined) return describeRows(unit.body, rows, anchor.offsets);
-  if (anchor.changes === null) return "whole hunk";
-  return describeLines(unit.body, rows, anchor.changes);
-}
-
 /**
  * While rows are picked, the box under them and the composer in the panel write one comment, so
  * what is typed in either shows in both. The other one's key, or null.
@@ -460,95 +450,40 @@ function diagramSlot(source) {
   return node;
 }
 
-function replyView(reply) {
-  return el(
-    "div",
-    { class: `reply ${reply.author}` },
-    el("div", { class: "meta", text: reply.author === "agent" ? "Agent" : "You" }),
-    el("div", { class: "said", text: reply.body }),
-    reply.diagram ? diagramSlot(reply.diagram) : null,
-  );
-}
-
 function commentLabel(comment) {
   if (comment.kind === "question") return "Question";
   return isWalk() ? "Code comment" : "Change request";
 }
 
-function commentView(comment) {
-  if (editing.has(comment.id)) {
-    return el(
-      "div",
-      { class: "comment" },
-      commentForm({
-        key: `edit:${comment.id}`,
-        placeholder: "Edit your comment",
-        action: "Save",
-        initial: comment.body,
-        submit: (body) => api("PUT", `/api/comments/${comment.id}`, { ...comment, body }),
-        close: () => editing.delete(comment.id),
-      }),
-    );
+/**
+ * The one line a thread leaves in the code: "Question · 2 replies · answered". It opens the
+ * thread in the panel, where all writing happens.
+ */
+function commentChip(comment) {
+  const label = chipText(comment, {
+    walk: isWalk(),
+    resolved: state.resolved.includes(comment.id),
+  });
+  const classes = ["thread-chip"];
+  if (comment.kind === "question") classes.push("question");
+  if (comment.author === "agent") classes.push("agent");
+  return el("button", {
+    type: "button",
+    class: classes.join(" "),
+    title: "Open this thread in the conversation",
+    text: `${comment.kind === "question" ? "? " : ""}${label}`,
+    onclick: () => focusThread(comment.id),
+  });
+}
+
+/** Shows a thread in the panel: opens the panel, clears the filter, scrolls to it and flashes it. */
+function focusThread(id) {
+  if (onlyHere) {
+    onlyHere = false;
+    renderNow();
+    renderTimeline();
   }
-  const question = comment.kind === "question";
-  const where = comment.anchor.kind === "hunk" ? ` · ${describeAnchor(comment.anchor)}` : "";
-  const again = comment.follows ? " · asked again" : "";
-  const rating = comment.severity ? ` · ${comment.severity}` : "";
-  const replyKey = `reply:${comment.id}`;
-  return el(
-    "div",
-    { class: question ? "comment question" : "comment" },
-    el(
-      "div",
-      { class: "meta" },
-      `${commentLabel(comment)} · ${comment.id}${where}${again}${rating}`,
-    ),
-    el("div", { class: "text", text: comment.body }),
-    ...(comment.replies ?? []).map(replyView),
-    openBoxes.has(replyKey)
-      ? commentForm({
-          key: replyKey,
-          placeholder: "Reply",
-          action: "Reply",
-          submit: (body) =>
-            api("POST", `/api/comments/${comment.id}/replies`, { author: "reviewer", body }),
-          close: () => openBoxes.delete(replyKey),
-        })
-      : null,
-    el(
-      "div",
-      { class: "meta" },
-      question || comment.replies?.length
-        ? el("button", {
-            class: "link",
-            text: "reply",
-            onclick: () => {
-              openBoxes.add(replyKey);
-              focusKey = replyKey;
-              render();
-            },
-          })
-        : null,
-      el("button", {
-        class: "link",
-        text: "edit",
-        onclick: () => {
-          editing.add(comment.id);
-          focusKey = `edit:${comment.id}`;
-          render();
-        },
-      }),
-      el("button", {
-        class: "link",
-        text: "delete",
-        onclick: () =>
-          guarded(async () => {
-            await api("DELETE", `/api/comments/${comment.id}`);
-            await reloadComments();
-          }),
-      }),
-    ),
-  );
+  revealEntry(`c:${id}`);
 }
 
 /** Marks a previous question resolved or reopens it; the server's event repeats it harmlessly. */
@@ -604,7 +539,7 @@ function answerView(card) {
         onclick: () => select(commit, { focus: true }),
       }),
     ),
-    ...followUps.map(commentView),
+    ...followUps.map(commentChip),
     openBoxes.has(againKey)
       ? commentForm({
           key: againKey,
@@ -1087,7 +1022,7 @@ function unitComments(unit, commit, loose) {
   return el(
     "div",
     { class: "comments" },
-    ...loose.map(commentView),
+    ...loose.map(commentChip),
     el(
       "div",
       { class: "controls" },
@@ -1169,7 +1104,7 @@ function unitView(unit, commit) {
           concernView(c, { after: lineKey(unit.id, row.line) }),
         );
         const said = (sitting.get(row.line) ?? []).map((comment) => {
-          const node = commentView(comment);
+          const node = commentChip(comment);
           node.dataset.after = lineKey(unit.id, row.line);
           return node;
         });
@@ -1305,24 +1240,6 @@ function setListOpen(open) {
   $("rail-tip").hidden = true;
 }
 
-function renderPlanNote() {
-  const anchor = { kind: "plan" };
-  const walk = isWalk();
-  $("plan-note").replaceChildren(
-    el("strong", { text: walk ? "General comment" : "Plan note" }),
-    ...commentsAt(anchor).map(commentView),
-    commentBox({
-      key: "box:plan",
-      label: walk ? "Add a general comment" : "Add a note on the whole plan",
-      placeholder: walk
-        ? "Anything about the change as a whole"
-        : "Anything about the plan as a whole",
-      anchor,
-      context: { commitMessage: "", path: null },
-    }),
-  );
-}
-
 function renderMain() {
   const main = $("main");
   const scroll = main.scrollTop;
@@ -1349,7 +1266,7 @@ function renderMain() {
       { class: "commit-head" },
       el("div", { class: "message", text: commit.message }),
       staticNarration(commit.narration?.trim()),
-      ...commentsAt(messageAnchor).map(commentView),
+      ...commentsAt(messageAnchor).map(commentChip),
       ...visibleCards(
         cardsAt(
           cards,
@@ -1381,7 +1298,7 @@ function renderMain() {
               context,
             }),
           ),
-      ...commentsAt(positionAnchor).map(commentView),
+      ...commentsAt(positionAnchor).map(commentChip),
     ),
     ...[...groups].map(([path, units]) =>
       el(
@@ -1411,7 +1328,6 @@ function render() {
   refreshEntries();
   renderList();
   renderAnswers();
-  renderPlanNote();
   renderMain();
   renderTimeline();
   renderComposer();
@@ -1806,12 +1722,75 @@ function quoteView(entry, comment) {
   );
 }
 
+/** Reply, and for the reviewer's own comment edit and delete. Only this plan's comments take them. */
+function threadActions(comment, mine) {
+  if (!state.comments.some((c) => c.id === comment.id)) return null;
+  const replyKey = `reply:${comment.id}`;
+  const talk = comment.kind === "question" || comment.author === "agent" || comment.replies?.length;
+  return el(
+    "div",
+    { class: "meta actions" },
+    talk
+      ? el("button", {
+          type: "button",
+          class: "link",
+          text: "reply",
+          onclick: () => {
+            openBoxes.add(replyKey);
+            focusKey = replyKey;
+            render();
+          },
+        })
+      : null,
+    mine
+      ? el("button", {
+          type: "button",
+          class: "link",
+          text: "edit",
+          onclick: () => {
+            editing.add(comment.id);
+            focusKey = `edit:${comment.id}`;
+            render();
+          },
+        })
+      : null,
+    mine
+      ? el("button", {
+          type: "button",
+          class: "link",
+          text: "delete",
+          onclick: () =>
+            guarded(async () => {
+              await api("DELETE", `/api/comments/${comment.id}`);
+              await reloadComments();
+            }),
+        })
+      : null,
+  );
+}
+
+function replyBox(comment) {
+  const key = `reply:${comment.id}`;
+  return el(
+    "li",
+    { class: "entry compose" },
+    commentForm({
+      key,
+      placeholder: "Reply",
+      action: "Reply",
+      submit: (body) =>
+        api("POST", `/api/comments/${comment.id}/replies`, { author: "reviewer", body }),
+      close: () => openBoxes.delete(key),
+    }),
+  );
+}
+
 function entryView(entry) {
   const attrs = {
     "data-entry": entry.id,
     "data-thread": entry.thread ?? undefined,
     onclick: (event) => {
-      if (!event.target.closest("button, a, textarea, select, input")) jump(entry);
+      if (!event.target.closest("button, a, textarea, select, input, .box")) jump(entry);
     },
   };
   switch (entry.kind) {
@@ -1831,7 +1810,18 @@ function entryView(entry) {
         ),
         anchorChip(entry, entryAnchorText(comment)),
         quoteView(entry, comment),
-        el("div", { class: "said", text: comment.body }),
+        editing.has(comment.id)
+          ? commentForm({
+              key: `edit:${comment.id}`,
+              placeholder: "Edit your comment",
+              action: "Save",
+              initial: comment.body,
+              submit: (body) => api("PUT", `/api/comments/${comment.id}`, { ...comment, body }),
+              close: () => editing.delete(comment.id),
+            })
+          : el("div", { class: "said", text: comment.body }),
+        comment.diagram ? diagramSlot(comment.diagram) : null,
+        threadActions(comment, entry.from === "you"),
       );
     }
     case "reply":
@@ -1842,6 +1832,7 @@ function entryView(entry) {
         anchorChip(entry, `re: ${snippet(entry.comment.body)} · ${entryAnchorText(entry.comment)}`),
         el("div", { class: "said", text: entry.reply.body }),
         entry.reply.diagram ? diagramSlot(entry.reply.diagram) : null,
+        threadActions(entry.comment, false),
       );
     case "answer":
       return el(
@@ -1886,6 +1877,7 @@ function renderTimeline() {
   const stuck = atBottom(list);
   const top = list.scrollTop;
   const shown = onlyHere ? entries.filter((e) => here.ids.has(e.id)) : entries;
+  const tails = new Map(shown.flatMap((e) => (e.thread === null ? [] : [[e.thread, e.id]])));
   list.replaceChildren(
     ...(shown.length === 0
       ? [
@@ -1896,7 +1888,11 @@ function renderTimeline() {
               : "Questions, replies and decisions show up here, oldest first.",
           }),
         ]
-      : shown.map(entryView)),
+      : shown.flatMap((entry) => {
+          const tail = tails.get(entry.thread) === entry.id;
+          const open = tail && openBoxes.has(`reply:${entry.thread}`);
+          return open ? [entryView(entry), replyBox(entry.comment)] : [entryView(entry)];
+        })),
   );
   list.scrollTop = stuck ? list.scrollHeight : top;
   following = stuck;
@@ -2141,7 +2137,7 @@ function applyPlayback() {
     for (const node of main.querySelectorAll("[data-line], .unit")) {
       node.classList.remove("pending", "struck", "in-chunk");
     }
-    for (const node of main.querySelectorAll(".concern, .comment"))
+    for (const node of main.querySelectorAll(".concern, .thread-chip"))
       node.classList.remove("pending");
     return;
   }
@@ -2155,7 +2151,7 @@ function applyPlayback() {
     node.classList.toggle("struck", look === "struck");
     node.classList.toggle("in-chunk", inChunk.has(key) && look !== "hidden");
   }
-  for (const node of main.querySelectorAll(".concern[data-after], .comment[data-after]")) {
+  for (const node of main.querySelectorAll(".concern[data-after], .thread-chip[data-after]")) {
     node.classList.toggle("pending", states.get(node.dataset.after) === "hidden");
   }
   for (const node of main.querySelectorAll(".unit")) {

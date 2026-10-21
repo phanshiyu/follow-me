@@ -194,11 +194,6 @@ button.link {
   font-size: 12px;
 }
 
-.plan-note {
-  border-top: 1px solid var(--border);
-  padding: 10px 12px;
-}
-
 .main {
   overflow-y: auto;
   padding: 16px 24px 64px;
@@ -491,22 +486,6 @@ kbd {
 
 .comments {
   padding: 0 10px;
-}
-
-.comment {
-  background: var(--comment-bg);
-  border-radius: 6px;
-  margin: 8px 0;
-  padding: 6px 10px;
-}
-
-.comment .meta {
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.comment .text {
-  white-space: pre-wrap;
 }
 
 textarea {
@@ -965,7 +944,6 @@ body.index {
     text-align: center;
   }
 
-  .sidebar:not(.open) .plan-note,
   .sidebar:not(.open) .answers {
     display: none;
   }
@@ -987,25 +965,6 @@ body.index {
     font-size: 13px;
     pointer-events: none;
   }
-}
-
-.comment.question {
-  background: var(--question-bg);
-  box-shadow: inset 3px 0 0 var(--question-edge);
-}
-
-.reply {
-  margin: 6px 0 0 14px;
-  padding: 4px 10px;
-  border-left: 2px solid var(--border);
-}
-
-.reply.agent {
-  border-left-color: var(--accent);
-}
-
-.reply .said {
-  white-space: pre-wrap;
 }
 
 .reply-diagram {
@@ -1141,8 +1100,7 @@ body.index {
   border-style: solid;
 }
 
-.concern.pending,
-.comment.pending {
+.concern.pending {
   display: none;
 }
 
@@ -1630,4 +1588,40 @@ button.anchor-chip:hover {
     animation: none;
     background: var(--select-bg);
   }
+}
+
+.thread-chip {
+  display: block;
+  max-width: 100%;
+  margin: 4px 10px 6px calc(var(--gutter) + 2ch);
+  padding: 0 10px;
+  border-radius: 10px;
+  background: var(--comment-bg);
+  font-size: 12px;
+}
+
+.thread-chip.question {
+  background: var(--question-bg);
+  box-shadow: inset 0 0 0 1px var(--question-edge);
+}
+
+.thread-chip.pending {
+  display: none;
+}
+
+.commit-head > .thread-chip,
+.comments > .thread-chip,
+.answer > .thread-chip {
+  margin-left: 0;
+  display: inline-block;
+}
+
+.entry .actions {
+  margin-top: 2px;
+}
+
+.entry.compose {
+  background: none;
+  cursor: default;
+  padding: 0 4px;
 }
