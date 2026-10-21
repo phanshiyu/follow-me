@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { commitKey } from "../lib/commit.ts";
-import { PageProvider, scrollToCommit, usePage } from "../page.tsx";
+import { HEADER_PX, PageProvider, scrollToCommit, usePage } from "../page.tsx";
 import { useReview } from "../store.tsx";
 import { CommitSection } from "./CommitSection.tsx";
+import { KeySheet } from "./KeySheet.tsx";
 import { StackPicker } from "./StackPicker.tsx";
 
 /** Keys typed into a field, or with a modifier, belong to the field or the browser. */
@@ -15,11 +16,22 @@ export function isTyping(event: KeyboardEvent): boolean {
   );
 }
 
-function useCommitKeys(openStack: () => void) {
+/** The next unresolved thread below the viewport's top, wrapping to the first. */
+function nextUnresolved(): void {
+  const cards = [...document.querySelectorAll<HTMLElement>("article[data-open-thread]")];
+  const next = cards.find((card) => card.getBoundingClientRect().top > HEADER_PX + 60) ?? cards[0];
+  next?.scrollIntoView({ block: "center" });
+}
+
+function usePageKeys(openStack: () => void, openSheet: () => void) {
   const { state } = useReview();
-  const { current, isViewed, setViewed } = usePage();
+  const { current, isViewed, setViewed, pick, setPick, setBox } = usePage();
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && pick !== null) {
+        setPick(null);
+        return;
+      }
       if (isTyping(event)) return;
       const last = state.commits.length - 1;
       const here = state.commits[current];
@@ -43,6 +55,17 @@ function useCommitKeys(openStack: () => void) {
         case "s":
           openStack();
           break;
+        case "f":
+        case "a":
+          if (pick === null) return;
+          setBox(event.key === "f" ? "flag" : "ask");
+          break;
+        case "u":
+          nextUnresolved();
+          break;
+        case "?":
+          openSheet();
+          break;
         default:
           return;
       }
@@ -50,13 +73,17 @@ function useCommitKeys(openStack: () => void) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [state.commits, current, isViewed, setViewed, openStack]);
+  }, [state.commits, current, isViewed, setViewed, openStack, openSheet, pick, setPick, setBox]);
 }
 
 function Page() {
   const { state } = useReview();
   const [stackOpen, setStackOpen] = useState(false);
-  useCommitKeys(() => setStackOpen(true));
+  const [sheetOpen, setSheetOpen] = useState(false);
+  usePageKeys(
+    () => setStackOpen(true),
+    () => setSheetOpen(true),
+  );
   return (
     <div className="min-h-screen">
       <header className="sticky top-0 z-30 h-11 border-b bg-background/95 backdrop-blur">
@@ -77,6 +104,7 @@ function Page() {
           <CommitSection key={commitKey(commit)} commit={commit} />
         ))}
       </main>
+      <KeySheet open={sheetOpen} onOpenChange={setSheetOpen} />
     </div>
   );
 }

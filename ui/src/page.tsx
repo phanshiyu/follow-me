@@ -8,8 +8,14 @@ import {
   useState,
 } from "react";
 import { commitKey } from "./lib/commit.ts";
+import type { BoxKind } from "./lib/compose.ts";
+import type { Pick } from "./lib/selection.ts";
 import { loadSet, saveSet } from "./lib/storage.ts";
-import type { ProjectedCommit } from "./lib/wire.ts";
+import type { ProjectedCommit, UnitId } from "./lib/wire.ts";
+
+/** Rows picked in one hunk of one commit. Only one pick exists on the page at a time. */
+export type PagePick = Pick & { readonly commit: number; readonly unit: UnitId };
+
 import { useReview } from "./store.tsx";
 
 type Page = {
@@ -22,6 +28,11 @@ type Page = {
   /** Threads the reviewer resolved: earlier versions' questions on the server, the rest here. */
   readonly resolved: ReadonlySet<string>;
   setLocallyResolved(id: string, resolved: boolean): void;
+  readonly pick: PagePick | null;
+  setPick(pick: PagePick | null): void;
+  /** The comment box under the pick, open with the kind its button chose. */
+  readonly box: BoxKind | null;
+  setBox(box: BoxKind | null): void;
 };
 
 const PageContext = createContext<Page | null>(null);
@@ -75,6 +86,12 @@ export function PageProvider({ children }: { children: ReactNode }) {
   const current = useCurrentCommit();
   const [viewed, setViewedSet] = useState(() => loadSet("viewed"));
   const [local, setLocal] = useState(() => loadSet("resolved"));
+  const [pick, setPickState] = useState<PagePick | null>(null);
+  const [box, setBox] = useState<BoxKind | null>(null);
+  const setPick = useCallback((next: PagePick | null) => {
+    setPickState(next);
+    if (next === null) setBox(null);
+  }, []);
   const setLocallyResolved = useCallback((id: string, on: boolean) => {
     setLocal((before) => {
       const next = new Set(before);
@@ -110,8 +127,23 @@ export function PageProvider({ children }: { children: ReactNode }) {
       setFileViewed: (commit, path, on) => toggle(fileKey(commit, path), on),
       resolved: new Set([...state.resolved, ...local]),
       setLocallyResolved,
+      pick,
+      setPick,
+      box: pick === null ? null : box,
+      setBox,
     };
-  }, [current, viewed, toggle, state.commits, state.resolved, local, setLocallyResolved]);
+  }, [
+    current,
+    viewed,
+    toggle,
+    state.commits,
+    state.resolved,
+    local,
+    setLocallyResolved,
+    pick,
+    setPick,
+    box,
+  ]);
 
   return <PageContext value={page}>{children}</PageContext>;
 }
