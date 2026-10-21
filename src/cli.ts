@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, relative } from "node:path";
@@ -136,6 +137,9 @@ Setup:
   install --list                            show each harness, its skill dirs and docs
   uninstall [--harness <ids>|--all] [--project] [--dry-run]
                                             remove the skill files install writes
+  upgrade [--harness <ids>|--all] [--project] [--dry-run]
+                                            update the package with npm, then refresh the
+                                            installed skill copies
   clean [--all] [--dry-run]                 remove sessions of deleted branches, finished
                                             review drafts and leftovers of dead processes;
                                             --all removes .follow-me/ entirely
@@ -1281,6 +1285,34 @@ function missingDraft(error: MissingDraftError, cwd: string): string {
   return `no draft at ${relative(cwd, error.path)} yet; your coding agent writes it from \`follow-me prompt\`, or \`follow-me plan\` has the Anthropic API write it`;
 }
 
+const PACKAGE_NAME = "@shiyuphan/follow-me";
+
+/**
+ * Updates the global package, then refreshes every installed skill copy, which otherwise
+ * stays at the old version. FOLLOW_ME_UPGRADE_COMMAND replaces the npm call in tests.
+ */
+function upgrade(targets: SkillTargets, cwd: string): number {
+  const override = process.env["FOLLOW_ME_UPGRADE_COMMAND"];
+  const command =
+    override === undefined
+      ? ["npm", "install", "-g", `${PACKAGE_NAME}@latest`]
+      : ["sh", "-c", override];
+  const [file, ...args] = command;
+  if (file === undefined) return 1;
+  say(`${targets.dryRun ? "would run" : "running"}: ${override ?? command.join(" ")}`);
+  if (!targets.dryRun) {
+    try {
+      execFileSync(file, args, { stdio: "inherit" });
+    } catch (error) {
+      console.error(`follow-me: upgrade failed: ${error instanceof Error ? error.message : error}`);
+      return 1;
+    }
+  }
+  const code = runInstall({ ...targets, list: false }, homedir(), cwd, say);
+  if (code === 0) say(`next: follow-me --version`);
+  return code;
+}
+
 export async function main(argv: readonly string[], cwd: string): Promise<number> {
   const [command, ...rest] = argv;
   try {
@@ -1364,6 +1396,10 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
       case "uninstall": {
         const args = parseArgs(rest, { values: ["harness"], flags: ["all", "project", "dry-run"] });
         return runUninstall(skillTargets(args), homedir(), cwd, say);
+      }
+      case "upgrade": {
+        const args = parseArgs(rest, { values: ["harness"], flags: ["all", "project", "dry-run"] });
+        return upgrade(skillTargets(args), cwd);
       }
       case undefined:
       case "help":

@@ -146,6 +146,19 @@ Each `apply` freezes the draft as the next plan version, `.follow-me/<branch>/pl
 
 `status` is `addressed`, `declined`, or `deferred`. A comment counts as answered once a later plan lists it. `check` warns about unanswered comments but does not block `apply`. `follow-me status` shows the plans, the reviews, how many comments are still open, and the branch `apply` writes.
 
+## Upgrade and uninstall
+
+```sh
+follow-me upgrade               # npm install -g @shiyuphan/follow-me@latest, then refresh the skill copies
+follow-me uninstall --all       # remove the skill from every agent's skill directory
+npm uninstall -g @shiyuphan/follow-me
+```
+
+`upgrade` matters because the skill copies in `~/.claude/skills/` and the other agents' directories
+are files, so they stay at the old version until they are written again. Uninstalling the package
+leaves per-repo state in `.follow-me/` (remove it with `follow-me clean --all` first, or delete the
+directory) and the server record under `~/.local/state/follow-me`.
+
 ## Development
 
 ```sh

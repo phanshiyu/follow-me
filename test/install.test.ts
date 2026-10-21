@@ -156,3 +156,29 @@ test("uninstall fails clearly with nothing detected or an unknown harness", (t) 
   assert.equal(bad.code, 1);
   assert.match(bad.err, /unknown harness "emacs"/);
 });
+
+test("upgrade runs the package update, then refreshes the installed skill copies", (t) => {
+  const { home } = sandbox(t);
+  mkdirSync(join(home, ".claude"));
+  const marker = join(home, "upgraded");
+  const r = spawnSync(BIN, ["upgrade"], {
+    cwd: home,
+    encoding: "utf8",
+    env: { ...process.env, HOME: home, FOLLOW_ME_UPGRADE_COMMAND: `touch ${marker}` },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(existsSync(marker), true);
+  assert.deepEqual(r.stdout.trim().split("\n"), [
+    `running: touch ${marker}`,
+    `wrote ${join(home, ".claude/skills/follow-me/SKILL.md")}`,
+    "next: follow-me --version",
+  ]);
+
+  const dry = spawnSync(BIN, ["upgrade", "--dry-run"], {
+    cwd: home,
+    encoding: "utf8",
+    env: { ...process.env, HOME: home },
+  });
+  assert.equal(dry.status, 0, dry.stderr);
+  assert.match(dry.stdout, /^would run: npm install -g @shiyuphan\/follow-me@latest\n/);
+});
