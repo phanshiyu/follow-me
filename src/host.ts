@@ -153,7 +153,7 @@ async function loadHosted(
     if (!verdict.ok) {
       throw new RegistrationError(`plan v${version} no longer fits ${branch}; check it again`);
     }
-    const reviewsDir = session.reviewsDir(mode);
+    const reviewsDir = session.reviewsDir();
     const comments = await loadDraftComments(reviewsDir, version);
     const prior = session.priorReview(mode, version);
     const previous =
@@ -164,7 +164,7 @@ async function loadHosted(
             comments: prior.comments,
             responses: stored.file.responses,
           };
-    const command = mode === "walk" ? "walk" : "review";
+    const command = "review";
     // A version swap runs inside the server that already owns this session's lock.
     const release =
       held ??

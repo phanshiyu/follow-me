@@ -204,8 +204,8 @@ export type Session = {
   /** <dir>/prompt.md, the planner prompt written for an agent to read. */
   readonly promptPath: string;
   plans(): StoredPlan[];
-  /** Where reviews of this mode go: reviews/ for split, reviews/walk/ for walk. */
-  reviewsDir(mode: ReviewMode): string;
+  /** Where every review goes, whatever its mode: reviews/. */
+  reviewsDir(): string;
   /** Every reviews/vN.json. Files from before walk reviews had their own slot can be walk reviews. */
   reviews(): StoredReview[];
   /** reviews/walk/vN.json, plus older walk reviews stored as reviews/vN.json. */
@@ -302,9 +302,9 @@ function parseApplied(v: unknown): Applied | null {
 function makeSession(root: string, dir: string, anchor: SessionAnchor, diff: Diff): Session {
   const plansDir = join(dir, "plans");
   const splitReviews = join(dir, "reviews");
-  const walkReviewsDir = join(splitReviews, "walk");
-  const reviewsDir = (mode: ReviewMode): string =>
-    mode === "walk" ? walkReviewsDir : splitReviews;
+  // Older builds wrote reviewer reviews to reviews/walk/; they stay readable, nothing new goes there.
+  const legacyWalkDir = join(splitReviews, "walk");
+  const reviewsDir = (): string => splitReviews;
   const draftPath = join(dir, "draft.json");
   const promptPath = join(dir, "prompt.md");
   const appliedPath = join(dir, "applied.json");
@@ -320,20 +320,20 @@ function makeSession(root: string, dir: string, anchor: SessionAnchor, diff: Dif
       return { version, file, hash: planHash(file) };
     });
 
-  const reviewsIn = (mode: ReviewMode): StoredReview[] =>
-    versions(reviewsDir(mode)).map(({ version, path }) => {
+  const reviewsIn = (dir: string): StoredReview[] =>
+    versions(dir).map(({ version, path }) => {
       const review = parseReview(readJson(path));
       if (typeof review === "string") throw new SessionFileError(`${path}: ${review}`);
       return { version, review };
     });
-  const reviews = (): StoredReview[] => reviewsIn("split");
+  const reviews = (): StoredReview[] => reviewsIn(splitReviews);
   const walkReviews = (): StoredReview[] =>
-    [...reviews().filter((r) => r.review.mode === "walk"), ...reviewsIn("walk")].sort(
+    [...reviews().filter((r) => r.review.mode === "walk"), ...reviewsIn(legacyWalkDir)].sort(
       (a, b) => a.version - b.version,
     );
 
-  const draftVersions = (mode: ReviewMode): PlanVersion[] => {
-    const dir = reviewsDir(mode);
+  const draftVersions = (): PlanVersion[] => {
+    const dir = reviewsDir();
     if (!existsSync(dir)) return [];
     return readdirSync(dir).flatMap((name) => {
       const n = Number(/^v([1-9][0-9]*)\.draft\.json$/.exec(name)?.[1]);
@@ -341,10 +341,10 @@ function makeSession(root: string, dir: string, anchor: SessionAnchor, diff: Dif
     });
   };
   const draftReview = (mode: ReviewMode, version: PlanVersion): Review => {
-    const path = join(reviewsDir(mode), `v${version}.draft.json`);
+    const path = join(reviewsDir(), `v${version}.draft.json`);
     const draft = parseDraft(readJson(path));
     if (typeof draft === "string") throw new SessionFileError(`${path}: ${draft}`);
-    const { comments, concerns, resolved } = draft;
+    const { comments, concerns, resolved, excluded } = draft;
     return {
       schema: "follow-me/review@1",
       mode,
@@ -354,6 +354,7 @@ function makeSession(root: string, dir: string, anchor: SessionAnchor, diff: Dif
       comments,
       ...(concerns.length === 0 ? {} : { concerns }),
       ...(resolved.length === 0 ? {} : { resolved }),
+      ...(excluded.comments.length + excluded.concerns.length === 0 ? {} : { excluded }),
     };
   };
   const priorReview = (mode: ReviewMode, before: PlanVersion | null): Review | null => {
@@ -361,7 +362,7 @@ function makeSession(root: string, dir: string, anchor: SessionAnchor, diff: Dif
     const done = (mode === "walk" ? walkReviews() : reviews().filter((r) => r.review.mode === mode))
       .filter((r) => below(r.version))
       .at(-1);
-    const unfinished = draftVersions(mode)
+    const unfinished = draftVersions()
       .filter((v) => below(v) && v > (done?.version ?? 0))
       .sort((a, b) => a - b)
       .at(-1);
@@ -389,7 +390,7 @@ function makeSession(root: string, dir: string, anchor: SessionAnchor, diff: Dif
     writeDraft: (draft) => writeJson(draftPath, draft),
     writePrompt: (text) => writeText(promptPath, text),
     writeReview: (review) => {
-      const path = join(reviewsDir(review.mode), `v${review.planVersion}.json`);
+      const path = join(reviewsDir(), `v${review.planVersion}.json`);
       if (existsSync(path)) throw new SessionFileError(`${path} is already written`);
       writeJson(path, review);
     },

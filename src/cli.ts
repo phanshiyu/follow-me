@@ -105,11 +105,11 @@ Split your own branch:
                                             --name; never on <branch> or a checked-out branch;
                                             refuses a commit with a file that does not parse
                                             unless --allow-syntax-errors
-  review [--port <n>] [--detach] [--no-open] [--wait [--timeout <seconds>]]
-                                            open the plan review, commit by commit; --wait
-                                            returns only once the review ends
-  feedback [--walk] [--branch <name>]       print the latest plan review as markdown, or with
-                                            --walk the latest code review
+  review [--base <ref>] [--branch <name>] [--port <n>] [--detach] [--no-open]
+         [--wait [--timeout <seconds>]]     open the review, commit by commit; --wait returns
+                                            only once the review ends. After apply it reviews
+                                            your split; otherwise it plans for a reader and
+                                            reviews the code, applying nothing
   status                                    show the session's plans, reviews, lock and the
                                             branch apply writes
 
@@ -128,15 +128,17 @@ Interactive loop (while the review page is open):
                                             --lines are change lines of the unit, commits count
                                             from 1; with no target it is about the whole plan.
                                             watch leaves these out like your replies
-  report                                  print the consolidated report of the open review, or
-                                            of the last one that ended: issues by file and line
-                                            in both voices, then questions with answers
+  report [--json] [--markdown] [--branch <name>]
+                                            print the report of the open review, or of the last
+                                            one that ended. Markdown lists issues by file and
+                                            line in both voices, then questions with answers;
+                                            --json lists the items to post to a merge request
+                                            (path, lines, severity, body, thread, excluded)
   apply, while the page is open, swaps it to the new plan version in place, same URL.
 
-Review someone else's branch:
-  walk [--base <ref>] [--branch <name>] [--port <n>] [--detach] [--no-open]
-                                            watch a branch being written, narrated, and
-                                            review its code; nothing is applied
+Old names, still working:
+  walk                                      is review; prints one line saying so
+  feedback [--walk]                         is report; prints one line saying so
 
 Review server:
   server status                             show the review server and the sessions it hosts
@@ -157,8 +159,8 @@ Setup:
   --version                                 print the version
   help                                      print this
 
---walk writes the prompt for a reviewer: a story with narration instead of a split.
-review and walk share one server per user: a running one hosts the session and the command
+--walk writes the prompt for a reviewer: a story with notes instead of a split.
+review shares one server per user: a running one hosts the session and the command
 prints its URL; otherwise the command serves until its review ends, or with --detach starts the
 server in the background. --port taken by another program falls back to a free port.
 --force lets apply move a branch follow-me did not create; it never allows <branch> itself.
@@ -627,8 +629,8 @@ function latestPlan(session: Session): { version: PlanVersion; plan: ValidPlan }
 
 type Prepared = { readonly version: PlanVersion; readonly plan: ValidPlan };
 
-function announce(mode: ReviewMode, url: string, args: Args): void {
-  say(`follow-me ${mode === "walk" ? "code review" : "review"}: ${url}`);
+function announce(url: string, args: Args): void {
+  say(`follow-me review: ${url}`);
   if (!args.flags.has("no-open")) openBrowser(url);
 }
 
@@ -663,10 +665,10 @@ async function hostReview(
   const home = stateDir();
   const open = await openOnServer(session, mode);
   if (open !== null) {
-    announce(mode, sessionUrl(open.port, open.summary), args);
+    announce(sessionUrl(open.port, open.summary), args);
     return { kind: "elsewhere", ...open };
   }
-  return locked(session, mode === "walk" ? "walk" : "review", async (held) => {
+  return locked(session, "review", async (held) => {
     const prepared = await prepare();
     if (prepared === null) return { kind: "refused" };
     const registration: Registration = {
@@ -688,12 +690,12 @@ async function hostReview(
 
     if (started.kind === "attached") {
       const summary = await registerWith(started.port, registration);
-      announce(mode, sessionUrl(started.port, summary), args);
+      announce(sessionUrl(started.port, summary), args);
       return { kind: "elsewhere", port: started.port, summary };
     }
     const { host } = started;
     const { summary, done } = await host.register(registration);
-    announce(mode, sessionUrl(host.port, summary), args);
+    announce(sessionUrl(host.port, summary), args);
     const review = await done;
     if (review === null) return { kind: "stopped" };
     report(review);
@@ -715,18 +717,10 @@ function exitCode(hosted: Hosted): number {
   return hosted.kind === "refused" || hosted.kind === "stopped" ? 1 : 0;
 }
 
-function alreadyReviewed(
-  session: Session,
-  mode: ReviewMode,
-  version: PlanVersion,
-  args: Args,
-): boolean {
-  if (!reviewsOf(session, mode).some((r) => r.version === version)) return false;
-  const branch = branchFlag(args);
+function alreadyReviewed(session: Session, version: PlanVersion, args: Args): boolean {
+  if (!reviewsOf(session).some((r) => r.version === version)) return false;
   console.error(
-    mode === "walk"
-      ? `follow-me: plan v${version} already has a code review; read it with \`follow-me feedback --walk${branch}\``
-      : `follow-me: plan v${version} already has a review; read it with \`follow-me feedback${branch}\`, then run \`follow-me split${branch}\` for the next plan`,
+    `follow-me: plan v${version} already has a review; read it with \`follow-me report${branchFlag(args)}\``,
   );
   return true;
 }
@@ -755,14 +749,16 @@ function timeoutOf(args: Args): number | undefined {
   return seconds;
 }
 
-/** The reviews in this mode's slot, oldest first. */
-function reviewsOf(session: Session, mode: ReviewMode) {
-  return mode === "walk" ? session.walkReviews() : session.reviews();
+/** Every finished review, oldest first, including reviewer reviews older builds stored apart. */
+function reviewsOf(session: Session): StoredReview[] {
+  const seen = new Set<PlanVersion>();
+  return [...session.reviews(), ...session.walkReviews()]
+    .filter((r) => !seen.has(r.version) && seen.add(r.version))
+    .sort((a, b) => a.version - b.version);
 }
 
-function savedReview(session: Session, mode: ReviewMode, version: PlanVersion): Review | null {
-  const stored = reviewsOf(session, mode).find((r) => r.version === version);
-  return stored?.review ?? null;
+function savedReview(session: Session, version: PlanVersion): Review | null {
+  return reviewsOf(session).find((r) => r.version === version)?.review ?? null;
 }
 
 /**
@@ -779,32 +775,49 @@ async function waitForEnd(
     if (Date.now() >= deadline) return "timeout";
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  return savedReview(session, hosted.summary.mode, hosted.summary.version);
+  return savedReview(session, hosted.summary.version);
 }
 
-function reportSplit(review: Review): void {
+function reportSaved(review: Review): void {
   say(`review v${review.planVersion} saved with ${plural(review.comments.length, "comment")}`);
-  next("follow-me feedback");
+  next("follow-me report");
 }
 
 function prepareSplit(session: Session, args: Args): () => Promise<Prepared | null> {
   return async () => {
     const latest = latestPlan(session);
-    if (latest === null || alreadyReviewed(session, "split", latest.version, args)) return null;
+    if (latest === null || alreadyReviewed(session, latest.version, args)) return null;
     return latest;
   };
 }
 
+/**
+ * Author mode when a split branch was applied for the latest plan: the plan is the author's own
+ * and the review is of it. Otherwise the reader is a reviewer meeting the branch, so the plan only
+ * orders the reading and nothing is applied. The wire keeps calling that mode "walk".
+ */
+function reviewMode(session: Session): ReviewMode {
+  const applied = session.applied();
+  const latest = session.plans().at(-1);
+  return applied !== null && latest !== undefined && applied.version === latest.version
+    ? "split"
+    : "walk";
+}
+
+/** Hosts the review of the session: the plan for its author, or the code for a reviewer. */
 async function review(cwd: string, args: Args): Promise<number> {
-  const session = await openSession(cwd);
+  const session = await openFresh(cwd, args);
   const timeout = timeoutOf(args);
   if (timeout !== undefined && !args.flags.has("wait")) {
     throw new UsageError("--timeout only applies with --wait");
   }
-  const hosted = await hostReview(session, "split", args, prepareSplit(session, args), reportSplit);
+  const open = await openOnServer(session, null);
+  const mode = open?.summary.mode ?? reviewMode(session);
+  const prepare = mode === "split" ? prepareSplit(session, args) : () => walkPlan(session, args);
+  const hosted = await hostReview(session, mode, args, prepare, reportSaved);
   if (hosted.kind !== "elsewhere") return exitCode(hosted);
   if (!args.flags.has("wait")) {
-    next("end the review on the page, then follow-me feedback");
+    next("end the review on the page, then follow-me report");
     return 0;
   }
   const ended = await waitForEnd(session, hosted, timeout);
@@ -815,7 +828,7 @@ async function review(cwd: string, args: Args): Promise<number> {
     return 1;
   }
   if (ended === null) return exitCode({ kind: "stopped" });
-  reportSplit(ended);
+  reportSaved(ended);
   return 0;
 }
 
@@ -870,8 +883,8 @@ async function split(cwd: string, args: Args): Promise<number> {
   say(headline(session));
   const open = await openOnServer(session, "split");
   if (open !== null) {
-    announce("split", sessionUrl(open.port, open.summary), args);
-    next("end the review on the page, then follow-me feedback");
+    announce(sessionUrl(open.port, open.summary), args);
+    next("end the review on the page, then follow-me report");
     return 0;
   }
   const need = draftNeed(session, cwd, args);
@@ -888,10 +901,10 @@ async function split(cwd: string, args: Args): Promise<number> {
     "split",
     detached,
     prepareSplit(session, args),
-    reportSplit,
+    reportSaved,
   );
   if (hosted.kind !== "elsewhere") return exitCode(hosted);
-  next("end the review on the page, then follow-me feedback");
+  next("end the review on the page, then follow-me report");
   return 0;
 }
 
@@ -929,34 +942,22 @@ function walkablePlan(session: Session): Prepared | null {
   return verdict.ok ? { version: session.freeze(verdict.plan), plan: verdict.plan } : null;
 }
 
+/** The old name of review; it prints one line saying so and goes on. */
 async function walk(cwd: string, args: Args): Promise<number> {
-  const session = await openFresh(cwd, args);
-  const report = (review: Review) => {
-    const saved = join(session.reviewsDir("walk"), `v${review.planVersion}.json`);
-    say(
-      `code review saved to ${relative(cwd, saved)} with ${plural(review.comments.length, "comment")}`,
-    );
-    next(
-      `follow-me feedback --walk${branchFlag(args)}, which prints it as a code review for the author`,
-    );
-  };
-  const hosted = await hostReview(session, "walk", args, () => walkPlan(session, args), report);
-  if (hosted.kind === "elsewhere") {
-    next(`end the code review on the page, then follow-me feedback --walk${branchFlag(args)}`);
-  }
-  return exitCode(hosted);
+  console.error("follow-me: walk is now review; running review");
+  return review(cwd, args);
 }
 
 async function walkPlan(session: Session, args: Args): Promise<Prepared | null> {
   const latest = walkablePlan(session);
   if (latest === null) {
     say(`no plan for ${session.anchor.branch} yet.`);
-    say("Have a coding agent follow the prompt, then walk again:");
+    say("Have a coding agent follow the prompt, then review again:");
     say(`  follow-me prompt --walk${branchFlag(args)}`);
-    say(`  follow-me walk${branchFlag(args)}`);
+    say(`  follow-me review${branchFlag(args)}`);
     return null;
   }
-  return alreadyReviewed(session, "walk", latest.version, args) ? null : latest;
+  return alreadyReviewed(session, latest.version, args) ? null : latest;
 }
 
 /** The consolidated report of a saved review, or null after saying why it cannot be rendered. */
@@ -988,39 +989,18 @@ function renderStored(
   return renderReport(stored.review, verdict.plan.commits, session.diff.units, opts);
 }
 
-async function feedback(cwd: string, args: Args): Promise<number> {
-  const session = await openSession(cwd, sessionOpts(args));
-  const walk = args.flags.has("walk");
-  const walks = session.walkReviews();
-  const stored = walk ? walks.at(-1) : session.reviews().findLast((r) => r.review.mode === "split");
-  if (stored === undefined) {
-    const branch = branchFlag(args);
-    console.error(
-      walk
-        ? `follow-me: no code review yet, run \`follow-me walk${branch}\` first`
-        : walks.length > 0
-          ? `follow-me: no plan review yet; \`follow-me feedback --walk${branch}\` prints the code review`
-          : "follow-me: no review yet, run `follow-me review` first",
-    );
-    return 1;
+/**
+ * The report of the hosted review as it stands, else of the latest one that ended. --json lists
+ * the items to carry to a merge request; --markdown, the default, reads as the agent's to-do.
+ * --walk keeps reading only reviewer-mode reviews, as `feedback --walk` did.
+ */
+async function report(cwd: string, args: Args, walkOnly = false): Promise<number> {
+  if (args.flags.has("json") && args.flags.has("markdown")) {
+    throw new UsageError("--json and --markdown cannot be used together");
   }
-  const text = renderStored(session, stored);
-  if (text === null) return 1;
-  process.stdout.write(text);
-  say();
-  next(
-    stored.review.mode === "walk"
-      ? "hand this to the branch's author"
-      : `hand this to your agent, then follow-me check${branchFlag(args)}`,
-  );
-  return 0;
-}
-
-/** The consolidated report of the hosted review as it stands, else of the last one that ended. */
-async function report(cwd: string, args: Args): Promise<number> {
   const session = await openSession(cwd, sessionOpts(args));
   const format = args.flags.has("json") ? "json" : "markdown";
-  const open = await openOnServer(session, null);
+  const open = walkOnly ? null : await openOnServer(session, null);
   if (open !== null) {
     const text = await fetchReport(open.port, open.summary, format);
     process.stdout.write(
@@ -1028,7 +1008,7 @@ async function report(cwd: string, args: Args): Promise<number> {
     );
     return 0;
   }
-  const ended = [...session.reviews(), ...session.walkReviews()].sort((a, b) =>
+  const ended = (walkOnly ? session.walkReviews() : reviewsOf(session)).sort((a, b) =>
     a.review.endedAt.localeCompare(b.review.endedAt),
   );
   const stored = ended.at(-1);
@@ -1040,6 +1020,12 @@ async function report(cwd: string, args: Args): Promise<number> {
   if (text === null) return 1;
   process.stdout.write(text);
   return 0;
+}
+
+/** The old name of report. */
+async function feedback(cwd: string, args: Args): Promise<number> {
+  console.error("follow-me: feedback is now report; printing the same");
+  return report(cwd, args, args.flags.has("walk"));
 }
 
 /** Events the reviewer caused; the agent's own replies, explanations and version swaps are not news. */
@@ -1456,7 +1442,10 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
         return await split(cwd, parseArgs(rest, spec));
       }
       case "review": {
-        const spec = { values: ["port", "timeout"], flags: ["no-open", "detach", "wait"] };
+        const spec = {
+          values: ["base", "branch", "port", "timeout"],
+          flags: ["no-open", "detach", "wait"],
+        };
         return await review(cwd, parseArgs(rest, spec));
       }
       case "walk": {
@@ -1466,7 +1455,10 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
       case "server":
         return await serverCommand(rest);
       case "feedback":
-        return await feedback(cwd, parseArgs(rest, { values: ["branch"], flags: ["walk"] }));
+        return await feedback(
+          cwd,
+          parseArgs(rest, { values: ["branch"], flags: ["walk", "json", "markdown"] }),
+        );
       case "watch": {
         const spec = { values: ["since", "timeout", "branch"], flags: ["json", "follow"] };
         return await watch(cwd, parseArgs(rest, spec));
@@ -1478,7 +1470,10 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
         return await explain(cwd, parseArgs(rest, spec));
       }
       case "report":
-        return await report(cwd, parseArgs(rest, { values: ["branch"], flags: ["json"] }));
+        return await report(
+          cwd,
+          parseArgs(rest, { values: ["branch"], flags: ["json", "markdown"] }),
+        );
       case "clean": {
         const args = parseArgs(rest, { flags: ["all", "dry-run"] });
         const opts = { all: args.flags.has("all"), dryRun: args.flags.has("dry-run") };

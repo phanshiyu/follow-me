@@ -236,10 +236,10 @@ test("extract, check, apply and status drive the whole flow from the command lin
     ].join("\n"),
     err: "",
   });
-  assert.deepEqual(run(repo.dir, "feedback"), {
+  assert.deepEqual(run(repo.dir, "report"), {
     code: 1,
     out: "",
-    err: "follow-me: no review yet, run `follow-me review` first\n",
+    err: "follow-me: no review is open and none has ended; run `follow-me review` first\n",
   });
   const prompt = run(repo.dir, "prompt");
   assert.equal(prompt.code, 0, prompt.err);
@@ -326,7 +326,7 @@ test("plan without --naive says there is no built-in planner", (t) => {
   });
 });
 
-test("each step of a review names the next one, ending with feedback for the agent", async (t) => {
+test("each step of a review names the next one, ending with report for the agent", async (t) => {
   const { run, spawnCli } = cliIn(t);
   const repo = makeFixtureRepo();
   t.after(repo.cleanup);
@@ -346,15 +346,17 @@ test("each step of a review names the next one, ending with feedback for the age
   assert.deepEqual(await served.exited, [0, null]);
   assert.deepEqual(served.out().split("\n").slice(1, 3), [
     "review v1 saved with 0 comments",
-    "next: follow-me feedback",
+    "next: follow-me report",
   ]);
-  const feedback = run(repo.dir, "feedback");
-  assert.equal(feedback.code, 0, feedback.err);
-  assert.deepEqual(feedback.out.split("\n").slice(-3), [
-    "",
-    "next: hand this to your agent, then follow-me check",
-    "",
-  ]);
+  const report = run(repo.dir, "report");
+  assert.equal(report.code, 0, report.err);
+  assert.equal(report.out, "# Review of plan v1\n\nNo comments.\n");
+  const old = run(repo.dir, "feedback");
+  assert.deepEqual(
+    [old.code, old.out, old.err],
+    [0, report.out, "follow-me: feedback is now report; printing the same\n"],
+  );
+  assert.equal(run(repo.dir, "report", "--json").out, "[]\n");
 });
 
 test("--version, --help and a directory outside any repo answer like other CLIs", (t) => {
@@ -426,7 +428,7 @@ test("split with a valid draft applies it and hosts the review in the background
     "signing: off",
     `proof: feature-split^{tree} ${tree} equals feature^{tree} ${tree}`,
     `follow-me review: ${url}`,
-    "next: end the review on the page, then follow-me feedback",
+    "next: end the review on the page, then follow-me report",
     "",
   ]);
   const state = JSON.parse(await (await fetch(new URL("api/state", url))).text());
@@ -460,10 +462,10 @@ test("review --wait returns once the review attached to ends", async (t) => {
   assert.deepEqual(waiting.out().split("\n"), [
     `follow-me review: ${url}`,
     "review v1 saved with 0 comments",
-    "next: follow-me feedback",
+    "next: follow-me report",
     "",
   ]);
-  assert.equal(run(repo.dir, "feedback").code, 0);
+  assert.equal(run(repo.dir, "report").code, 0);
 });
 
 test("prompt --walk writes for a reviewer and names the branch in the check command", (t) => {
@@ -488,17 +490,17 @@ test("walk without a plan prints the two commands to run instead", (t) => {
     code: 1,
     out: [
       "no plan for feature yet.",
-      "Have a coding agent follow the prompt, then walk again:",
+      "Have a coding agent follow the prompt, then review again:",
       "  follow-me prompt --walk",
-      "  follow-me walk",
+      "  follow-me review",
       "",
     ].join("\n"),
-    err: "",
+    err: "follow-me: walk is now review; running review\n",
   });
 
   writeFileSync(join(repo.dir, "notes.txt"), "moved\n");
   git(repo.dir, "commit", "-qam", "move");
-  const moved = run(repo.dir, "walk", "--no-open", "--branch", "feature");
+  const moved = run(repo.dir, "review", "--no-open", "--branch", "feature");
   assert.equal(moved.code, 1);
   const lines = moved.out.split("\n");
   assert.equal(
@@ -507,100 +509,78 @@ test("walk without a plan prints the two commands to run instead", (t) => {
   );
   assert.deepEqual(lines.slice(-3), [
     "  follow-me prompt --walk --branch feature",
-    "  follow-me walk --branch feature",
+    "  follow-me review --branch feature",
     "",
   ]);
 });
 
-test("walk serves a frozen plan in walk mode and saves a code review on end", async (t) => {
+test("review without an applied split is a reviewer's code review, saved beside the author's", async (t) => {
   const { home, run, spawnCli } = cliIn(t);
   const repo = makeFixtureRepo();
   t.after(repo.cleanup);
   assert.equal(run(repo.dir, "extract").code, 0);
   const diff = await loadDiff(repo.dir, "main", "feature");
   writeWholeDraft(repo.dir, repo.base, repo.branch, [...diff.units.keys()]);
-  assert.equal(run(repo.dir, "apply").code, 0);
 
   const port = await freePort();
-  const walk = spawnCli(repo.dir, "walk", "--no-open", "--port", String(port));
-  const url = await walk.url;
+  const reviewer = spawnCli(repo.dir, "review", "--no-open", "--port", String(port));
+  const url = await reviewer.url;
   assert.match(url, new RegExp(`^http://127\\.0\\.0\\.1:${port}/s/[0-9a-f]{12}/$`));
-  assert.equal(serverRecord(home)?.pid, walk.child.pid);
+  assert.equal(serverRecord(home)?.pid, reviewer.child.pid);
+  assert.equal(existsSync(join(repo.dir, ".follow-me", "feature", "applied.json")), false);
 
   const state = JSON.parse(await (await fetch(new URL("api/state", url))).text());
   assert.equal(state.mode, "walk");
   assert.equal(state.commits[0].narration, "I write it all at once.");
   const ended = await fetch(new URL("api/end", url), { method: "POST" });
   assert.equal(ended.status, 200);
-  const [code] = await walk.exited;
+  const [code] = await reviewer.exited;
   assert.equal(code, 0);
   assert.equal(
-    walk.out().split("\n").slice(1).join("\n"),
-    [
-      "code review saved to .follow-me/feature/reviews/walk/v1.json with 0 comments",
-      "next: follow-me feedback --walk, which prints it as a code review for the author",
-      "the server exits in 1s unless another review starts; ctrl-c stops it now",
-      "",
-    ].join("\n"),
+    reviewer.out().split("\n").slice(1, 3).join("\n"),
+    "review v1 saved with 0 comments\nnext: follow-me report",
   );
   assert.equal(existsSync(join(home, "server.json")), false);
   const review = JSON.parse(
-    readFileSync(join(repo.dir, ".follow-me", "feature", "reviews", "walk", "v1.json"), "utf8"),
+    readFileSync(join(repo.dir, ".follow-me", "feature", "reviews", "v1.json"), "utf8"),
   );
   assert.equal(review.mode, "walk");
   assert.equal(review.planVersion, 1);
   assert.equal(
-    run(repo.dir, "feedback", "--walk").out,
-    "# Code review: feature (1 commit, no issues)\n\nThe reviewer raised no issues.\n\nnext: hand this to the branch's author\n",
+    run(repo.dir, "report").out,
+    "# Code review: feature (1 commit, no issues)\n\nThe reviewer raised no issues.\n",
   );
 });
 
-test("a reviewer walks a plan the author already reviewed, and feedback keeps the two apart", async (t) => {
-  const { run, spawnCli } = cliIn(t);
+test("a code review stored in the old reviews/walk slot is still read by feedback --walk", async (t) => {
+  const { run } = cliIn(t);
   const repo = makeFixtureRepo();
   t.after(repo.cleanup);
   assert.equal(run(repo.dir, "extract").code, 0);
   const diff = await loadDiff(repo.dir, "main", "feature");
   writeWholeDraft(repo.dir, repo.base, repo.branch, [...diff.units.keys()]);
+  assert.equal(run(repo.dir, "check").code, 0);
   assert.equal(run(repo.dir, "apply").code, 0);
-
-  const authored = spawnCli(repo.dir, "review", "--no-open", "--port", "0");
-  const reviewUrl = await authored.url;
-  const anchor = { kind: "message", commit: 0 };
-  const context = { commitMessage: "feat: everything", path: null };
-  const comment = (body: string) => ({
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ anchor, context, body }),
-  });
-  await fetch(new URL("api/comments", reviewUrl), comment("say what the guard is for"));
-  await fetch(new URL("api/end", reviewUrl), { method: "POST" });
-  assert.deepEqual(await authored.exited, [0, null]);
-  assert.deepEqual(run(repo.dir, "feedback", "--walk"), {
-    code: 1,
-    out: "",
-    err: "follow-me: no code review yet, run `follow-me walk` first\n",
-  });
-
-  const walked = spawnCli(repo.dir, "walk", "--no-open", "--port", "0");
-  const walkUrl = await walked.url;
-  await fetch(new URL("api/comments", walkUrl), comment("this reads well"));
-  await fetch(new URL("api/end", walkUrl), { method: "POST" });
-  assert.deepEqual(await walked.exited, [0, null]);
-
-  const plan = run(repo.dir, "feedback");
-  assert.equal(plan.code, 0, plan.err);
-  assert.equal(plan.out.includes("say what the guard is for"), true);
-  assert.equal(plan.out.includes("this reads well"), false);
-  const code = run(repo.dir, "feedback", "--walk");
-  assert.equal(code.code, 0, code.err);
-  assert.equal(code.out.split("\n")[0], "# Code review: feature (1 commit, 1 issue: 1 unrated)");
-  assert.equal(code.out.includes("this reads well"), true);
-  assert.equal(code.out.includes("say what the guard is for"), false);
-  assert.deepEqual(run(repo.dir, "status").out.split("\n").slice(6, 8), [
-    "reviews: v1 (latest has 1 comment, 1 open)",
-    "code reviews: v1 (latest has 1 comment)",
-  ]);
+  const slot = join(repo.dir, ".follow-me", "feature", "reviews", "walk");
+  mkdirSync(slot, { recursive: true });
+  writeFileSync(
+    join(slot, "v1.json"),
+    JSON.stringify({
+      schema: "follow-me/review@1",
+      mode: "walk",
+      planVersion: 1,
+      planHash: "x",
+      endedAt: "2026-01-01T00:00:00.000Z",
+      comments: [],
+    }),
+  );
+  const old = run(repo.dir, "feedback", "--walk");
+  assert.equal(old.code, 0, old.err);
+  assert.equal(old.out.split("\n")[0], "# Code review: feature (1 commit, no issues)");
+  assert.equal(
+    run(repo.dir, "status").out.split("\n").includes("code reviews: v1 (latest has 0 comments)"),
+    true,
+  );
 });
 
 function writeTwoCommitDraft(dir: string, base: string, tip: string, ids: readonly string[]) {
@@ -776,17 +756,18 @@ test("while the server hosts a review, apply writes under the server and review 
   assert.equal(run(repo.dir, "extract").code, 0);
   const diff = await loadDiff(repo.dir, "main", "feature");
   writeWholeDraft(repo.dir, repo.base, repo.branch, [...diff.units.keys()]);
+  assert.equal(run(repo.dir, "apply").code, 0);
 
   const served = spawnCli(repo.dir, "review", "--no-open", "--port", "0");
   const url = await served.url;
   const pid = served.child.pid;
-  // The plan is unchanged, so apply writes the branch and finds the page already on v1.
+  // The plan is unchanged, so apply leaves the branch and finds the page already on v1.
   const applied = run(repo.dir, "apply");
   assert.equal(applied.code, 0, applied.err);
   assert.ok(applied.out.includes(`plan v1 is already open: ${url}\n`));
   assert.deepEqual(run(repo.dir, "review", "--no-open"), {
     code: 0,
-    out: `follow-me review: ${url}\nnext: end the review on the page, then follow-me feedback\n`,
+    out: `follow-me review: ${url}\nnext: end the review on the page, then follow-me report\n`,
     err: "",
   });
   assert.deepEqual(run(repo.dir, "status").out.split("\n").slice(2, 4), [
@@ -1016,6 +997,7 @@ async function reviewing(t: TestContext) {
   assert.equal(cli.run(repo.dir, "extract").code, 0);
   const diff = await loadDiff(repo.dir, "main", "feature");
   writeWholeDraft(repo.dir, repo.base, repo.branch, [...diff.units.keys()]);
+  assert.equal(cli.run(repo.dir, "apply").code, 0);
   const served = cli.spawnCli(repo.dir, "review", "--no-open", "--port", "0");
   const url = await served.url;
   const reviews = join(repo.dir, ".follow-me", "feature", "reviews");

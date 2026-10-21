@@ -307,7 +307,7 @@ function indexPage(rows: readonly IndexRow[], now: number): string {
     items.length === 0
       ? `    <section class="empty">
       <h1>No sessions yet</h1>
-      <p>Run <code>follow-me review</code> to review a plan, or <code>follow-me walk</code> to read a branch someone else wrote. Each one opens here.</p>
+      <p>Ask your coding agent to review a branch with follow-me. Each review opens here.</p>
       <p><a href="https://github.com/phanshiyu/follow-me#readme">How follow-me works</a></p>
     </section>`
       : `    <h1>Sessions</h1>

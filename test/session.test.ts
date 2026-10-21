@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -144,11 +145,18 @@ test("reviews round-trip through the boundary parser and are written once", asyn
   const { mode: _, ...older } = review;
   assert.deepEqual(parseReview(older), review);
   assert.equal(parseReview({ ...review, mode: "solo" }), 'mode is not "split" or "walk"');
-  const walk = parseReview({ ...review, mode: "walk" });
+  // Every new review goes to reviews/, whatever its mode; older builds' reviews/walk/ is read.
+  const walk = parseReview({ ...review, mode: "walk", planVersion: 5 });
   assert.ok(typeof walk !== "string", String(walk));
   session.writeReview(walk);
   assert.throws(() => session.writeReview(walk), SessionFileError);
-  assert.equal(existsSync(join(session.dir, "reviews", "walk", "v1.json")), true);
+  assert.equal(existsSync(join(session.dir, "reviews", "v5.json")), true);
+  rmSync(join(session.dir, "reviews", "v5.json"));
+  mkdirSync(join(session.dir, "reviews", "walk"), { recursive: true });
+  writeFileSync(
+    join(session.dir, "reviews", "walk", "v1.json"),
+    JSON.stringify({ ...review, mode: "walk" }),
+  );
   writeFileSync(
     join(session.dir, "reviews", "v2.json"),
     JSON.stringify({ ...review, mode: "walk", planVersion: 2 }),
