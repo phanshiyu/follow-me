@@ -677,7 +677,7 @@ function renderAnswers() {
         { class: "answer-entry" },
         el("button", {
           type: "button",
-          class: card.resolved ? "answer-row done" : "answer-row",
+          class: card.resolved ? "answer-row settled" : "answer-row",
           text: `${statusLine(card)} · ${firstLine(card.comment.body)}`,
           onclick: () => showAnswer(card),
         }),

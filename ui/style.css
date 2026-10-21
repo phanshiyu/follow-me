@@ -1070,7 +1070,7 @@ body.index {
   white-space: nowrap;
 }
 
-.answer-row.done {
+.answer-row.settled {
   color: var(--muted);
 }
 
