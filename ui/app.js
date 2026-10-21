@@ -6,6 +6,7 @@ import {
   commitOf,
   describeLines,
   diagramAt,
+  duration,
   hasDiagrams,
   hasNarration,
   introOf,
@@ -94,7 +95,9 @@ async function renderSwitcher() {
 }
 
 function report(error) {
-  $("status").textContent = error ? error.message : "";
+  const status = $("status");
+  status.textContent = error ? error.message : "";
+  status.classList.toggle("error", Boolean(error));
 }
 
 async function guarded(action) {
@@ -350,11 +353,44 @@ function diffLine(unit, commit, index, mine) {
         if (event.shiftKey) event.preventDefault();
       },
       onclick: (event) => pickLine(unit, commit.index, index, event.shiftKey),
+      onkeydown: (event) => lineKeys(event, unit, commit.index, index),
+      tabindex: "-1",
+      "aria-label": `${line.op === "+" ? "Added" : "Removed"}: ${line.text.trim() || "blank line"}`,
     },
     gutter,
     el("span", { class: "op", text: line.op }),
     text,
   );
+}
+
+/**
+ * Inside a hunk the commit's own lines are one tab stop: arrows move between them, Space or
+ * Enter picks one for a comment and Shift extends the pick.
+ */
+function lineKeys(event, unit, commitIndex, index) {
+  const lines = [...event.currentTarget.parentElement.querySelectorAll(".dl.mine:not(.pending)")];
+  const at = lines.indexOf(event.currentTarget);
+  const move = { ArrowDown: 1, ArrowUp: -1 }[event.key];
+  if (move !== undefined) {
+    const to = lines[at + move];
+    if (to) {
+      event.currentTarget.tabIndex = -1;
+      to.tabIndex = 0;
+      to.focus();
+    }
+  } else if (event.key === " " || event.key === "Enter") {
+    pickLine(unit, commitIndex, index, event.shiftKey);
+  } else return;
+  event.preventDefault();
+  event.stopPropagation();
+}
+
+/** Gives each hunk one tab stop, on its first own line. */
+function rovingLines() {
+  for (const diff of $("main").querySelectorAll(".diff")) {
+    const first = diff.querySelector(".dl.mine:not(.pending)");
+    if (first) first.tabIndex = 0;
+  }
 }
 
 /** Lines a later commit adds, folded into one row that leads to that commit. */
@@ -444,29 +480,44 @@ function unitView(unit, commit) {
 
 function renderList() {
   const list = $("commits");
+  const hadFocus = list.contains(document.activeElement);
   list.replaceChildren(
     ...state.commits.map((commit, i) => {
       const count = state.comments.filter(
         (c) => c.anchor.kind !== "plan" && c.anchor.commit === commit.index,
       ).length;
+      const playing = player.view === "play" && i === selected;
       return el(
         "li",
-        {
-          class: i === selected ? "selected" : undefined,
-          onclick: () => select(i),
-        },
-        el("span", { class: "index", text: String(i + 1) }),
-        el("span", { class: "title", text: firstLine(commit.message) }),
-        player.view === "play" && i === selected
-          ? el("span", { class: "mark", "aria-label": "playing", text: "▶" })
-          : watched.has(i)
-            ? el("span", { class: "mark", "aria-label": "watched", text: "✓" })
+        { class: i === selected ? "selected" : undefined },
+        el(
+          "button",
+          {
+            type: "button",
+            class: "commit-row",
+            "aria-current": i === selected ? "step" : undefined,
+            onclick: () => select(i, { focus: true }),
+          },
+          el("span", { class: "index", text: String(i + 1) }),
+          el("span", { class: "title", text: firstLine(commit.message) }),
+          playing
+            ? el("span", { class: "mark", title: "Playing", text: "▶" })
+            : watched.has(i)
+              ? el("span", { class: "mark", title: "Watched", text: "✓" })
+              : null,
+          count > 0
+            ? el("span", {
+                class: "badge",
+                title: `${count} comment${count === 1 ? "" : "s"}`,
+                text: String(count),
+              })
             : null,
-        count > 0 ? el("span", { class: "badge", text: String(count) }) : null,
+        ),
       );
     }),
   );
   list.children[selected]?.scrollIntoView({ block: "nearest" });
+  if (hadFocus) list.children[selected]?.querySelector("button")?.focus({ preventScroll: true });
 }
 
 function renderPlanNote() {
@@ -549,6 +600,7 @@ function renderMain() {
   );
   main.scrollTop = scroll;
   applyPlayback();
+  rovingLines();
 }
 
 function render() {
@@ -561,15 +613,20 @@ function render() {
   }
 }
 
-function select(index) {
+/** Moves to a commit. A move the reviewer asked for takes focus to the commit heading. */
+function select(index, { focus = false } = {}) {
   const next = Math.max(0, Math.min(state.commits.length - 1, index));
-  if (player.view === "play") {
-    seek(beatStart(steps, introOf(beats, next)));
-    return;
+  if (player.view === "play") seek(beatStart(steps, introOf(beats, next)));
+  else {
+    selected = next;
+    render();
+    $("main").scrollTop = 0;
   }
-  selected = next;
-  render();
-  $("main").scrollTop = 0;
+  if (focus) focusHeading();
+}
+
+function focusHeading() {
+  stage.querySelector("h2")?.focus({ preventScroll: true });
 }
 
 function isWalk() {
@@ -598,6 +655,8 @@ const watched = new Set();
 let restartedAt = 0;
 /** Shown in the narration card until the next move, such as after a comment is saved. */
 let notice = null;
+/** Whether playback has run at all, so the ready card shows only before the first Play. */
+let started = false;
 let steps = [];
 let narrated = true;
 let voices = [];
@@ -676,6 +735,14 @@ function scrollToChunk(node) {
   const main = $("main");
   const offset = node.getBoundingClientRect().top - main.getBoundingClientRect().top;
   scrollMain(main.scrollTop + offset - main.clientHeight * 0.3);
+}
+
+/** What watching costs, shown before the first Play. */
+function readyText() {
+  const paths = new Set(state.units.map((u) => u.path));
+  const minutes = Math.max(1, Math.round(duration(steps) / 60_000));
+  const what = `${state.commits.length} commits · ${paths.size} files · about ${minutes} min at ${player.speed}x`;
+  return `${what}. Press Play or Space to watch the branch being written.`;
 }
 
 function setCard(text, kind) {
@@ -842,6 +909,11 @@ function applyPlayback() {
     main.querySelector(".commit-head")?.append(card);
     return;
   }
+  if (beat.kind === "intro" && player.position === 0 && !player.playing && !started) {
+    setCard(readyText(), "label");
+    main.querySelector(".commit-head .message")?.after(card);
+    return;
+  }
   if (beat.kind === "intro") {
     const note = narrated ? null : "This plan has no narration. Showing commit messages.";
     if (beat.narration !== null || (note !== null && beat.commit === 0)) {
@@ -919,8 +991,9 @@ function play() {
   if (player.view !== "play") enterPlay();
   if (player.position >= steps.length) seek(0);
   notice = null;
-  applyPlayback();
+  started = true;
   player.playing = true;
+  applyPlayback();
   synth?.resume();
   updatePlayer();
 }
@@ -963,13 +1036,15 @@ function stepBeat(delta) {
 }
 
 function nextCommit() {
-  if (player.view !== "play") return select(selected + 1);
+  if (player.view !== "play") return select(selected + 1, { focus: true });
   toBeat(introOf(beats, selected + 1));
+  focusHeading();
 }
 
 /** Restarts the commit; a second press within 1.5s goes to the previous one. */
 function previousCommit() {
-  if (player.view !== "play") return select(selected - 1);
+  if (player.view !== "play") return select(selected - 1, { focus: true });
+  focusHeading();
   const now = performance.now();
   const intro = introOf(beats, selected);
   const again = now - restartedAt < 1500 || currentBeat() === intro;
@@ -1087,7 +1162,7 @@ function setUpPlayer() {
     if (player.view === "play") enterBrowse();
     else play();
     // Space should now drive playback, not this button.
-    stage.querySelector("h2")?.focus({ preventScroll: true });
+    focusHeading();
   });
   updatePlayer();
 }
@@ -1096,37 +1171,71 @@ function hasUnsentText() {
   return [...drafts.values()].some((text) => text.trim() !== "");
 }
 
-async function endReview() {
-  if (
-    hasUnsentText() &&
-    !window.confirm("Some comment boxes have text you have not sent. End anyway?")
-  ) {
-    return;
+/** "2 comments on 2 commits and 1 on the whole plan", or "No comments". */
+function commentSummary() {
+  const onCommits = state.comments.filter((c) => c.anchor.kind !== "plan");
+  const general = state.comments.length - onCommits.length;
+  const commits = new Set(onCommits.map((c) => c.anchor.commit)).size;
+  const parts = [];
+  if (onCommits.length > 0) {
+    parts.push(
+      `${onCommits.length} comment${onCommits.length === 1 ? "" : "s"} on ${commits} commit${commits === 1 ? "" : "s"}`,
+    );
   }
-  await api("POST", "/api/end");
+  if (general > 0) parts.push(`${general} on the whole ${isWalk() ? "branch" : "plan"}`);
+  return parts.length === 0 ? "No comments" : parts.join(" and ");
+}
+
+/** Asks before ending, with what the review holds; resolves true to end. */
+function confirmEnd() {
+  const sheet = $("confirm-end");
+  const unsent = hasUnsentText() ? " Some comment boxes have text you have not sent." : "";
+  $("confirm-text").textContent = `${commentSummary()}.${unsent}`;
+  $("confirm-ok").textContent = $("end").textContent;
+  sheet.returnValue = "";
+  sheet.showModal();
+  return new Promise((resolve) => {
+    sheet.addEventListener("close", () => resolve(sheet.returnValue === "end"), { once: true });
+  });
+}
+
+async function endReview() {
+  if (player.playing) pause();
+  if (!(await confirmEnd())) return;
+  const { saved } = await api("POST", "/api/end");
   player.generation += 1;
   synth?.cancel();
-  const done = $("done");
-  const saved = `reviews/v${state.version}.json`;
-  done.replaceChildren(
-    isWalk()
-      ? el(
-          "p",
-          {},
-          `Code review saved to ${saved}. The author can run `,
-          el("code", { text: "follow-me feedback" }),
-          " to read it.",
-        )
-      : el(
-          "p",
-          {},
-          `Review saved to ${saved}. Run `,
-          el("code", { text: "follow-me feedback" }),
-          " or hand the session to your agent.",
-        ),
-    el("p", {}, el("a", { href: "/", text: "All sessions" })),
+  const at = saved.indexOf(".follow-me/");
+  const command = "follow-me feedback";
+  const copy = el("button", {
+    type: "button",
+    text: "Copy",
+    onclick: async () => {
+      await navigator.clipboard?.writeText(command).catch(() => {});
+      copy.textContent = "Copied";
+    },
+  });
+  $("done").replaceChildren(
+    el(
+      "section",
+      { class: "done-card", "aria-labelledby": "done-title" },
+      el("h1", { id: "done-title", text: isWalk() ? "Code review saved" : "Review saved" }),
+      el("p", { class: "muted", text: `${commentSummary()}.` }),
+      el("p", {}, el("code", { class: "path", text: at === -1 ? saved : saved.slice(at) })),
+      el(
+        "p",
+        { class: "next" },
+        isWalk() ? "The author reads it with " : "Next, run ",
+        el("code", { text: command }),
+        copy,
+      ),
+      isWalk() ? null : el("p", { class: "muted", text: "or hand the session to your agent." }),
+      el("p", {}, el("a", { href: "/", text: "All sessions" })),
+    ),
   );
-  done.hidden = false;
+  $("done").hidden = false;
+  $("done-title").setAttribute("tabindex", "-1");
+  $("done-title").focus();
 }
 
 /** Playback keys. Shift+arrows move by commit, plain arrows by chunk. */

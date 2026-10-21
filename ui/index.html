@@ -51,6 +51,14 @@
       </aside>
     </div>
     <div id="done" class="done" hidden></div>
+    <dialog id="confirm-end" class="keys" aria-labelledby="confirm-title">
+      <h2 id="confirm-title">End this review?</h2>
+      <p id="confirm-text"></p>
+      <form method="dialog" class="row">
+        <button id="confirm-ok" type="submit" value="end" class="primary">End review</button>
+        <button type="submit" value="keep">Keep reviewing</button>
+      </form>
+    </dialog>
     <dialog id="keys" class="keys" aria-labelledby="keys-title">
       <h2 id="keys-title">Keyboard shortcuts</h2>
       <dl>

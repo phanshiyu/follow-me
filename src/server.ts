@@ -2,7 +2,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { createServer } from "node:http";
-import { isAbsolute, join } from "node:path";
+import { homedir } from "node:os";
+import { basename, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isPlanVersion } from "./plan.ts";
 import { isLockToken } from "./session.ts";
@@ -278,16 +279,50 @@ function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 }
 
-function indexPage(sessions: readonly HostedSummary[]): string {
-  const rows = sessions.map((s) => {
-    const what = s.mode === "walk" ? "code review" : `review of plan v${s.version}`;
+/** "just now", "5 min ago", "2 h ago" or "3 days ago". */
+export function ago(ms: number): string {
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
+
+function tildePath(path: string): string {
+  const home = homedir();
+  return path === home || path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
+}
+
+type IndexRow = { readonly summary: HostedSummary; readonly openedAt: number };
+
+function indexPage(rows: readonly IndexRow[], now: number): string {
+  const items = rows.map(({ summary: s, openedAt }) => {
+    const mode =
+      s.mode === "walk"
+        ? '<span class="mode walk">code review</span>'
+        : `<span class="mode split">plan review v${s.version}</span>`;
     const count = `${s.comments} comment${s.comments === 1 ? "" : "s"}`;
-    return `      <li><a href="${s.url}">${escapeHtml(s.branch)}</a> <span class="muted">${what} · ${count} · ${escapeHtml(s.repo)}</span></li>`;
+    const repo = escapeHtml(basename(s.repo));
+    return `      <li>
+        <a class="session" href="${s.url}"><span class="repo">${repo}</span> <span class="branch">${escapeHtml(s.branch)}</span></a>
+        ${mode}
+        <span class="muted">${count} · opened ${ago(now - openedAt)}</span>
+        <span class="path muted">${escapeHtml(tildePath(s.repo))}</span>
+      </li>`;
   });
   const body =
-    rows.length === 0
-      ? '    <p class="muted">No sessions. Run follow-me review or follow-me walk in a repo.</p>'
-      : `    <ul class="session-index">\n${rows.join("\n")}\n    </ul>`;
+    items.length === 0
+      ? `    <section class="empty">
+      <h1>No sessions yet</h1>
+      <p>Run <code>follow-me review</code> to review a plan, or <code>follow-me walk</code> to read a branch someone else wrote. Each one opens here.</p>
+      <p><a href="https://github.com/phanshiyu/follow-me#readme">How follow-me works</a></p>
+    </section>`
+      : `    <h1>Sessions</h1>
+    <ul class="session-index">
+${items.join("\n")}
+    </ul>`;
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -298,8 +333,10 @@ function indexPage(sessions: readonly HostedSummary[]): string {
     <link rel="stylesheet" href="/style.css" />
   </head>
   <body class="index">
-    <h1>follow-me sessions</h1>
+    <header class="topbar"><strong>follow-me</strong></header>
+    <main class="index-main">
 ${body}
+    </main>
   </body>
 </html>
 `;
@@ -331,6 +368,7 @@ async function sendVendor(res: ServerResponse, file: URL): Promise<void> {
 /** One hosted review: its comments, its autosave chain, and how it ends. */
 function hostSession(id: SessionId, registration: Registration, loaded: Loaded) {
   const { state, reviewsDir } = loaded;
+  const openedAt = Date.now();
   const comments = new Map<string, Comment>(state.comments.map((c) => [c.id, c]));
   const unitIds = new Set<string>(state.units.map((u) => u.id));
   const draftFile = draftPath(reviewsDir, state.version);
@@ -376,6 +414,7 @@ function hostSession(id: SessionId, registration: Registration, loaded: Loaded) 
     id,
     registration,
     done,
+    openedAt,
     summary: (): HostedSummary => ({
       id,
       url: sessionPath(id),
@@ -540,7 +579,13 @@ export function startServer(opts: HostOptions): Promise<Host> {
     const vendor = method === "GET" ? vendorFile(path) : null;
     if (vendor) return sendVendor(res, vendor);
 
-    if (method === "GET" && path === "/") return sendHtml(res, 200, indexPage(sessions()));
+    if (method === "GET" && path === "/") {
+      const rows = [...registry.values()].map((h) => ({
+        summary: h.summary(),
+        openedAt: h.openedAt,
+      }));
+      return sendHtml(res, 200, indexPage(rows, Date.now()));
+    }
     if (method === "GET" && path === "/api/health") {
       return sendJson(res, 200, { app: HEALTH_APP, pid: process.pid });
     }
@@ -566,7 +611,7 @@ export function startServer(opts: HostOptions): Promise<Host> {
         return sendHtml(
           res,
           404,
-          '<!doctype html><title>follow-me</title><p>This session ended or never existed. <a href="/">All sessions</a></p>\n',
+          '<!doctype html><html lang="en"><head><meta charset="utf-8" /><meta name="color-scheme" content="light dark" /><title>follow-me</title><link rel="stylesheet" href="/style.css" /></head><body class="index"><header class="topbar"><strong>follow-me</strong></header><main class="index-main"><section class="empty"><h1>This session has ended</h1><p>It finished, or it never existed. <a href="/">All sessions</a></p></section></main></body></html>\n',
         );
       }
       return sendHtml(

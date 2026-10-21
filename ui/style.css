@@ -4,7 +4,7 @@
   --panel: #f6f7f9;
   --border: #d8dce2;
   --text: #1c2026;
-  --muted: #6a7280;
+  --muted: #5f6774;
   --accent: #2459d6;
   --accent-text: #ffffff;
   --add-bg: #e3f6e8;
@@ -84,21 +84,6 @@ body {
   color: var(--text);
   font-weight: 600;
   text-decoration: none;
-}
-
-body.index {
-  display: block;
-  height: auto;
-  padding: 16px 24px;
-}
-
-.session-index {
-  padding-left: 18px;
-}
-
-.session-index a {
-  color: var(--accent);
-  font-weight: 600;
 }
 
 .status {
@@ -211,24 +196,6 @@ button.link {
   padding: 0;
   overflow-y: auto;
   flex: 1;
-}
-
-.commit-list li {
-  display: flex;
-  gap: 8px;
-  padding: 8px 12px;
-  cursor: pointer;
-  border-left: 3px solid transparent;
-}
-
-.commit-list li:hover {
-  background: var(--bg);
-}
-
-.commit-list li.selected {
-  background: var(--bg);
-  border-left-color: var(--accent);
-  font-weight: 600;
 }
 
 .commit-list .index {
@@ -595,8 +562,10 @@ textarea {
 .done {
   position: fixed;
   inset: 0;
-  display: grid;
-  place-items: center;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: var(--bg);
   font-size: 16px;
   padding: 24px;
@@ -742,4 +711,152 @@ select:disabled {
   .unit.in-chunk .card {
     animation: none;
   }
+}
+
+.commit-row {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  border-left: 3px solid transparent;
+  border-radius: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+}
+
+.commit-row:hover {
+  background: var(--bg);
+}
+
+.commit-list li.selected .commit-row {
+  background: var(--bg);
+  border-left-color: var(--accent);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.status.error::before {
+  content: "⚠ ";
+}
+
+body.index {
+  display: block;
+  height: auto;
+  min-height: 100vh;
+  padding: 0;
+}
+
+.index-main {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.index-main h1 {
+  font-size: 20px;
+  margin: 8px 0 16px;
+}
+
+.session-index {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.session-index li {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 16px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+
+.session-index li:first-child {
+  border-top: none;
+}
+
+.session-index .session {
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.session-index .branch {
+  color: var(--accent);
+}
+
+.session-index .session:hover .branch {
+  text-decoration: underline;
+}
+
+.session-index .path {
+  grid-column: 1 / -1;
+  font: 12px var(--font-mono);
+}
+
+.mode {
+  justify-self: end;
+  padding: 0 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  background: var(--comment-bg);
+  color: var(--text);
+}
+
+.empty {
+  margin-top: 15vh;
+  text-align: center;
+}
+
+.empty a,
+.done-card a {
+  color: var(--accent);
+}
+
+.empty code,
+.done-card code {
+  font-family: var(--font-mono);
+  background: var(--panel);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.done-card {
+  width: min(520px, 100%);
+  padding: 24px 28px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  text-align: left;
+}
+
+.done-card h1 {
+  margin: 0 0 4px;
+  font-size: 20px;
+}
+
+.done-card h1:focus {
+  outline: none;
+}
+
+.done-card p {
+  margin: 8px 0;
+}
+
+.done-card .next {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#confirm-end .row {
+  display: flex;
+  gap: 8px;
 }

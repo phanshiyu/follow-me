@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { type TestContext, test } from "node:test";
 import type { Host, Loader, Registration, ReviewState } from "./server.ts";
 import {
+  ago,
   loadDraftComments,
   PortInUseError,
   parseRegistration,
@@ -377,8 +378,13 @@ test("one server hosts two sessions, lists them, and saves each review in its ow
     },
   ]);
   const index = await (await fetch(host.url)).text();
-  assert.ok(index.includes(`<li><a href="/s/${sessionIdOf(two)}/">feature</a>`));
-  assert.ok(index.includes(`review of plan v3 · 2 comments · /repos${two}`));
+  assert.ok(
+    index.includes(
+      `<a class="session" href="/s/${sessionIdOf(two)}/"><span class="repo">${basename(two)}</span> <span class="branch">feature</span></a>`,
+    ),
+  );
+  assert.ok(index.includes('<span class="mode split">plan review v3</span>'));
+  assert.ok(index.includes('<span class="muted">2 comments · opened just now</span>'));
 
   await Promise.all([post(urlOf(first), "api/end", {}), post(urlOf(second), "api/end", {})]);
   const [a, b] = await Promise.all([first.done, second.done]);
@@ -393,6 +399,14 @@ test("one server hosts two sessions, lists them, and saves each review in its ow
   );
   assert.deepEqual(released.sort(), [one, two].sort());
   assert.deepEqual(await jsonOf(await fetch(new URL("/api/sessions", host.url))), []);
+  assert.match(await (await fetch(host.url)).text(), /<h1>No sessions yet<\/h1>/);
+});
+
+test("session ages read as a person would say them", () => {
+  assert.deepEqual(
+    [ago(30_000), ago(5 * 60_000), ago(3 * 3_600_000), ago(26 * 3_600_000), ago(80 * 3_600_000)],
+    ["just now", "5 min ago", "3 h ago", "1 day ago", "3 days ago"],
+  );
 });
 
 test("registering a session again returns the same URL, and a different plan is refused", async (t) => {
