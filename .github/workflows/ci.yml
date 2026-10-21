@@ -29,6 +29,8 @@ jobs:
       - run: git config --global user.email ci@example.com && git config --global user.name ci
       - run: npm run lint
       - run: npm run typecheck
+      - run: npm run build
+      - run: npm run ui:test
       - name: test
         run: |
           set -o pipefail
