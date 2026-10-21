@@ -198,11 +198,10 @@ export type PlanIssue =
     };
 
 /** Non-blocking findings the planner should still see. */
-export type PlanWarning = {
-  readonly kind: "unanswered";
-  readonly comment: CommentId;
-  readonly review: PlanVersion;
-};
+export type PlanWarning =
+  | { readonly kind: "unanswered"; readonly comment: CommentId; readonly review: PlanVersion }
+  /** A title over LONG_TITLE characters; the page clamps titles, so long ones lose their end. */
+  | { readonly kind: "long-title"; readonly commit: number; readonly length: number };
 
 export type Anchor =
   | {

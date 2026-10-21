@@ -25,6 +25,9 @@ import type {
 
 export const PLAN_SCHEMA = "follow-me/plan@1";
 
+/** Titles past this many characters draw a warning; the prompt asks for 50 or fewer. */
+export const LONG_TITLE = 72;
+
 const validated: unique symbol = Symbol("follow-me/validated");
 
 /** A plan that passed every check and whose last commit reproduces the tip. Only plan.ts mints it. */
@@ -504,6 +507,10 @@ export function validatePlan(
       : review.comments
           .filter((c) => !answered.has(c.id))
           .map((c) => ({ kind: "unanswered", comment: c.id, review: review.planVersion }));
+  file.commits.forEach((c, commit) => {
+    const length = (c.message.split("\n")[0] ?? "").length;
+    if (length > LONG_TITLE) warnings.push({ kind: "long-title", commit, length });
+  });
 
   if (issues.length > 0) return { ok: false, issues };
   return {

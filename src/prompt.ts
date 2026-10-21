@@ -133,7 +133,7 @@ const ORDERING = `Order the commits so the story reads naturally:
 - The last commit must bring the tree to exactly the tip, which follows from covering every unit.
 
 Write each commit message as a short imperative title, then a blank line and a body that
-says why.`;
+says why. Keep the title to 50 characters or fewer; put detail in the body.`;
 
 const GOALS = {
   split: {

@@ -496,7 +496,10 @@ function renderList() {
             type: "button",
             class: "commit-row",
             "aria-current": i === selected ? "step" : undefined,
-            onclick: () => select(i, { focus: true }),
+            onclick: () => {
+              setListOpen(false);
+              select(i, { focus: true });
+            },
           },
           el("span", { class: "index", text: String(i + 1) }),
           el("span", { class: "title", text: firstLine(commit.message) }),
@@ -518,6 +521,42 @@ function renderList() {
   );
   list.children[selected]?.scrollIntoView({ block: "nearest" });
   if (hadFocus) list.children[selected]?.querySelector("button")?.focus({ preventScroll: true });
+  markClamped();
+}
+
+/** Only a clamped title needs its full text on hover and focus. */
+function markClamped() {
+  for (const row of $("commits").querySelectorAll(".commit-row")) {
+    const title = row.querySelector(".title");
+    if (title.scrollHeight > title.clientHeight) row.title = title.textContent;
+    else row.removeAttribute("title");
+  }
+}
+
+const rail = window.matchMedia("(max-width: 899px)");
+
+/** In the rail, hovering or focusing a row shows its title beside it. */
+function showRailTip(event) {
+  const row = event.target.closest?.(".commit-row");
+  const tip = $("rail-tip");
+  if (!rail.matches || $("sidebar").classList.contains("open") || !row) return;
+  const box = row.getBoundingClientRect();
+  tip.textContent = row.querySelector(".title").textContent;
+  tip.style.left = `${box.right + 6}px`;
+  tip.style.top = `${box.top + 4}px`;
+  tip.hidden = false;
+  row.setAttribute("aria-describedby", "rail-tip");
+}
+
+function hideRailTip(event) {
+  $("rail-tip").hidden = true;
+  event.target.closest?.(".commit-row")?.removeAttribute("aria-describedby");
+}
+
+function setListOpen(open) {
+  $("sidebar").classList.toggle("open", open);
+  $("commits-toggle").setAttribute("aria-expanded", String(open));
+  $("rail-tip").hidden = true;
 }
 
 function renderPlanNote() {
@@ -1279,6 +1318,18 @@ document.addEventListener("keydown", (event) => {
 });
 
 $("end").addEventListener("click", () => guarded(endReview));
+$("commits-toggle").addEventListener("click", () =>
+  setListOpen(!$("sidebar").classList.contains("open")),
+);
+$("sidebar").addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && $("sidebar").classList.contains("open")) {
+    setListOpen(false);
+    $("commits-toggle").focus();
+  }
+});
+window.addEventListener("resize", markClamped);
+for (const type of ["mouseover", "focusin"]) $("commits").addEventListener(type, showRailTip);
+for (const type of ["mouseout", "focusout"]) $("commits").addEventListener(type, hideRailTip);
 window.addEventListener("focus", () => renderSwitcher());
 renderSwitcher();
 

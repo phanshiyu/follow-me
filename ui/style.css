@@ -16,6 +16,7 @@
   --comment-bg: #eef3ff;
   --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --gutter: 9ch;
+  --sidebar: 300px;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -121,7 +122,7 @@ button.link {
 .layout {
   flex: 1;
   display: grid;
-  grid-template-columns: 300px minmax(0, 1fr) auto;
+  grid-template-columns: var(--sidebar) minmax(0, 1fr) auto;
   min-height: 0;
 }
 
@@ -196,19 +197,6 @@ button.link {
   padding: 0;
   overflow-y: auto;
   flex: 1;
-}
-
-.commit-list .index {
-  color: var(--muted);
-  min-width: 2ch;
-  text-align: right;
-}
-
-.commit-list .title {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .badge {
@@ -310,11 +298,6 @@ button.link {
   position: absolute;
   inset: 0 auto 0 0;
   background: var(--accent);
-}
-
-.commit-list .mark {
-  color: var(--accent);
-  font-size: 12px;
 }
 
 .keys {
@@ -713,28 +696,6 @@ select:disabled {
   }
 }
 
-.commit-row {
-  display: flex;
-  gap: 8px;
-  width: 100%;
-  padding: 8px 12px;
-  border: none;
-  border-left: 3px solid transparent;
-  border-radius: 0;
-  background: none;
-  color: inherit;
-  text-align: left;
-}
-
-.commit-row:hover {
-  background: var(--bg);
-}
-
-.commit-list li.selected .commit-row {
-  background: var(--bg);
-  border-left-color: var(--accent);
-}
-
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
@@ -859,4 +820,140 @@ body.index {
 #confirm-end .row {
   display: flex;
   gap: 8px;
+}
+
+.commit-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 12px;
+  border: none;
+  border-left: 3px solid transparent;
+  border-radius: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+}
+
+.commit-row:hover,
+.commit-list li.selected .commit-row {
+  background: var(--bg);
+}
+
+.commit-list li.selected .commit-row {
+  border-left-color: var(--accent);
+}
+
+.commit-list .title {
+  flex: 1;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+
+.commit-list li.selected .title {
+  -webkit-line-clamp: unset;
+  line-clamp: none;
+}
+
+.commit-list .index,
+.commit-list .mark,
+.commit-list .badge {
+  line-height: 1.35;
+  margin-top: 1px;
+}
+
+.commit-list .index {
+  color: var(--muted);
+  min-width: 2ch;
+  text-align: right;
+  font-size: 13px;
+}
+
+.commit-list .mark {
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.commits-toggle,
+.rail-tip {
+  display: none;
+}
+
+@media (max-width: 1199px) {
+  :root {
+    --sidebar: 240px;
+  }
+
+  .diagram-panel {
+    width: 300px;
+  }
+}
+
+/* Below 900px the sidebar is a rail of numbers; the stage header carries the title. */
+@media (max-width: 899px) {
+  :root {
+    --sidebar: 56px;
+  }
+
+  .sidebar {
+    position: relative;
+    z-index: 3;
+  }
+
+  .commits-toggle {
+    display: block;
+    margin: 6px 4px;
+    padding: 2px 0;
+    font-size: 11px;
+  }
+
+  .sidebar:not(.open) .commit-row {
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    padding: 6px 0;
+  }
+
+  .sidebar:not(.open) .commit-list .title {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  .sidebar:not(.open) .commit-list .index {
+    text-align: center;
+  }
+
+  .sidebar:not(.open) .plan-note {
+    display: none;
+  }
+
+  .sidebar.open {
+    width: 300px;
+    box-shadow: 4px 0 16px rgb(0 0 0 / 0.15);
+  }
+
+  .rail-tip:not([hidden]) {
+    display: block;
+    position: fixed;
+    z-index: 20;
+    max-width: 320px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    background: var(--text);
+    color: var(--bg);
+    font-size: 13px;
+    pointer-events: none;
+  }
 }

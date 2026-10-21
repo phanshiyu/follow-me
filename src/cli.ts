@@ -283,6 +283,9 @@ function formatIssue(issue: PlanIssue): string {
 }
 
 function formatWarning(w: PlanWarning): string {
+  if (w.kind === "long-title") {
+    return `warning: $.commits[${w.commit}]: title is ${w.length} characters; keep it to 50`;
+  }
   return `warning: comment ${w.comment} from review v${w.review} has no response`;
 }
 

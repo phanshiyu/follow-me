@@ -35,7 +35,10 @@
       <fieldset id="strip" class="strip" aria-label="Progress"></fieldset>
     </section>
     <div id="app" class="layout">
-      <nav class="sidebar" aria-label="Commits">
+      <nav id="sidebar" class="sidebar" aria-label="Commits">
+        <button id="commits-toggle" type="button" class="commits-toggle" aria-expanded="false" aria-controls="commits">
+          Commits
+        </button>
         <ol id="commits" class="commit-list"></ol>
         <section id="plan-note" class="plan-note"></section>
       </nav>
@@ -50,6 +53,7 @@
         <div id="diagram-body" class="diagram-body"></div>
       </aside>
     </div>
+    <div id="rail-tip" class="rail-tip" role="tooltip" hidden></div>
     <div id="done" class="done" hidden></div>
     <dialog id="confirm-end" class="keys" aria-labelledby="confirm-title">
       <h2 id="confirm-title">End this review?</h2>

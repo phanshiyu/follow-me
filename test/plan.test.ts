@@ -308,6 +308,22 @@ test("unknown-response, and unanswered comments are warnings that still pass", (
   assert.deepEqual(verdict.warnings, [{ kind: "unanswered", comment: "c_2", review: 1 }]);
 });
 
+test("a title over 72 characters is a warning that still passes", () => {
+  const long = `feat: ${"x".repeat(67)}`;
+  const verdict = validatePlan(
+    diff,
+    draft(diff, [{ message: `${long}\n\n${"body ".repeat(30)}`, units: everything(diff) }]),
+  );
+  assert.ok(verdict.ok);
+  assert.deepEqual(verdict.warnings, [{ kind: "long-title", commit: 0, length: 73 }]);
+  const fine = validatePlan(
+    diff,
+    draft(diff, [{ message: long.slice(0, 72), units: everything(diff) }]),
+  );
+  assert.ok(fine.ok);
+  assert.deepEqual(fine.warnings, []);
+});
+
 test("final-mismatch: a diff whose tip disagrees with its hunks", () => {
   const textFiles = new Map(
     [...diff.textFiles].map(([path, file]) => [
