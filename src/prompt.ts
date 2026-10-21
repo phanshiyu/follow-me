@@ -29,6 +29,8 @@ export type PromptInput = {
       readonly mode: "split";
       readonly previousPlan: PlanFile | null;
       readonly review: Review | null;
+      /** previousPlan projected, so comments on rows can be quoted as that plan wrote them. */
+      readonly previousCommits?: readonly ReportCommit[];
     }
   | { readonly mode: "walk" }
 );
@@ -99,7 +101,7 @@ function renderPreviousPlan(plan: PlanFile): string {
     .join("\n");
 }
 
-function describeAnchor(anchor: Anchor): string {
+function describeAnchor(anchor: Anchor, ctx: Context | null): string {
   switch (anchor.kind) {
     case "plan":
       return "the whole plan";
@@ -108,8 +110,17 @@ function describeAnchor(anchor: Anchor): string {
     case "position":
       return `the position of commit ${anchor.commit + 1} (the reviewer thinks it belongs elsewhere)`;
     case "hunk": {
+      const pick = ctx === null ? null : pickRows(ctx, anchor);
+      if (pick !== null) {
+        const rows = formatRanges(pick.offsets);
+        return `${pick.label} in commit ${anchor.commit + 1} (${anchor.unit} rows ${rows}; ${pick.counts})`;
+      }
       const where =
-        anchor.changes === null ? "the whole unit" : `change lines ${formatRanges(anchor.changes)}`;
+        anchor.offsets !== undefined
+          ? `rows ${formatRanges(anchor.offsets)}`
+          : anchor.changes === null
+            ? "the whole unit"
+            : `change lines ${formatRanges(anchor.changes)}`;
       return `${anchor.unit} (${where}) in commit ${anchor.commit + 1}`;
     }
     default: {
@@ -119,14 +130,115 @@ function describeAnchor(anchor: Anchor): string {
   }
 }
 
-function renderComment(comment: Comment): string {
-  const lines = [`- ${comment.id}  on ${describeAnchor(comment.anchor)}`];
+/** The hunk around the picked rows with the picked ones marked `>`; empty without offsets. */
+function anchorRows(ctx: Context | null, anchor: Anchor): readonly string[] {
+  return (ctx === null ? null : pickRows(ctx, anchor))?.rows ?? [];
+}
+
+/** What the reviewer's picked rows resolve to in the hunk as a given commit writes it. */
+type Picked = {
+  readonly offsets: readonly number[];
+  /** "src/lib.js:17-18", with "(base side)" when a picked row is a removal. */
+  readonly label: string;
+  /** "17-18" or "17". */
+  readonly range: string;
+  readonly baseSide: boolean;
+  /** First picked line, in the numbering `label` uses. */
+  readonly line: number;
+  readonly counts: string;
+  readonly rows: readonly string[];
+  readonly touchesContext: boolean;
+};
+
+const PICK_MARGIN = 3;
+
+function plural(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? "" : "s"}`;
+}
+
+/**
+ * Resolves offsets against the hunk. Line numbers are the branch tip's, or the base's when a
+ * picked row is a removal, since a removed line has no tip number. Rows are shown as the commit
+ * writes them: its own changes marked +/-, everything else as context.
+ */
+function pickRows(ctx: Context, anchor: Anchor): Picked | null {
+  if (anchor.kind !== "hunk" || anchor.offsets === undefined) return null;
+  const hunk = ctx.units.get(anchor.unit);
+  const { offsets } = anchor;
+  const first = offsets[0];
+  const last = offsets.at(-1);
+  if (hunk?.kind !== "hunk" || first === undefined || last === undefined) return null;
+  if (last >= hunk.body.length) return null;
+  // Without the projected commit, the hunk is quoted as git shows it.
+  const projected = anchor.commit < ctx.commits.length;
+  const owners = ownersOf(ctx.commits, hunk);
+  const picked = new Set(offsets);
+  let tip = tipStartOf(hunk, ctx.units);
+  let base = hunk.oldStart + 1;
+  const rows: string[] = [];
+  const lines: { readonly op: string; readonly tip: number; readonly base: number }[] = [];
+  hunk.body.forEach((line, i) => {
+    lines.push({ op: line.op, tip, base });
+    let op = line.op;
+    let shown = true;
+    if (projected && line.op !== " ") {
+      const owner = owners[line.change] ?? null;
+      const applied = owner !== null && owner < anchor.commit;
+      if (owner !== anchor.commit) {
+        shown = line.op === "+" ? applied : !applied;
+        op = " ";
+      }
+    }
+    if (picked.has(i) && !shown) {
+      shown = true;
+      op = line.op;
+    }
+    const inWindow = i >= first - PICK_MARGIN && i <= last + PICK_MARGIN;
+    if (shown && inWindow) rows.push(`${picked.has(i) ? ">" : " "} ${op}${stripEol(line.text)}`);
+    if (line.op !== "-") tip += 1;
+    if (line.op !== "+") base += 1;
+  });
+  const chosen = offsets.flatMap((i) => lines[i] ?? []);
+  const removal = chosen.some((l) => l.op === "-");
+  const numbers = removal
+    ? chosen.filter((l) => l.op !== "+").map((l) => l.base)
+    : chosen.map((l) => l.tip);
+  const from = Math.min(...numbers);
+  const to = Math.max(...numbers);
+  const range = from === to ? `${from}` : `${from}-${to}`;
+  const count = (op: string) => chosen.filter((l) => l.op === op).length;
+  const counts = [
+    count(" ") === 0 ? null : plural(count(" "), "context line"),
+    count("+") === 0 ? null : `${count("+")} added`,
+    count("-") === 0 ? null : `${count("-")} removed`,
+  ].filter((part) => part !== null);
+  return {
+    offsets,
+    label: `${hunk.path}:${range}${removal ? " (base side)" : ""}`,
+    range,
+    baseSide: removal,
+    line: from,
+    counts: counts.join(", "),
+    rows,
+    touchesContext: count(" ") > 0,
+  };
+}
+
+/** Said once wherever comments reach the agent, with the same words. */
+const CONTEXT_RULE =
+  "A comment on a context row (marked `>` with no + or -) is about code this branch leaves alone or depends on. The plan cannot move it, so do not move lines because of it. Answer a question with an explanation, or point at the commit that last touched those lines. Answer a change request as a code issue, not by reordering.";
+
+function renderComment(comment: Comment, ctx: Context): string {
+  const lines = [`- ${comment.id}  on ${describeAnchor(comment.anchor, ctx)}`];
+  const rows = anchorRows(ctx, comment.anchor);
   if (comment.follows) lines.push(`  asks again after ${comment.follows}`);
   if (comment.context.commitMessage) {
     lines.push(`  commit message then: ${JSON.stringify(comment.context.commitMessage)}`);
   }
   if (comment.context.path) lines.push(`  path: ${comment.context.path}`);
-  if (comment.context.lines && comment.context.lines.length > 0) {
+  if (rows.length > 0) {
+    lines.push("  rows asked about, picked ones marked >:", ...rows.map((r) => `    ${r}`));
+  } else if (comment.context.lines && comment.context.lines.length > 0) {
     lines.push("  lines asked about:", ...comment.context.lines.map((l) => `    ${l}`));
   }
   if (comment.severity) lines.push(`  severity: ${comment.severity}`);
@@ -246,7 +358,7 @@ export function renderPrompt(input: PromptInput): string {
     const sections = [
       ...head,
       `## Concerns\n\n${CONCERNS}`,
-      `## Questions from the reviewer\n\n${QUESTIONS}`,
+      `## Questions from the reviewer\n\n${QUESTIONS}\n\n${CONTEXT_RULE}`,
       units,
     ];
     return `${sections.join("\n\n")}\n`;
@@ -260,11 +372,12 @@ export function renderPrompt(input: PromptInput): string {
   }
   const asked = review?.comments.filter((c) => c.kind === "question") ?? [];
   const changes = review?.comments.filter((c) => c.kind !== "question") ?? [];
-  const questions = [`## Questions from the reviewer\n`, QUESTIONS];
+  const ctx: Context = { commits: input.previousCommits ?? [], units: diff.units };
+  const questions = [`## Questions from the reviewer\n`, QUESTIONS, `\n${CONTEXT_RULE}`];
   if (review && asked.length > 0) {
     questions.push(
       `\nThe reviewer asked ${asked.length === 1 ? "this question" : "these questions"} about plan v${review.planVersion}. Commits are numbered from 1. Write one response for each.\n`,
-      asked.map(renderComment).join("\n"),
+      asked.map((c) => renderComment(c, ctx)).join("\n"),
     );
   }
   sections.push(questions.join("\n"));
@@ -274,7 +387,7 @@ export function renderPrompt(input: PromptInput): string {
         `## Open review comments\n`,
         `A reviewer commented on plan v${review.planVersion}. Commits are numbered from 1.`,
         "Answer every comment below with one entry in `responses`, changing the plan where you agree.\n",
-        changes.map(renderComment).join("\n"),
+        changes.map((c) => renderComment(c, ctx)).join("\n"),
       ].join("\n"),
     );
   }
@@ -390,7 +503,7 @@ type Item = {
   readonly comments: Comment[];
 };
 
-type Context = {
+export type Context = {
   readonly commits: readonly ReportCommit[];
   readonly units: ReadonlyMap<UnitId, Unit>;
 };
@@ -409,6 +522,15 @@ function whereComment(ctx: Context, c: Comment): Where {
     case "position":
       return { path: null, line: null, label: `commit ${anchor.commit + 1} position`, quote: [] };
     case "hunk": {
+      const pick = pickRows(ctx, anchor);
+      if (pick !== null) {
+        return {
+          path: ctx.units.get(anchor.unit)?.path ?? c.context.path,
+          line: pick.line,
+          label: `${pick.range.includes("-") ? "lines" : "line"} ${pick.range}${pick.baseSide ? " (base side)" : ""}`,
+          quote: pick.rows,
+        };
+      }
       const quoted = quoteHunk(ctx.units, ctx.commits, anchor.unit, anchor.commit, anchor.changes);
       const path = ctx.units.get(anchor.unit)?.path ?? c.context.path;
       if (quoted === null) {
@@ -648,12 +770,10 @@ function renderQuestions(
 }
 
 /** Plan feedback for a split review: what the planner answers through `responses`. */
-function renderPlanFeedback(
-  commits: readonly ReportCommit[],
-  comments: readonly Comment[],
-): string[] {
+function renderPlanFeedback(ctx: Context, comments: readonly Comment[]): string[] {
+  const { commits } = ctx;
   const out: string[] = [];
-  const line = (c: Comment) => [`- ${c.id} on ${describeAnchor(c.anchor)}`];
+  const line = (c: Comment) => [`- ${c.id} on ${describeAnchor(c.anchor, ctx)}`];
   const planLevel = comments.filter((c) => c.anchor.kind === "plan");
   if (planLevel.length > 0) {
     out.push("## Whole plan", "");
@@ -670,6 +790,9 @@ function renderPlanFeedback(
     for (const c of mine) {
       out.push(...line(c));
       if (c.context.path) out.push(`  - file: ${c.context.path}`);
+      const rows = anchorRows(ctx, c.anchor);
+      if (rows.length > 0)
+        out.push("  - picked rows are marked >:", ...rows.map((r) => `    ${r}`));
       out.push(`  - ${c.body.split("\n").join("\n    ")}`);
       for (const reply of renderReplies(c)) out.push(`  - ${reply}`);
     }
@@ -724,7 +847,7 @@ export function renderReport(
       out.push("No comments.", "");
       return out.join("\n");
     }
-    out.push(...renderPlanFeedback(commits, feedback));
+    out.push(...renderPlanFeedback(ctx, feedback));
     if (items.length > 0) {
       out.push(`## Code issues (${summarizeIssues(items)})`, "", ...renderItems(items, units, 3));
     }
@@ -742,20 +865,24 @@ export function renderReport(
       "",
     );
   }
+  const onContext = review.comments.some((c) => pickRows(ctx, c.anchor)?.touchesContext);
+  if (onContext) out.push(CONTEXT_RULE, "");
   if (!walk && items.length > 0) {
     out.push("Fix the code issues on the original branch, then run `follow-me extract` again.", "");
   }
   return out.join("\n");
 }
 
-function renderEvent(event: ServerEvent): string[] {
+function renderEvent(event: ServerEvent, ctx: Context | null): string[] {
   switch (event.type) {
     case "comment":
     case "comment-updated": {
       const { comment: c } = event;
       const what = c.kind === "question" ? "question" : "comment";
       const verb = event.type === "comment" ? "new" : "edited";
-      const lines = [`- ${verb} ${what} ${c.id} on ${describeAnchor(c.anchor)}`];
+      const lines = [`- ${verb} ${what} ${c.id} on ${describeAnchor(c.anchor, ctx)}`];
+      const rows = anchorRows(ctx, c.anchor);
+      if (rows.length > 0) lines.push(...rows.map((r) => `  ${r}`));
       if (c.context.path) lines.push(`  - file: ${c.context.path}`);
       if (c.severity) lines.push(`  - severity: ${c.severity}`);
       if (c.follows) lines.push(`  - asks again after ${c.follows}`);
@@ -785,9 +912,10 @@ function renderEvent(event: ServerEvent): string[] {
 }
 
 /** A markdown digest of what happened on the review page, for `follow-me watch`. */
-export function renderEvents(events: readonly ServerEvent[]): string {
+export function renderEvents(events: readonly ServerEvent[], ctx: Context | null = null): string {
   const first = events[0]?.seq;
   const last = events.at(-1)?.seq;
   const range = first === last ? `event ${first}` : `events ${first}-${last}`;
-  return [`# Review activity (${range})`, "", ...events.flatMap(renderEvent), ""].join("\n");
+  const body = events.flatMap((event) => renderEvent(event, ctx));
+  return [`# Review activity (${range})`, "", ...body, ""].join("\n");
 }

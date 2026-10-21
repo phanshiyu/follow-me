@@ -63,6 +63,7 @@ import type {
   PlanIssue,
   PlanVersion,
   PlanWarning,
+  ProjectedCommit,
   RepoPath,
   Review,
   ReviewMode,
@@ -558,12 +559,22 @@ function promptInput(session: Session, mode: ReviewMode, args: Args): PromptInpu
     checkCommand: `follow-me check${branchFlag(args)}`,
   };
   if (mode === "walk") return { ...common, mode };
+  const previous = session.plans().at(-1);
   return {
     ...common,
     mode,
-    previousPlan: session.plans().at(-1)?.file ?? null,
+    previousPlan: previous?.file ?? null,
     review: session.lastReview(),
+    previousCommits: previous === undefined ? [] : projectedCommits(session, previous.version),
   };
+}
+
+/** The commits of a frozen plan as projected now, or none when it no longer fits the branch. */
+function projectedCommits(session: Session, version: PlanVersion): readonly ProjectedCommit[] {
+  const plan = session.plans().find((p) => p.version === version);
+  if (plan === undefined) return [];
+  const verdict = validatePlan(session.diff, serializePlanFile(plan.file));
+  return verdict.ok ? verdict.plan.commits : [];
 }
 
 /** Asks the API for draft.json, feeding issues back once. Returns the plan when it validates. */
@@ -1093,13 +1104,20 @@ async function watch(cwd: string, args: Args): Promise<number> {
   if (!Number.isInteger(since) || since < 0) {
     throw new UsageError(`--since ${sinceRaw} is not an event number`);
   }
+  // Comments are quoted as the plan they were made on wrote them; a swap changes which that is.
+  let version = open.summary.version;
+  const quoting = (events: readonly ServerEvent[]) => {
+    for (const event of events) if (event.type === "version") version = event.version;
+    return { commits: projectedCommits(session, version), units: session.diff.units };
+  };
   if (args.flags.has("follow")) {
     let ended = false;
     await followEvents(open.port, open.summary, since, (event) => {
       if (event.type === "ended") ended = true;
+      const ctx = quoting([event]);
       if (!isNews(event)) return;
       if (args.flags.has("json")) say(JSON.stringify(event));
-      else process.stdout.write(renderEvents([event]));
+      else process.stdout.write(renderEvents([event], ctx));
     });
     if (ended) return 0;
     console.error("follow-me: the event stream closed before the review ended");
@@ -1114,11 +1132,12 @@ async function watch(cwd: string, args: Args): Promise<number> {
     }
     const batch = await pollEvents(open.port, open.summary, since, Math.min(left, POLL_MS));
     since = batch.seq;
+    const ctx = quoting(batch.events);
     const news = batch.events.filter(isNews);
     if (news.length === 0) continue;
     if (args.flags.has("json")) for (const event of news) say(JSON.stringify(event));
     else {
-      process.stdout.write(renderEvents(news));
+      process.stdout.write(renderEvents(news, ctx));
       next(
         news.some((e) => e.type === "ended")
           ? "follow-me report"
