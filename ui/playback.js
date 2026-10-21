@@ -5,7 +5,7 @@
 /**
  * @typedef {{ op: " ", text: string } | { op: "+" | "-", text: string, change: number }} HunkLine
  * @typedef {{ mode: string, blob: string }} Entry
- * @typedef {{ kind: "hunk", id: string, path: string, body: HunkLine[] }
+ * @typedef {{ kind: "hunk", id: string, path: string, oldStart?: number, body: HunkLine[] }
  *   | { kind: "file", id: string, path: string, reason: string, before: Entry | null, after: Entry | null }
  *   | { kind: "mode", id: string, path: string, from: string, to: string }} Unit
  * @typedef {{ kind: "rest" } | { kind: "lines", changes: number[] }} Selection
@@ -437,6 +437,80 @@ export function hasDiagrams(commits) {
   return commits.some(
     (c) => present(c.diagram) !== null || c.refs.some((r) => present(r.diagram) !== null),
   );
+}
+
+/**
+ * File line numbers of every hunk line, 1-based: old in the base file, new in the branch tip. A
+ * removed line has no new number and an added line no old one. A hunk's tip start is its base
+ * start shifted by the lines earlier hunks of the same file add or remove.
+ * @param {readonly Unit[]} units
+ * @returns {Map<string, { old: number | null, new: number | null }[]>}
+ */
+export function lineNumbers(units) {
+  /** @type {Map<string, { old: number | null, new: number | null }[]>} */
+  const numbers = new Map();
+  const hunks = units.flatMap((u) => (u.kind === "hunk" ? [u] : []));
+  const sorted = [...hunks].sort((a, b) => (a.oldStart ?? 0) - (b.oldStart ?? 0));
+  /** @type {Map<string, number>} */
+  const shift = new Map();
+  for (const hunk of sorted) {
+    const start = hunk.oldStart ?? 0;
+    let oldLine = start + 1;
+    let newLine = start + 1 + (shift.get(hunk.path) ?? 0);
+    numbers.set(
+      hunk.id,
+      hunk.body.map((line) => {
+        if (line.op === "-") return { old: oldLine++, new: null };
+        if (line.op === "+") return { old: null, new: newLine++ };
+        return { old: oldLine++, new: newLine++ };
+      }),
+    );
+    const delta = hunk.body.reduce((d, l) => d + (l.op === "+" ? 1 : l.op === "-" ? -1 : 0), 0);
+    shift.set(hunk.path, (shift.get(hunk.path) ?? 0) + delta);
+  }
+  return numbers;
+}
+
+/**
+ * How a comment names the lines it is on: tip line numbers, with removed lines by their old
+ * number, runs collapsed. "line 4", "lines 4-5", "lines 4-5, old 3".
+ * @param {readonly HunkLine[]} body
+ * @param {readonly { old: number | null, new: number | null }[]} numbers
+ * @param {readonly number[]} changes
+ */
+export function describeLines(body, numbers, changes) {
+  const picked = new Set(changes);
+  /** @type {{ side: "new" | "old", n: number }[]} */
+  const marks = [];
+  body.forEach((line, i) => {
+    if (line.op === " " || !picked.has(line.change)) return;
+    const side = line.op === "+" ? "new" : "old";
+    const n = numbers[i]?.[side];
+    if (n !== null && n !== undefined) marks.push({ side, n });
+  });
+  /** @param {"new" | "old"} side */
+  const ranges = (side) => {
+    const ns = marks.filter((m) => m.side === side).map((m) => m.n);
+    /** @type {string[]} */
+    const parts = [];
+    ns.forEach((n, i) => {
+      if (i > 0 && n === (ns[i - 1] ?? 0) + 1) {
+        const last = parts.pop() ?? "";
+        parts.push(`${last.split("-")[0]}-${n}`);
+      } else parts.push(String(n));
+    });
+    return parts;
+  };
+  const added = ranges("new");
+  const removed = ranges("old");
+  const many = marks.length > 1;
+  const text = [
+    ...(added.length > 0 ? [`${many ? "lines" : "line"} ${added.join(", ")}`] : []),
+    ...(removed.length > 0
+      ? [`${added.length > 0 ? "old" : many ? "old lines" : "old line"} ${removed.join(", ")}`]
+      : []),
+  ];
+  return text.join(", ");
 }
 
 /**

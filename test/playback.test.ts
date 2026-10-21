@@ -7,11 +7,13 @@ import {
   buildScript,
   chunkOf,
   commitOf,
+  describeLines,
   diagramAt,
   duration,
   hasDiagrams,
   hasNarration,
   introOf,
+  lineNumbers,
   lineStates,
   parseSpeed,
   pickVoice,
@@ -295,6 +297,49 @@ test("the diagram follows the unit playing, falls back to the commit's, and is l
     [{ source: "sequenceDiagram\n  a->>b: x", unit: "h_a" }, null],
   );
   assert.deepEqual([hasDiagrams([commit]), hasDiagrams(commits)], [true, false]);
+});
+
+test("lines are numbered in the base and the tip, and comments name them by those numbers", () => {
+  const body: HunkLine[] = [
+    { op: "+", text: "import\n", change: 0 },
+    { op: "+", text: "\n", change: 1 },
+    { op: " ", text: "fn() {\n" },
+    { op: "-", text: "old\n", change: 2 },
+    { op: "+", text: "new\n", change: 3 },
+  ];
+  const first: Unit = { kind: "hunk", id: "h_1", path: "a.js", oldStart: 0, body };
+  const second: Unit = {
+    kind: "hunk",
+    id: "h_2",
+    path: "a.js",
+    oldStart: 9,
+    body: [
+      { op: " ", text: "x\n" },
+      { op: "+", text: "y\n", change: 0 },
+    ],
+  };
+  const numbers = lineNumbers([second, first]);
+  assert.deepEqual(numbers.get("h_1"), [
+    { old: null, new: 1 },
+    { old: null, new: 2 },
+    { old: 1, new: 3 },
+    { old: 2, new: null },
+    { old: null, new: 4 },
+  ]);
+  assert.deepEqual(numbers.get("h_2"), [
+    { old: 10, new: 12 },
+    { old: null, new: 13 },
+  ]);
+  const h1 = numbers.get("h_1") ?? [];
+  assert.deepEqual(
+    [
+      describeLines(body, h1, [3]),
+      describeLines(body, h1, [0, 1]),
+      describeLines(body, h1, [0, 1, 2, 3]),
+      describeLines(body, h1, [2]),
+    ],
+    ["line 4", "lines 1-2", "lines 1-2, 4, old 2", "old line 2"],
+  );
 });
 
 test("progress weighs commits by chunks and fills by the beats behind, and names the chunk", () => {

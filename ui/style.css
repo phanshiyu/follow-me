@@ -15,6 +15,7 @@
   --select-edge: #b38600;
   --comment-bg: #eef3ff;
   --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --gutter: 9ch;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -452,11 +453,17 @@ kbd {
 
 .dl .gutter {
   position: relative;
-  width: 4ch;
-  text-align: right;
-  padding-right: 6px;
+  display: flex;
+  flex: none;
+  width: var(--gutter);
   color: var(--muted);
   user-select: none;
+}
+
+.dl .ln {
+  width: 50%;
+  padding-right: 6px;
+  text-align: right;
 }
 
 .add-comment {
@@ -508,7 +515,7 @@ kbd {
 .fold {
   display: block;
   width: 100%;
-  padding: 1px 10px 1px calc(6ch + 6px);
+  padding: 1px 10px 1px calc(var(--gutter) + 2ch);
   border: none;
   border-radius: 0;
   border-block: 1px dashed var(--border);
@@ -581,7 +588,7 @@ textarea {
 }
 
 .diff .box {
-  margin: 4px 10px 8px calc(6ch + 6px);
+  margin: 4px 10px 8px calc(var(--gutter) + 2ch);
   font-family: system-ui, sans-serif;
 }
 
@@ -683,7 +690,7 @@ select:disabled {
 }
 
 .ph {
-  padding: 0 10px 0 calc(6ch + 6px);
+  padding: 0 10px 0 calc(var(--gutter) + 2ch);
   color: var(--muted);
   font-style: italic;
   background: var(--panel);

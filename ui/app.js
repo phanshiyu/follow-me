@@ -4,11 +4,13 @@ import {
   buildScript,
   chunkOf,
   commitOf,
+  describeLines,
   diagramAt,
   hasDiagrams,
   hasNarration,
   introOf,
   lineKey,
+  lineNumbers,
   lineStates,
   parseSpeed,
   pickVoice,
@@ -43,6 +45,8 @@ function el(tag, props = {}, ...children) {
 let state = null;
 let selected = 0;
 let unitsById = new Map();
+/** unit id -> per hunk line, its { old, new } file line numbers */
+let numbers = new Map();
 /** unit id -> (change index -> index of the commit that owns the line) */
 let owners = new Map();
 /**
@@ -104,6 +108,7 @@ async function guarded(action) {
 
 function indexOwnership() {
   unitsById = new Map(state.units.map((unit) => [unit.id, unit]));
+  numbers = lineNumbers(state.units);
   owners = new Map();
   for (const commit of state.commits) {
     for (const ref of commit.refs) {
@@ -136,8 +141,11 @@ function firstLine(message) {
   return message.split("\n")[0] ?? "";
 }
 
-function describeChanges(changes) {
-  return changes === null ? "whole hunk" : `lines ${changes.join(", ")}`;
+/** Where a hunk comment points, by file line numbers; the stored anchor keeps change indices. */
+function describeAnchor(anchor) {
+  const unit = unitsById.get(anchor.unit);
+  if (anchor.changes === null || unit?.kind !== "hunk") return "whole hunk";
+  return describeLines(unit.body, numbers.get(unit.id) ?? [], anchor.changes);
 }
 
 /**
@@ -204,8 +212,7 @@ function commentView(comment) {
       }),
     );
   }
-  const where =
-    comment.anchor.kind === "hunk" ? ` · ${describeChanges(comment.anchor.changes)}` : "";
+  const where = comment.anchor.kind === "hunk" ? ` · ${describeAnchor(comment.anchor)}` : "";
   return el(
     "div",
     { class: "comment" },
@@ -282,10 +289,9 @@ function pickLine(unit, commitIndex, line, extend) {
 
 function lineBox(unit, commit) {
   const changes = selection.lines.map((i) => unit.body[i].change);
-  const n = changes.length;
   return commentForm({
     key: `line:${commit.index}:${unit.id}`,
-    placeholder: `Comment on ${n === 1 ? "this line" : `these ${n} lines`}`,
+    placeholder: `Comment on ${describeLines(unit.body, numbers.get(unit.id) ?? [], changes)}`,
     submit: (body) =>
       api("POST", "/api/comments", {
         anchor: { kind: "hunk", unit: unit.id, commit: commit.index, changes },
@@ -303,15 +309,31 @@ function diffLine(unit, commit, index, mine) {
   const line = unit.body[index];
   const key = lineKey(unit.id, index);
   const text = el("span", { class: "text", text: line.text.replace(/\n$/, "") });
+  const at = numbers.get(unit.id)?.[index];
+  const gutter = el(
+    "span",
+    { class: "gutter" },
+    el("span", { class: "ln", text: at?.old == null ? "" : String(at.old) }),
+    el("span", { class: "ln", text: at?.new == null ? "" : String(at.new) }),
+  );
   if (!mine) {
     return el(
       "div",
       { class: "dl", "data-line": key },
-      el("span", { class: "gutter" }),
+      gutter,
       el("span", { class: "op", text: " " }),
       text,
     );
   }
+  gutter.prepend(
+    el("button", {
+      type: "button",
+      class: "add-comment",
+      tabindex: "-1",
+      "aria-label": "Comment on this line",
+      text: "+",
+    }),
+  );
   const picked =
     selection?.commit === commit.index &&
     selection.unit === unit.id &&
@@ -329,18 +351,7 @@ function diffLine(unit, commit, index, mine) {
       },
       onclick: (event) => pickLine(unit, commit.index, index, event.shiftKey),
     },
-    el(
-      "span",
-      { class: "gutter" },
-      el("button", {
-        type: "button",
-        class: "add-comment",
-        tabindex: "-1",
-        "aria-label": "Comment on this line",
-        text: "+",
-      }),
-      String(line.change),
-    ),
+    gutter,
     el("span", { class: "op", text: line.op }),
     text,
   );
