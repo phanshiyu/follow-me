@@ -40,15 +40,21 @@ export function splitAnswer(body: string): { said: string; answer: string | null
 }
 
 /**
- * The comment or concern an item came from: its id when the server sends one, else the one whose
- * words the item carries. Null when nothing matches, and the item then cannot be toggled.
+ * The comment or concern an item came from: its id when the server sends one (the comment itself
+ * may be one carried from an earlier version), else the one whose words the item carries. Null
+ * when nothing matches, and the item then cannot be toggled.
  */
 export function sourceOf(
   item: ReportItem,
   state: State,
 ): { readonly id: string; readonly comment: WireComment | null } | null {
-  if (item.id !== undefined) {
-    return { id: item.id, comment: state.comments.find((c) => c.id === item.id) ?? null };
+  const { id } = item;
+  if (id !== undefined) {
+    const comment =
+      state.comments.find((c) => c.id === id) ??
+      state.carried?.find((c) => c.comment.id === id)?.comment ??
+      null;
+    return { id, comment };
   }
   if (item.kind === "concern") {
     const concern = state.commits
@@ -69,4 +75,10 @@ export function sourceOf(
 /** Every included item under its location, ready to paste into a merge request. */
 export function markdownOf(items: readonly ReportItem[]): string {
   return `${items.map((item) => `**${locationOf(item) ?? "General"}**\n\n${item.body.trim()}`).join("\n\n---\n\n")}\n`;
+}
+
+/** "code changed after v1", "code gone after v2", or null for an item on its own version. */
+export function changedOf(item: ReportItem): string | null {
+  if (item.changed === undefined) return null;
+  return `code ${item.changed.gone ? "gone" : "changed"} after v${item.changed.since}`;
 }

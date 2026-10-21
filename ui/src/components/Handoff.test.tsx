@@ -42,3 +42,28 @@ test("flags go by default, a question can be included, and a failed toggle sprin
   await expect.element(page.getByText("2 included · 0 excluded")).toBeVisible();
   await expect.element(flagged.getByRole("checkbox")).toBeChecked();
 });
+
+test("an item said before a swap names the version its code changed after and toggles by id", async () => {
+  const before = aComment({ id: JSON.parse('"c_vvvvvv"'), body: "Name the failure." });
+  const carried = { comment: before, unit: null, offsets: null, changed: true, path: null };
+  const state = aState({ version: JSON.parse("3"), carried: [{ ...carried, newLine: null }] });
+  const gone = aReportItem({
+    id: "c_vvvvvv",
+    body: "Name the failure.",
+    newLine: null,
+    startNewLine: null,
+    changed: { since: 2, gone: true },
+  });
+  const { server } = await renderHandoff(state, [gone]);
+  const card = page.getByRole("article", { name: "Flag src/lib.js" });
+  await expect.element(card.getByText("code gone after v2")).toBeVisible();
+  await expect.element(card.getByText("  assertNumber(a);")).toBeVisible();
+
+  server.on("POST", "/api/excluded", () => ({}));
+  await card.getByRole("checkbox").click();
+  expect(server.calls.at(-1)).toEqual({
+    method: "POST",
+    path: "/api/excluded",
+    body: { comment: "c_vvvvvv", excluded: true },
+  });
+});

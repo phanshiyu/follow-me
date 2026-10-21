@@ -3,7 +3,14 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { api, sessionPrefix } from "../lib/api.ts";
-import { isIncluded, locationOf, markdownOf, sourceOf, splitAnswer } from "../lib/report.ts";
+import {
+  changedOf,
+  isIncluded,
+  locationOf,
+  markdownOf,
+  sourceOf,
+  splitAnswer,
+} from "../lib/report.ts";
 import { navigate } from "../lib/route.ts";
 import type { ReportItem } from "../lib/wire.ts";
 import { useReview } from "../store.tsx";
@@ -52,6 +59,7 @@ function ItemCard({
   toggleable: boolean;
 }) {
   const location = locationOf(item);
+  const changed = changedOf(item);
   const { said, answer } = splitAnswer(item.body);
   const rest = item.thread.filter(
     (entry) => answer === null || entry.body.trim() !== answer.trim(),
@@ -78,6 +86,9 @@ function ItemCard({
         {item.severity === null ? null : <SeverityChip severity={item.severity} />}
         <span className="text-muted-foreground text-xs">{KIND[item.kind]}</span>
         {item.resolved ? <span className="text-muted-foreground text-xs">✓ resolved</span> : null}
+        {changed === null ? null : (
+          <span className="text-amber-700 text-xs dark:text-amber-300">{changed}</span>
+        )}
         <span className="ml-auto flex gap-1">
           <CopyButton text={item.body} label="Copy comment" />
           {location === null ? null : (

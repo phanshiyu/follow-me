@@ -53,7 +53,10 @@ export type State = {
   readonly resolved: readonly CommentId[];
   readonly seq: number;
   readonly previous: PreviousVersion | null;
-  /** One entry per comment of `previous`, absent from a server that does not carry threads. */
+  /**
+   * The threads of earlier versions placed on this one: every version of the open review, then
+   * `previous`. Absent from a server that does not carry threads.
+   */
   readonly carried?: readonly CarriedComment[];
   /** Hand-off items the reviewer left out of the merge request. */
   readonly excluded?: {
@@ -82,4 +85,6 @@ export type ReportItem = {
   readonly thread: readonly { readonly author: "reviewer" | "agent"; readonly body: string }[];
   readonly resolved: boolean;
   readonly excluded: boolean;
+  /** Said on an earlier version: the code changed after v<since>, or is gone. */
+  readonly changed?: { readonly since: number; readonly gone: boolean };
 };
