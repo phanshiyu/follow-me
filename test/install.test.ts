@@ -18,6 +18,13 @@ import { fileURLToPath } from "node:url";
 const BIN = fileURLToPath(new URL("../bin/follow-me.ts", import.meta.url));
 const SKILL = fileURLToPath(new URL("../skills/follow-me/SKILL.md", import.meta.url));
 
+const PORTING = fileURLToPath(new URL("../skills/follow-me/porting.md", import.meta.url));
+
+/** The lines install prints for one harness folder: SKILL.md, then porting.md beside it. */
+function both(verb: string, skill: string): string[] {
+  return [`${verb} ${skill}`, `${verb} ${skill.replace(/SKILL\.md$/, "porting.md")}`];
+}
+
 function sandbox(t: TestContext) {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "follow-me-home-")));
   t.after(() => rmSync(home, { recursive: true, force: true }));
@@ -45,13 +52,23 @@ test("install --project writes detected harnesses into the repo, then reports un
 
   const first = run("--project");
   assert.equal(first.code, 0, first.err);
-  assert.deepEqual(first.out.trim().split("\n"), [`wrote ${claude}`, `wrote ${agents}`]);
+  assert.deepEqual(first.out.trim().split("\n"), [
+    ...both("wrote", claude),
+    ...both("wrote", agents),
+  ]);
   assert.equal(readFileSync(claude, "utf8"), readFileSync(SKILL, "utf8"));
+  assert.equal(
+    readFileSync(claude.replace(/SKILL\.md$/, "porting.md"), "utf8"),
+    readFileSync(PORTING, "utf8"),
+  );
   assert.equal(readFileSync(agents, "utf8"), readFileSync(SKILL, "utf8"));
   assert.equal(existsSync(join(repo, ".cursor")), false);
 
   const second = run("--project");
-  assert.deepEqual(second.out.trim().split("\n"), [`unchanged ${claude}`, `unchanged ${agents}`]);
+  assert.deepEqual(second.out.trim().split("\n"), [
+    ...both("unchanged", claude),
+    ...both("unchanged", agents),
+  ]);
 });
 
 test("the default scope is HOME, and --dry-run writes nothing", (t) => {
@@ -60,8 +77,8 @@ test("the default scope is HOME, and --dry-run writes nothing", (t) => {
   const opencode = join(home, ".config/opencode/skills/follow-me/SKILL.md");
   const copilot = join(home, ".copilot/skills/follow-me/SKILL.md");
   assert.deepEqual(dry.out.trim().split("\n"), [
-    `would write ${opencode}`,
-    `would write ${copilot}`,
+    ...both("would write", opencode),
+    ...both("would write", copilot),
   ]);
   assert.equal(existsSync(opencode), false);
 
@@ -74,7 +91,7 @@ test("--all shares one file between harnesses with the same directory", (t) => {
   const { run } = sandbox(t);
   const r = run("--all");
   assert.equal(r.code, 0, r.err);
-  assert.equal(r.out.trim().split("\n").length, 6);
+  assert.equal(r.out.trim().split("\n").length, 12);
 });
 
 test("install fails clearly with nothing detected or an unknown harness", (t) => {
@@ -105,12 +122,18 @@ test("uninstall --project removes what install wrote in the repo, then reports a
 
   const first = uninstall("--project");
   assert.equal(first.code, 0, first.err);
-  assert.deepEqual(first.out.trim().split("\n"), [`removed ${claude}`, `removed ${agents}`]);
+  assert.deepEqual(first.out.trim().split("\n"), [
+    ...both("removed", claude),
+    ...both("removed", agents),
+  ]);
   assert.deepEqual(readdirSync(join(repo, ".claude/skills")), []);
   assert.deepEqual(readdirSync(join(repo, ".agents/skills")), []);
 
   const second = uninstall("--project");
-  assert.deepEqual(second.out.trim().split("\n"), [`absent ${claude}`, `absent ${agents}`]);
+  assert.deepEqual(second.out.trim().split("\n"), [
+    ...both("absent", claude),
+    ...both("absent", agents),
+  ]);
 });
 
 test("uninstall --dry-run removes nothing, and a folder with other files stays", (t) => {
@@ -123,13 +146,16 @@ test("uninstall --dry-run removes nothing, and a folder with other files stays",
 
   const dry = uninstall("--harness", "opencode,copilot", "--dry-run");
   assert.deepEqual(dry.out.trim().split("\n"), [
-    `would remove ${opencode}`,
-    `would remove ${copilot}`,
+    ...both("would remove", opencode),
+    ...both("would remove", copilot),
   ]);
   assert.equal(existsSync(opencode), true);
 
   const real = uninstall("--harness", "opencode,copilot");
-  assert.deepEqual(real.out.trim().split("\n"), [`removed ${opencode}`, `removed ${copilot}`]);
+  assert.deepEqual(real.out.trim().split("\n"), [
+    ...both("removed", opencode),
+    ...both("removed", copilot),
+  ]);
   assert.deepEqual(readdirSync(join(home, ".config/opencode/skills")), []);
   assert.deepEqual(readdirSync(join(home, ".copilot/skills/follow-me")), ["notes.md"]);
 });
@@ -140,10 +166,10 @@ test("uninstall --all visits every distinct file once", (t) => {
   const r = uninstall("--all");
   assert.equal(r.code, 0, r.err);
   const lines = r.out.trim().split("\n");
-  assert.equal(lines.length, 6);
+  assert.equal(lines.length, 12);
   assert.deepEqual(
     lines.filter((line) => !line.startsWith("absent ")),
-    [`removed ${join(home, ".cursor/skills/follow-me/SKILL.md")}`],
+    both("removed", join(home, ".cursor/skills/follow-me/SKILL.md")),
   );
 });
 
@@ -170,7 +196,7 @@ test("upgrade runs the package update, then refreshes the installed skill copies
   assert.equal(existsSync(marker), true);
   assert.deepEqual(r.stdout.trim().split("\n"), [
     `running: touch ${marker}`,
-    `wrote ${join(home, ".claude/skills/follow-me/SKILL.md")}`,
+    ...both("wrote", join(home, ".claude/skills/follow-me/SKILL.md")),
     "next: follow-me --version",
   ]);
 

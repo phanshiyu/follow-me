@@ -43,9 +43,11 @@ test("every harness has literal project and user paths", () => {
     assert.ok(want, harness.id);
     assert.deepEqual(plannedInstall(harness, "project", HOME, REPO), [
       { path: want.project, source: "SKILL.md" },
+      { path: want.project.replace(/SKILL\.md$/, "porting.md"), source: "porting.md" },
     ]);
     assert.deepEqual(plannedInstall(harness, "user", HOME, REPO), [
       { path: want.user, source: "SKILL.md" },
+      { path: want.user.replace(/SKILL\.md$/, "porting.md"), source: "porting.md" },
     ]);
   }
 });

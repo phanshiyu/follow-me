@@ -1,7 +1,8 @@
 # Using follow-me from your coding agent
 
 follow-me ships one skill, `skills/follow-me/SKILL.md`, in the open Agent Skills format
-(https://agentskills.io). It tells an agent how to drive the `follow-me` CLI. Every harness below
+(https://agentskills.io). It tells an agent how to drive the `follow-me` CLI. `porting.md` beside it
+holds the steps for posting a review, which the agent reads only when asked to post. Every harness below
 reads that file as-is, so installing means copying the `follow-me` folder into the directory the
 harness scans. The skill needs the `follow-me` command on your PATH.
 The agent does the planning: follow-me never calls a model and needs no API key, so it uses
@@ -36,7 +37,7 @@ file.
 ## Uninstall
 
 `follow-me uninstall` takes the same flags as install, except `--list`, and removes exactly the
-files install would write: each `<directory>/follow-me/SKILL.md`, then the `follow-me` folder if
+files install would write: each `<directory>/follow-me/SKILL.md` and `porting.md`, then the `follow-me` folder if
 that left it empty. It never removes a parent directory or other files in the folder. Each file
 prints as `removed`, `absent` or, with `--dry-run`, `would remove`.
 
@@ -63,7 +64,7 @@ For a manual install, copy the folder yourself. The folder is `skills/follow-me`
 | `copilot` | GitHub Copilot CLI | `.github/skills/` | `~/.copilot/skills/` |
 | `agents` | Any Agent Skills client | `.agents/skills/` | `~/.agents/skills/` |
 
-The skill lands in `<directory>/follow-me/SKILL.md`. Several harnesses read more than one
+The skill lands in `<directory>/follow-me/SKILL.md`, with `porting.md` beside it. Several harnesses read more than one
 directory, and OpenCode, Cursor, Gemini CLI and Copilot also read `.agents/skills/`. If two copies
 of the skill are visible, the harness keeps one and may warn, so install into one place per
 harness.

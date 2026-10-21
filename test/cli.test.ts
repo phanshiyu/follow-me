@@ -1409,6 +1409,7 @@ test("follow-me with no command walks the states: prompt, issues, review, questi
   assert.equal(first.code, 0, first.err);
   assert.deepEqual(first.out.split("\n"), [
     `wrote ${join(skillHome, ".claude", "skills", "follow-me", "SKILL.md")}`,
+    `wrote ${join(skillHome, ".claude", "skills", "follow-me", "porting.md")}`,
     `wrote ${sub}/prompt.md`,
     `next: write ${sub}/draft.json from ${sub}/prompt.md, then run follow-me again`,
     "",

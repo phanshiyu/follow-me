@@ -94,6 +94,9 @@ export function findHarness(id: string): Harness | undefined {
   return HARNESSES.find((h) => h.id === id);
 }
 
+/** The files of the skill folder, SKILL.md first. */
+export const SKILL_FILES: readonly string[] = ["SKILL.md", "porting.md"];
+
 export type PlannedFile = {
   /** Absolute destination. */
   readonly path: string;
@@ -108,5 +111,6 @@ export function plannedInstall(
   repoRoot: string,
 ): readonly PlannedFile[] {
   const root = scope === "user" ? join(home, harness.userDir) : join(repoRoot, harness.projectDir);
-  return [{ path: join(root, SKILL_NAME, "SKILL.md"), source: "SKILL.md" }];
+  // porting.md is read only when the user asks to post a review, so the skill stays short.
+  return SKILL_FILES.map((source) => ({ path: join(root, SKILL_NAME, source), source }));
 }
