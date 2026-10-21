@@ -58,6 +58,7 @@
             <div class="now-head">
               <button id="now-toggle" type="button" aria-expanded="true" aria-controls="now-body">Now</button>
               <span id="now-label" class="muted"></span>
+              <button id="now-expand" type="button" class="expand">Expand</button>
               <button id="threads-here" type="button" class="threads-here" aria-pressed="false" hidden></button>
             </div>
             <div id="now-body" class="now-body"></div>
@@ -86,6 +87,14 @@
         <button id="confirm-back" type="submit" value="back">Keep reviewing</button>
       </form>
     </dialog>
+    <dialog id="diagram-dialog" class="keys diagram-dialog" aria-labelledby="dialog-title">
+      <div class="dialog-head">
+        <strong id="dialog-title"></strong>
+        <button id="dialog-fit" type="button">Actual size</button>
+        <form method="dialog"><button type="submit">Close</button></form>
+      </div>
+      <div id="dialog-body" class="dialog-body fit"></div>
+    </dialog>
     <dialog id="keys" class="keys" aria-labelledby="keys-title">
       <h2 id="keys-title">Keyboard shortcuts</h2>
       <dl>
@@ -104,7 +113,7 @@
         <dt><kbd>y</kbd></dt><dd>Keep the agent's concern on this chunk</dd>
         <dt><kbd>x</kbd></dt><dd>Dismiss it</dd>
         <dt><kbd>m</kbd></dt><dd>Mute</dd>
-        <dt><kbd>t</kbd></dt><dd>Show or hide the conversation</dd>
+        <dt><kbd>t</kbd></dt><dd>Show or hide the conversation, a drawer on narrow screens</dd>
         <dt><kbd>⌘ Enter</kbd></dt><dd>Save a comment, <kbd>Esc</kbd> cancels</dd>
       </dl>
       <form method="dialog"><button type="submit">Close</button></form>

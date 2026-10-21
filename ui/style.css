@@ -901,16 +901,18 @@ body.index {
   display: none;
 }
 
-@media (max-width: 1199px) {
+@media (max-width: 1439px) {
   :root {
     --sidebar: 240px;
+    --panel-w: 360px;
   }
 }
 
-/* Below 900px the sidebar is a rail of numbers; the stage header carries the title. */
-@media (max-width: 899px) {
+/* Below 1280px the sidebar is a rail of numbers; the stage header carries the title. */
+@media (max-width: 1279px) {
   :root {
     --sidebar: 56px;
+    --panel-w: 320px;
   }
 
   .sidebar {
@@ -964,6 +966,57 @@ body.index {
     color: var(--bg);
     font-size: 13px;
     pointer-events: none;
+  }
+}
+
+/* Below 900px the conversation is a drawer from the right, opened by its tab, a chip or t. */
+@media (max-width: 899px) {
+  .layout {
+    grid-template-columns: var(--sidebar) minmax(0, 1fr);
+  }
+
+  .panel {
+    position: fixed;
+    inset: 0 0 0 auto;
+    z-index: 12;
+    width: min(360px, 100vw);
+    transition: transform 0.2s ease-out;
+    box-shadow: -4px 0 16px rgb(0 0 0 / 0.15);
+  }
+
+  .layout.panel-closed .panel {
+    transform: translateX(100%);
+    box-shadow: none;
+  }
+
+  .panel-tab,
+  .layout.panel-closed .panel-tab {
+    position: absolute;
+    top: 96px;
+    right: 100%;
+    flex-direction: column;
+    width: 40px;
+    height: auto;
+    padding: 12px 0;
+    border: 1px solid var(--border);
+    border-right: none;
+    border-radius: 8px 0 0 8px;
+    background: var(--panel);
+  }
+
+  .panel-tab .tab-label {
+    writing-mode: vertical-rl;
+  }
+
+  .layout:not(.panel-closed) .panel-body,
+  .layout.panel-closed .panel-body {
+    display: flex;
+  }
+}
+
+@media (max-width: 899px) and (prefers-reduced-motion: reduce) {
+  .panel {
+    transition: none;
   }
 }
 
@@ -1624,4 +1677,95 @@ button.anchor-chip:hover {
   background: none;
   cursor: default;
   padding: 0 4px;
+}
+
+.fold-wrap .clamp {
+  max-height: 18em;
+  overflow: hidden;
+}
+
+.fold-wrap .clamp.open {
+  max-height: none;
+}
+
+.fold-wrap .fold-toggle[hidden] {
+  display: none;
+}
+
+.entry .said.clamp p {
+  margin: 0 0 6px;
+  white-space: pre-wrap;
+}
+
+.entry code {
+  font: 12px var(--font-mono);
+  padding: 0 3px;
+  border-radius: 3px;
+  background: var(--panel);
+}
+
+.fenced {
+  margin: 4px 0;
+  padding: 6px 8px;
+  overflow-x: auto;
+  border-radius: 4px;
+  background: var(--panel);
+  font: 12px / 1.5 var(--font-mono);
+  white-space: pre;
+}
+
+.diagram-box {
+  position: relative;
+}
+
+.diagram-box .reply-diagram {
+  max-height: 280px;
+  overflow: auto;
+}
+
+.expand {
+  font-size: 12px;
+  padding: 0 8px;
+}
+
+.diagram-box .expand {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+}
+
+.diagram-box:not(:has(svg)) .expand,
+.now:not(:has(#now-body svg)) #now-expand {
+  display: none;
+}
+
+.diagram-dialog {
+  width: 90vw;
+  max-width: 90vw;
+  max-height: 85vh;
+}
+
+.dialog-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.dialog-head #dialog-title {
+  flex: 1;
+}
+
+.dialog-body {
+  max-height: calc(85vh - 90px);
+  overflow: auto;
+}
+
+.dialog-body.fit svg {
+  width: 100%;
+  height: auto;
+}
+
+.dialog-body:not(.fit) svg {
+  max-width: none;
 }

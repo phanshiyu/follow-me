@@ -71,6 +71,7 @@ import {
   anchorText,
   atBottom,
   beatFor,
+  blocksOf,
   chipText,
   concernLine,
   dividerText,
@@ -416,13 +417,37 @@ function commentForm({
 /** Mermaid sources a reply carried, drawn once each, so a re-render only copies the picture. */
 const replyDiagrams = new Map();
 
+/** What a failed diagram shows: the message, and the source folded under it. */
+function diagramFailure(message, source) {
+  return [
+    el("pre", { class: "diagram-error", text: message }),
+    el("details", {}, el("summary", { text: "Diagram source" }), el("pre", { text: source })),
+  ];
+}
+
 function fillDiagram(node, drawn) {
   if (drawn.svg !== undefined) {
     // Mermaid sanitizes its own output under securityLevel "strict".
     node.innerHTML = drawn.svg;
   } else {
-    node.replaceChildren(el("pre", { class: "diagram-error", text: drawn.error }));
+    node.replaceChildren(...diagramFailure(drawn.error, node.getAttribute("data-source") ?? ""));
   }
+}
+
+/** Opens a drawn diagram large, in a dialog that scrolls and starts fitted to its width. */
+function expandDiagram(svgHost, title) {
+  const svg = svgHost.querySelector("svg");
+  if (!svg) return;
+  const body = $("dialog-body");
+  const copy = svg.cloneNode(true);
+  copy.removeAttribute("style");
+  copy.removeAttribute("width");
+  copy.removeAttribute("height");
+  body.replaceChildren(copy);
+  body.classList.add("fit");
+  $("dialog-title").textContent = title;
+  $("dialog-fit").textContent = "Actual size";
+  $("diagram-dialog").showModal();
 }
 
 async function drawReplyDiagram(source) {
@@ -447,7 +472,65 @@ function diagramSlot(source) {
   const drawn = replyDiagrams.get(source);
   if (drawn) fillDiagram(node, drawn);
   else drawReplyDiagram(source);
-  return node;
+  return el(
+    "div",
+    { class: "diagram-box" },
+    node,
+    el("button", {
+      type: "button",
+      class: "expand",
+      text: "Expand",
+      onclick: () => expandDiagram(node, "Diagram"),
+    }),
+  );
+}
+
+/**
+ * Agent text: paragraphs with code spans, fenced blocks that scroll, and past 12 lines a fold with
+ * Show more. Whether it overflows is measured after it is on the page, so wrapped lines count.
+ */
+function agentText(id, text) {
+  const open = openFolds.has(id);
+  const clamp = el(
+    "div",
+    { class: open ? "said clamp open" : "said clamp" },
+    ...blocksOf(text).map((block) =>
+      block.kind === "pre"
+        ? el("pre", { class: "fenced", text: block.text })
+        : el(
+            "p",
+            {},
+            ...block.spans.map((span) => (span.code ? el("code", { text: span.text }) : span.text)),
+          ),
+    ),
+  );
+  return el(
+    "div",
+    { class: "fold-wrap" },
+    clamp,
+    el("button", {
+      type: "button",
+      class: "link fold-toggle",
+      hidden: true,
+      text: open ? "Show less" : "Show more",
+      onclick: () => {
+        if (openFolds.has(id)) openFolds.delete(id);
+        else openFolds.add(id);
+        renderTimeline();
+      },
+    }),
+  );
+}
+
+/** Shows the Show more button on the folds that overflow their twelve lines. */
+function measureFolds() {
+  for (const wrap of $("timeline").querySelectorAll(".fold-wrap")) {
+    const clamp = wrap.querySelector(".clamp");
+    const toggle = wrap.querySelector(".fold-toggle");
+    toggle.hidden = !(
+      clamp.classList.contains("open") || clamp.scrollHeight > clamp.clientHeight + 1
+    );
+  }
 }
 
 function commentLabel(comment) {
@@ -1214,7 +1297,9 @@ function markClamped() {
   }
 }
 
-const rail = window.matchMedia("(max-width: 899px)");
+const rail = window.matchMedia("(max-width: 1279px)");
+/** Below 900px the panel is a drawer from the right. */
+const narrow = window.matchMedia("(max-width: 899px)");
 
 /** In the rail, hovering or focusing a row shows its title beside it. */
 function showRailTip(event) {
@@ -1583,6 +1668,8 @@ let here = { ids: new Set(), threads: 0 };
 const askedWhilePlaying = new Set();
 /** Entries whose quote the reader opened in full. */
 const openQuotes = new Set();
+/** Entries whose long text the reader opened in full. */
+const openFolds = new Set();
 
 async function loadLog() {
   const res = await fetch(`${sessionPrefix}/api/events?since=0&timeout=0`).catch(() => null);
@@ -1615,8 +1702,10 @@ async function drawNow(shown) {
   } catch (error) {
     if (drawn !== shown.source) return;
     body.replaceChildren(
-      el("p", { class: "diagram-error", text: "Mermaid could not draw this diagram:" }),
-      el("pre", { class: "diagram-error", text: error?.message ?? String(error) }),
+      ...diagramFailure(
+        `Mermaid could not draw this diagram:\n${error?.message ?? String(error)}`,
+        shown.source,
+      ),
     );
   }
 }
@@ -1819,7 +1908,9 @@ function entryView(entry) {
               submit: (body) => api("PUT", `/api/comments/${comment.id}`, { ...comment, body }),
               close: () => editing.delete(comment.id),
             })
-          : el("div", { class: "said", text: comment.body }),
+          : entry.from === "agent"
+            ? agentText(entry.id, comment.body)
+            : el("div", { class: "said", text: comment.body }),
         comment.diagram ? diagramSlot(comment.diagram) : null,
         threadActions(comment, entry.from === "you"),
       );
@@ -1830,7 +1921,7 @@ function entryView(entry) {
         { class: `entry from-${entry.from}`, ...attrs },
         el("div", { class: "meta" }, el("strong", { text: entryWho(entry.from) })),
         anchorChip(entry, `re: ${snippet(entry.comment.body)} · ${entryAnchorText(entry.comment)}`),
-        el("div", { class: "said", text: entry.reply.body }),
+        agentText(entry.id, entry.reply.body),
         entry.reply.diagram ? diagramSlot(entry.reply.diagram) : null,
         threadActions(entry.comment, false),
       );
@@ -1848,7 +1939,7 @@ function entryView(entry) {
           }),
         ),
         anchorChip(entry, `re: ${snippet(entry.comment.body)} · ${entryAnchorText(entry.comment)}`),
-        el("div", { class: "said", text: entry.response.note }),
+        agentText(entry.id, entry.response.note),
       );
     case "concern": {
       const paths = Object.fromEntries(state.units.map((u) => [u.id, u.path]));
@@ -1896,6 +1987,7 @@ function renderTimeline() {
   );
   list.scrollTop = stuck ? list.scrollHeight : top;
   following = stuck;
+  measureFolds();
   markHere();
   renderUnread();
 }
@@ -1943,7 +2035,8 @@ function setPanelOpen(open) {
 
 function togglePanel() {
   setPanelOpen(!panelOpen);
-  store("panel", String(panelOpen));
+  // The drawer opens for a moment; only the wide layout remembers the choice.
+  if (!narrow.matches) store("panel", String(panelOpen));
 }
 
 /** The composer: with rows picked it writes to them, else to the whole plan, as a question. */
@@ -2094,6 +2187,13 @@ function noticeEvent(event) {
 
 function setUpPanel() {
   $("panel-tab").addEventListener("click", togglePanel);
+  $("now-expand").addEventListener("click", () =>
+    expandDiagram($("now-body"), $("now-label").textContent),
+  );
+  $("dialog-fit").addEventListener("click", () => {
+    const fit = $("dialog-body").classList.toggle("fit");
+    $("dialog-fit").textContent = fit ? "Actual size" : "Fit to width";
+  });
   $("now-toggle").addEventListener("click", () => {
     const open = $("now-toggle").getAttribute("aria-expanded") !== "true";
     $("now-toggle").setAttribute("aria-expanded", String(open));
@@ -2124,7 +2224,10 @@ function setUpPanel() {
     $("toast").hidden = true;
     if (toastTarget !== null) revealEntry(toastTarget);
   });
-  setPanelOpen(stored("panel") !== "false");
+  setPanelOpen(stored("panel") !== "false" && !narrow.matches);
+  narrow.addEventListener("change", () =>
+    setPanelOpen(!narrow.matches && stored("panel") !== "false"),
+  );
 }
 
 function applyPlayback() {
@@ -2624,7 +2727,7 @@ const KEYS = {
   r: () => player.view === "play" && toBeat(currentBeat()),
   c: () => commentOnPick("change"),
   q: () => commentOnPick("question"),
-  Escape: clearPick,
+  Escape: () => (narrow.matches && panelOpen ? togglePanel() : clearPick()),
   y: () => decideCurrent("kept"),
   x: () => decideCurrent("dismissed"),
   m: toggleMute,

@@ -6,6 +6,7 @@ import {
   anchorText,
   atBottom,
   beatFor,
+  blocksOf,
   chipText,
   concernLine,
   dividerText,
@@ -344,4 +345,27 @@ test("a snippet is the first line, cut with an ellipsis when it is long", () => 
   assert.equal(snippet("why?\nmore"), "why?");
   assert.equal(snippet("x".repeat(80), 10), "xxxxxxxxx…");
   assert.equal(snippet("  padded  "), "padded");
+});
+
+test("a reply is paragraphs with code spans and fenced blocks kept verbatim", () => {
+  const blocks = blocksOf(
+    "Use `assertNumber` here.\nSame paragraph.\n\n```js\nconst a = `x`;\n\nb();\n```\nAfter.",
+  );
+  assert.deepEqual(blocks, [
+    {
+      kind: "p",
+      spans: [
+        { text: "Use ", code: false },
+        { text: "assertNumber", code: true },
+        { text: " here.\nSame paragraph.", code: false },
+      ],
+    },
+    { kind: "pre", text: "const a = `x`;\n\nb();" },
+    { kind: "p", spans: [{ text: "After.", code: false }] },
+  ]);
+});
+
+test("an unclosed fence runs to the end and an empty reply has no blocks", () => {
+  assert.deepEqual(blocksOf("```\nopen"), [{ kind: "pre", text: "open" }]);
+  assert.deepEqual(blocksOf("  \n"), []);
 });

@@ -525,3 +525,51 @@ export function snippet(text, max = 60) {
   const line = (text.split("\n")[0] ?? "").trim();
   return line.length > max ? `${line.slice(0, max - 1).trimEnd()}…` : line;
 }
+
+/**
+ * A reply as blocks: paragraphs whose backtick spans are code, and fenced blocks kept verbatim.
+ * An unclosed fence runs to the end, so half a reply still reads.
+ * @param {string} text
+ * @returns {({ kind: "p", spans: { text: string, code: boolean }[] } | { kind: "pre", text: string })[]}
+ */
+export function blocksOf(text) {
+  /** @type {ReturnType<typeof blocksOf>} */
+  const blocks = [];
+  /** @type {string[]} */
+  let para = [];
+  /** @type {string[] | null} */
+  let fence = null;
+  const flush = () => {
+    if (para.length === 0) return;
+    blocks.push({ kind: "p", spans: spansOf(para.join("\n")) });
+    para = [];
+  };
+  for (const line of text.replace(/\r\n/g, "\n").split("\n")) {
+    if (line.trimStart().startsWith("```")) {
+      if (fence === null) {
+        flush();
+        fence = [];
+      } else {
+        blocks.push({ kind: "pre", text: fence.join("\n") });
+        fence = null;
+      }
+    } else if (fence !== null) fence.push(line);
+    else if (line.trim() === "") flush();
+    else para.push(line);
+  }
+  if (fence !== null) blocks.push({ kind: "pre", text: fence.join("\n") });
+  flush();
+  return blocks;
+}
+
+/** @param {string} text */
+function spansOf(text) {
+  return text
+    .split(/(`[^`\n]+`)/)
+    .filter((part) => part !== "")
+    .map((part) =>
+      part.length > 2 && part.startsWith("`") && part.endsWith("`")
+        ? { text: part.slice(1, -1), code: true }
+        : { text: part, code: false },
+    );
+}
