@@ -45,3 +45,4 @@ final build are in the last table.
 |---|---:|---:|---:|---:|---|
 | baseline | 24314 | 6079 | 474939 | 118735 | |
 | a. rules into the skill, top-down order | 22765 | 5691 | 473388 | 118347 | skill 3894 to 12134 (read once); prompt.md 6457 to 1891 and re-plan prompt 9655 to 4432 on the fixture |
+| b. re-plan prompt: bodies only for new units | 20308 | 5077 | 253628 | 63407 | re-plan prompt.md 4432 to 1975 (fixture) and 230575 to 10815 (real); unchanged units one line each, a comment quoted only when its hunk changed |

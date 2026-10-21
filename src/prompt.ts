@@ -42,7 +42,10 @@ export type PromptInput = {
   | { readonly mode: "walk" }
 );
 
-export type Changes = { readonly since: PlanVersion } & Pick<Evolution, "vanished" | "added">;
+export type Changes = { readonly since: PlanVersion } & Pick<
+  Evolution,
+  "vanished" | "added" | "draft"
+>;
 
 /** Consecutive runs collapse: [0,1,2,3,7] becomes "0-3,7". */
 function formatRanges(changes: readonly number[]): string {
@@ -284,39 +287,91 @@ function renderUnit(unit: Unit): string {
   return unit.kind === "hunk" ? renderHunk(unit) : renderOtherUnit(unit);
 }
 
-/** The vanished and new units, and the reviewer's comments on hunks that vanished, quoted. */
-function renderChanges(changes: Changes, input: PromptInput, ctx: Context): string {
-  const { since, vanished, added } = changes;
-  const gone = new Set<UnitId>(vanished.map((v) => v.unit.id));
-  const review = input.mode === "split" ? input.review : null;
-  const orphans = (review?.comments ?? []).filter(
-    (c) => c.author !== "agent" && c.anchor.kind === "hunk" && gone.has(c.anchor.unit),
-  );
-  const parts = [
-    `## Changes since v${since}\n`,
-    `The branch moved after plan v${since}. The draft holds that plan on the new tip.`,
+const QUOTE_LINES = 6;
+const QUOTE_WIDTH = 160;
+
+/**
+ * At most six rows around the picked ones (marked ">"), each cut to 160 characters: enough to
+ * recognise the code without a file read, short enough to send with every comment.
+ */
+function shortQuote(rows: readonly string[]): string[] {
+  const picked = rows.flatMap((r, i) => (r.startsWith(">") ? [i] : []));
+  const first = picked[0] ?? 0;
+  const last = picked.at(-1) ?? 0;
+  const before = Math.max(0, Math.min(2, QUOTE_LINES - (last - first + 1)));
+  const start = Math.max(0, first - before);
+  return rows
+    .slice(start, start + QUOTE_LINES)
+    .map((r) => (r.length > QUOTE_WIDTH ? `${r.slice(0, QUOTE_WIDTH - 1)}…` : r));
+}
+
+/** One comment in a line or two, with its quote only when the agent cannot see the hunk now. */
+function renderOpen(c: Comment, ctx: Context, quote: boolean): string {
+  const what = c.kind === "question" ? "question" : (c.severity ?? "comment");
+  const lines = [
+    `- ${c.id} ${what} on ${describeAnchor(c.anchor, ctx)}: ${JSON.stringify(c.body)}`,
+  ];
+  if (c.follows) lines.push(`  asks again after ${c.follows}`);
+  for (const reply of c.replies ?? []) {
+    lines.push(`  ${reply.author} replied: ${JSON.stringify(reply.body)}`);
+  }
+  if (quote) {
+    const rows = anchorRows(ctx, c.anchor);
+    const quoted = rows.length > 0 ? rows : (c.context.lines ?? []).map((l) => `> ${l}`);
+    lines.push(...shortQuote(quoted).map((r) => `    ${r}`));
+  }
+  return lines.join("\n");
+}
+
+/**
+ * The prompt after the branch moved. The agent wrote the plan and read every comment already, so
+ * only new units carry bodies; the rest are one line each, and a comment is quoted only when the
+ * hunk it was on changed.
+ */
+function renderMoved(input: PromptInput, changes: Changes, head: string): string {
+  const { since, vanished, added, draft } = changes;
+  const { units } = input.diff;
+  const gone = new Map<UnitId, Unit>(vanished.map((v) => [v.unit.id, v.unit]));
+  const sections = [
+    head,
+    `## Changes since v${since}\n\nThe branch moved after plan v${since}. The draft holds that plan on the new tip.`,
   ];
   if (vanished.length > 0) {
-    parts.push(
-      `\nThese units of v${since} changed, so their ids are gone:`,
-      ...vanished.map(({ unit, commits }) => {
-        const where = commits
-          .map((c) => `commit ${c.index + 1} ${JSON.stringify(c.message.split("\n")[0] ?? "")}`)
-          .join(", ");
-        return `- ${unit.id}  ${unit.path}, was in ${where}`;
-      }),
+    sections.push(
+      [
+        `## Units of v${since} that changed, so their ids are gone\n`,
+        ...vanished.map(({ unit, commits }) => {
+          const was = commits.map((c) => c.index + 1).join(", ");
+          return `- ${unit.id}  ${unit.path}  was in commit ${was}`;
+        }),
+      ].join("\n"),
     );
   }
   if (added.length > 0) {
-    parts.push("\nNew units, in no commit yet:\n", added.map(renderUnit).join("\n\n"));
+    sections.push(`## New units, in no commit yet\n\n${added.map(renderUnit).join("\n\n")}`);
   }
-  if (orphans.length > 0) {
-    parts.push(
-      "\nComments on hunks that changed:\n",
-      orphans.map((c) => renderComment(c, ctx)).join("\n"),
+  const kept = draft.commits.flatMap((commit, k) =>
+    commit.units.map((ref) => {
+      const path = units.get(ref.unit)?.path ?? "";
+      return `- ${formatSelection(ref.unit, ref.select)}  ${path}  commit ${k + 1}`;
+    }),
+  );
+  if (kept.length > 0) {
+    sections.push(`## Unchanged units, in the draft's commits\n\n${kept.join("\n")}`);
+  }
+  const review = input.mode === "split" ? input.review : null;
+  const theirs = review?.comments.filter((c) => c.author !== "agent") ?? [];
+  if (review !== null && theirs.length > 0) {
+    const ctx: Context = { commits: [], units: new Map([...units, ...gone]) };
+    const changed = (c: Comment) => c.anchor.kind === "hunk" && gone.has(c.anchor.unit);
+    sections.push(
+      [
+        `## Open comments, on plan v${review.planVersion}\n`,
+        ...theirs.map((c) => renderOpen(c, ctx, changed(c))),
+      ].join("\n"),
     );
   }
-  return parts.join("\n");
+  return `${sections.join("\n\n")}\n`;
 }
 
 /** The planner prompt for a coding agent. Pure and deterministic for the same input. */
@@ -325,26 +380,14 @@ export function renderPrompt(input: PromptInput): string {
   const head = [
     `# follow-me: ${TITLES[input.mode]}\n\n${pointer(input)}\n\n${sessionLines(input)}`,
   ];
+  if (input.changes !== undefined) return renderMoved(input, input.changes, head.join(""));
   const units = `## Units\n\n${renderUnits(diff)}`;
-  if (input.mode === "walk") {
-    const sections = [
-      ...head,
-      ...(input.changes === undefined
-        ? []
-        : [renderChanges(input.changes, input, { commits: [], units: diff.units })]),
-      units,
-    ];
-    return `${sections.join("\n\n")}\n`;
-  }
+  if (input.mode === "walk") return `${[...head, units].join("\n\n")}\n`;
   const ctx: Context = {
     commits: input.previousCommits ?? [],
     units: diff.units,
   };
-  const sections = [
-    ...head,
-    ...(input.changes === undefined ? [] : [renderChanges(input.changes, input, ctx)]),
-    units,
-  ];
+  const sections = [...head, units];
   const { previousPlan, review } = input;
   if (previousPlan) sections.push(`## Previous plan\n\n${renderPreviousPlan(previousPlan)}`);
   const theirs = review?.comments.filter((c) => c.author !== "agent") ?? [];

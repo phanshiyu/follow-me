@@ -1438,8 +1438,12 @@ test("follow-me after the branch moved carries the plan over and asks only for t
   assert.equal(draft.commits[0].units.length, before.units.size - 1);
   const prompt = readFileSync(join(repo.dir, sub, "prompt.md"), "utf8");
   assert.match(prompt, /^## Changes since v1$/m);
-  assert.match(prompt, /src\/lib\.js, was in commit 1 "feat: everything"/);
+  assert.match(prompt, /^- h_[0-9a-f]{12} {2}src\/lib\.js {2}was in commit 1$/m);
   assert.match(prompt, /cannot divide by zero/);
+  // Only the new unit carries a body; the others are one line each, in their commit.
+  assert.equal(prompt.includes("## Units\n"), false);
+  assert.match(prompt, /^- h_[0-9a-f]{12} {2}README\.md {2}commit 1$/m);
+  assert.equal(prompt.includes("[0]+ export function assertNumber(x) {"), false);
   // A second call before the agent acts says the same and keeps the draft.
   assert.equal(run(repo.dir, "--no-open", "--wait", "0").out.endsWith(handoff), true);
 
@@ -1507,6 +1511,16 @@ test("a fix the agent commits while the page is open swaps in with the threads c
     true,
     moved.out,
   );
+  // The comment on the hunk that changed is quoted from the old hunk; the other is a ref.
+  const replan = readFileSync(join(repo.dir, sub, "prompt.md"), "utf8").split(
+    "## Open comments",
+  )[1];
+  assert.match(
+    replan ?? "",
+    new RegExp(`- ${asked} minor on src/lib\\.js:\\d+ .*"say what went wrong"\n`),
+  );
+  assert.match(replan ?? "", /> \+ {2}if \(b === 0\) throw new RangeError\('division by zero'\);/);
+  assert.match(replan ?? "", new RegExp(`- ${kept} minor on README\\.md:1 .*"fine as is"\n?$`));
   const draft = JSON.parse(readFileSync(join(repo.dir, sub, "draft.json"), "utf8"));
   const after = await loadDiff(repo.dir, "main", "feature");
   const added = [...after.units.keys()].filter((id) => !before.units.has(id));

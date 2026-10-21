@@ -1093,8 +1093,7 @@ function evolveHandoff(
 ): number | null {
   if (!draftForTip(session)) session.writeDraft(serializePlanFile(moved.draft));
   if (draftState(session).kind === "valid") return null;
-  const { since, vanished, added } = moved;
-  session.writePrompt(renderPrompt(promptInput(session, mode, args, { since, vanished, added })));
+  session.writePrompt(renderPrompt(promptInput(session, mode, args, moved)));
   say(`wrote ${relative(cwd, session.promptPath)}`);
   const step = `assign the new units in ${relative(cwd, session.draftPath)}, then run follow-me again`;
   next(hosted ? `${step}; ${STILL_WORKING}` : step);
