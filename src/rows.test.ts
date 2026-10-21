@@ -156,7 +156,7 @@ test("a new comment is quoted in at most six rows of 160 characters, and the res
   );
 });
 
-test("the prompt and the report quote the same rows; the report carries the context-line rule", () => {
+test("the prompt and the report quote the same rows and leave the context-line rule to the skill", () => {
   const c = comment([2], [], "what is same for?");
   const input: PromptInput = {
     mode: "split",
@@ -201,7 +201,8 @@ test("the prompt and the report quote the same rows; the report carries the cont
     report,
   );
   assert.ok(report.includes("### c_abcdef · src/lib.js · line 2"));
-  assert.ok(report.includes("do not move lines because of it"));
+  // The rule for a context-row comment lives in the skill, which the agent loaded once.
+  assert.ok(!report.includes("do not move lines because of it"));
 });
 
 test("a thread the agent started reaches the report only once the reviewer answers", () => {

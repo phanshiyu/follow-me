@@ -142,14 +142,14 @@ test("the prompt dumps units grouped by path with indexed change lines", () => {
       [
         "### src/a.ts",
         "",
-        "h_aaaaaaaaaaaa  src/a.ts  (4 change lines)",
+        "h_aaaaaaaaaaaa  (4 change lines)",
         "[0]- old1",
         "[1]+ new1",
         "    same",
         "[2]- old2",
         "[3]+ new2",
         "",
-        "h_bbbbbbbbbbbb  src/a.ts  (1 change lines)",
+        "h_bbbbbbbbbbbb  (1 change lines)",
         "[0]+ tail",
         "",
         "### logo.png",
@@ -438,9 +438,7 @@ test("a split report keeps plan feedback for the planner and adds code issues an
   );
   assert.ok(text.includes("## Questions\n\n### c_whydro · src/a.ts · line 1"));
   assert.ok(
-    text.endsWith(
-      "Fix the code issues on the original branch, then run `follow-me extract` again.\n",
-    ),
+    text.endsWith("Fix the code issues on the original branch, then run `follow-me` again.\n"),
   );
 });
 

@@ -73,13 +73,15 @@ function stripEol(text: string): string {
   return text.replace(/\r?\n$/, "");
 }
 
-function renderHunk(hunk: TextHunk): string {
+/** Under a "### path" heading the path is left out of each hunk's own line. */
+function renderHunk(hunk: TextHunk, withPath = true): string {
   const lines = hunk.body.map((line) =>
     line.op === " "
       ? `    ${stripEol(line.text)}`
       : `[${line.change}]${line.op} ${stripEol(line.text)}`,
   );
-  return [`${hunk.id}  ${hunk.path}  (${hunk.changeCount} change lines)`, ...lines].join("\n");
+  const where = withPath ? `  ${hunk.path}` : "";
+  return [`${hunk.id}${where}  (${hunk.changeCount} change lines)`, ...lines].join("\n");
 }
 
 function renderOtherUnit(unit: Exclude<Unit, TextHunk>): string {
@@ -97,7 +99,7 @@ function renderUnits(diff: Diff): string {
   }
   const files = [...byPath].map(([path, units]) => {
     const rendered = units.map((unit) =>
-      unit.kind === "hunk" ? renderHunk(unit) : renderOtherUnit(unit),
+      unit.kind === "hunk" ? renderHunk(unit, false) : renderOtherUnit(unit),
     );
     return [`### ${path}`, ...rendered].join("\n\n");
   });
@@ -235,10 +237,6 @@ function pickRows(ctx: Context, anchor: Anchor): Picked | null {
     touchesContext: count(" ") > 0,
   };
 }
-
-/** Said once wherever comments reach the agent, with the same words. */
-const CONTEXT_RULE =
-  "A comment on a context row (marked `>` with no + or -) is about code this branch leaves alone or depends on. The plan cannot move it, so do not move lines because of it. Answer a question with an explanation, or point at the commit that last touched those lines. Answer a change request as a code issue, not by reordering.";
 
 function renderComment(comment: Comment, ctx: Context): string {
   const lines = [`- ${comment.id}  on ${describeAnchor(comment.anchor, ctx)}`];
@@ -1123,10 +1121,8 @@ function renderIncluded(
       "",
     );
   }
-  const onContext = review.comments.some((c) => pickRows(ctx, c.anchor)?.touchesContext);
-  if (onContext) out.push(CONTEXT_RULE, "");
   if (!walk && items.length > 0) {
-    out.push("Fix the code issues on the original branch, then run `follow-me extract` again.", "");
+    out.push("Fix the code issues on the original branch, then run `follow-me` again.", "");
   }
   return out.join("\n");
 }

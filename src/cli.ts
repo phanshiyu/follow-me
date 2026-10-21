@@ -554,7 +554,7 @@ async function applyHosted(session: Session, args: Args, open: Open): Promise<nu
       `the page now shows plan v${latest.version}; the comments on v${open.summary.version} are saved`,
     );
   }
-  next("follow-me watch");
+  next(`run follow-me again; ${STILL_WORKING}`);
   return 0;
 }
 
@@ -1268,9 +1268,12 @@ async function listen(session: Session, open: Open, args: Args): Promise<number>
     const news = fresh.filter(isNews);
     if (news.length > 0) {
       const ctx = { commits: projectedCommits(session, version), units: session.diff.units };
-      process.stdout.write(renderEvents(news, ctx));
       const ended = news.some((e) => e.type === "ended");
-      if (ended || news.some((e) => e.type === "submitted")) {
+      const done = ended || news.some((e) => e.type === "submitted");
+      // The report that follows quotes every comment, so the digest only says what else happened.
+      const shown = done ? news.filter((e) => !isCommentEvent(e)) : news;
+      process.stdout.write(renderEvents(shown, ctx));
+      if (done) {
         say();
         if (ended) {
           const stored = reviewsOf(session).find((r) => r.version === version);
@@ -1475,6 +1478,10 @@ async function feedback(cwd: string, args: Args): Promise<number> {
   return report(cwd, args, args.flags.has("walk"));
 }
 
+function isCommentEvent(event: ServerEvent): boolean {
+  return event.type === "comment" || event.type === "comment-updated";
+}
+
 /** Events the reviewer caused; the agent's own replies, explanations and version swaps are not news. */
 function isNews(event: ServerEvent): boolean {
   if (event.type === "version") return false;
@@ -1568,7 +1575,7 @@ async function reply(cwd: string, args: Args): Promise<number> {
     ...(diagram === undefined ? {} : { diagram }),
   });
   say(`replied ${id} to ${commentId}`);
-  next("follow-me watch");
+  next(`run follow-me again; ${STILL_WORKING}`);
   return 0;
 }
 
@@ -1692,7 +1699,7 @@ async function explain(cwd: string, args: Args): Promise<number> {
     ...(diagram === undefined ? {} : { diagram }),
   });
   say(`explained ${id}`);
-  next("follow-me watch");
+  next(`run follow-me again; ${STILL_WORKING}`);
   return 0;
 }
 

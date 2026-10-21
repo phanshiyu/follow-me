@@ -1058,7 +1058,10 @@ test("explain starts an agent thread on the plan, a commit or picked lines, and 
 
   const plan = run(repo.dir, "explain", "--body", "Start here: one commit, everything.");
   assert.equal(plan.code, 0, plan.err);
-  assert.match(plan.out, /^explained c_[a-z2-7]{6}\nnext: follow-me watch\n/);
+  assert.match(
+    plan.out,
+    /^explained c_[a-z2-7]{6}\nnext: run follow-me again; the reviewer is still working\n/,
+  );
   const commit = run(repo.dir, "explain", "--commit", "1", "--body", "Why this is one commit.");
   assert.equal(commit.code, 0, commit.err);
 
@@ -1301,7 +1304,7 @@ test("apply swaps the open page to the new plan in place and keeps the old comme
   assert.equal(applied.code, 0, applied.err);
   assert.ok(applied.out.includes(`\nfollow-me review: ${url}\n`));
   assert.ok(applied.out.includes("the page now shows plan v2; the comments on v1 are saved\n"));
-  assert.ok(applied.out.endsWith("next: follow-me watch\n"));
+  assert.ok(applied.out.endsWith("next: run follow-me again; the reviewer is still working\n"));
 
   const state = JSON.parse(await (await fetch(new URL("api/state", url))).text());
   assert.equal(state.version, 2);
@@ -1473,11 +1476,14 @@ test("follow-me with no command walks the states: prompt, issues, review, questi
     "next: the reviewer is still working; run follow-me again to keep listening\n",
   );
 
+  // A comment posted just before Submit is printed once, in the report that follows.
+  await fetch(new URL("api/comments", url), comment("one more thing", { severity: "minor" }));
   await fetch(new URL("api/submit", url), { method: "POST" });
   const submitted = run(repo.dir, "--wait", "5");
   assert.equal(submitted.code, 0, submitted.err);
   assert.match(submitted.out, /the reviewer submitted the review/);
   assert.match(submitted.out, /change this/);
+  assert.equal(submitted.out.split("one more thing").length, 2, submitted.out);
   assert.equal(
     submitted.out.endsWith("next: done; the user can port it with follow-me report --json\n"),
     true,
@@ -1486,7 +1492,7 @@ test("follow-me with no command walks the states: prompt, issues, review, questi
   await fetch(new URL("api/end", url), { method: "POST" });
   const after = run(repo.dir, "--wait", "0");
   assert.equal(after.code, 0, after.err);
-  assert.match(after.out, /^review v1 ended with 2 comments\n/);
+  assert.match(after.out, /^review v1 ended with 3 comments\n/);
   assert.match(after.out, /change this/);
   assert.equal(
     after.out.endsWith("next: done; the user can port it with follow-me report --json\n"),
