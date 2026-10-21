@@ -237,6 +237,20 @@ files stay the durable record written as it goes (`reviews/vN.draft.json`) and a
 - **Replies.** `Comment.replies` holds the conversation under a comment, posted to
   `POST api/comments/<cid>/replies` by the agent (`follow-me reply`) or the reviewer. They are
   autosaved and written into the review. A page's `PUT` of a comment never overwrites them.
+- **Row offsets.** `Anchor.hunk.offsets` lists 0-based, strictly ascending positions in the hunk body
+  of the rows a reviewer picked, context rows included, within one hunk. `changes` keeps its meaning
+  (the change indices among the picked rows) and is `[]` when only context is picked. The server
+  rejects an offset at or beyond the body length with a 400 and leaves the draft as it was; it does not
+  check `changes` against the rows. `context.lines` snapshots the picked rows. Prompt, `watch` and the
+  report print the file line range (tip numbers, base numbers marked "base side" when a picked row is a
+  removal) and quote the hunk as the commit writes it with picked rows marked `>`.
+- **Explain.** `Comment.author: "agent"` marks a thread the agent started, with an optional `diagram`.
+  `follow-me explain` posts one (plan, commit message or hunk anchor) and `watch` hides it like the
+  agent's replies. Such a comment needs no `responses` entry; the report lists it under "Threads you
+  started" only once the reviewer has replied.
+- **Decision time.** `ConcernDecision.decidedAt` is set by the server on every decision (a client value
+  is ignored), saved with the draft and the review, and sent in the `concern` event, so a timeline can be
+  ordered after a restart.
 - **In-place swap.** `POST api/version { version, hash }` moves the hosted session to a newer frozen
   plan under the same id and URL. The new plan loads first through the same loader as a fresh
   registration, with the lock the server already holds, so a plan that no longer fits changes nothing.

@@ -82,6 +82,11 @@ closing the page. Everything goes through the review server.
    loop; stop when it reports that the review ended.
 2. Answer a question or comment in place with `follow-me reply <commentId> --body "..."`, adding
    `--diagram <file>` with Mermaid source when a picture explains it. This needs no new plan.
+   `follow-me explain [--commit <n>] [--unit <id>] [--lines <a-b>] --body "..." [--diagram <file>]`
+   starts a thread yourself, before anyone asks: about the whole plan, a commit, or change lines of a
+   unit. `watch` does not echo it back to you. A comment on rows marked `>` that are plain context is about
+   code this branch leaves alone: explain it or point at the commit that last touched it, and do not move
+   lines because of it.
 3. When the plan itself should change, write a new draft whose `responses` answer the comments
    (`"status": "answered"` with `"at"` for questions), `follow-me check`, then `follow-me apply`. While the
    page is open, apply swaps it to the new version at the same URL and keeps the old comments.
