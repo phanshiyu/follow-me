@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { type AnswerCard, answerCards } from "./lib/answers.ts";
 import { api, sessionPrefix } from "./lib/api.ts";
 import { applyEvent } from "./lib/live.ts";
 import { type LineNumber, lineNumbers, ownership } from "./lib/rows.ts";
@@ -115,4 +116,11 @@ export function useDerived(): Derived {
     }),
     [units, commits],
   );
+}
+
+/** The previous version's questions, each placed where its answer now lives. */
+export function useAnswers(): readonly AnswerCard[] {
+  const { state } = useReview();
+  const { previous, resolved, commits } = state;
+  return useMemo(() => answerCards(previous, resolved, commits), [previous, resolved, commits]);
 }

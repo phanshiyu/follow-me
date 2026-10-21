@@ -7,12 +7,14 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { cardsAt } from "../lib/answers.ts";
 import { api } from "../lib/api.ts";
 import { bodyOf, filesOf, noteOf, titleOf } from "../lib/commit.ts";
 import { type BoxKind, composeComment, type Draft } from "../lib/compose.ts";
 import type { ProjectedCommit, Unit } from "../lib/wire.ts";
 import { usePage } from "../page.tsx";
-import { useDerived, useReview } from "../store.tsx";
+import { useAnswers, useDerived, useReview } from "../store.tsx";
+import { AnswerCard, ConcernCard } from "./Cards.tsx";
 import { Check } from "./Check.tsx";
 import { CommentBox } from "./CommentBox.tsx";
 import { boxActions, Hunk } from "./Hunk.tsx";
@@ -27,6 +29,8 @@ function describeUnit(unit: Exclude<Unit, { kind: "hunk" }>): string {
 export function CommitSection({ commit }: { commit: ProjectedCommit }) {
   const { state, run } = useReview();
   const { units } = useDerived();
+  const answers = useAnswers();
+  const shownUnits = commit.refs.map((r) => r.unit);
   const [box, setBox] = useState<{ anchor: "message" | "position"; kind: BoxKind } | null>(null);
   const said = state.comments.filter(
     (c) =>
@@ -106,6 +110,14 @@ export function CommitSection({ commit }: { commit: ProjectedCommit }) {
               <p className="whitespace-pre-wrap text-muted-foreground">{note}</p>
             </div>
           )}
+          {cardsAt(answers, commit.index, null, shownUnits).map((card) => (
+            <AnswerCard key={card.id} card={card} className="ml-0" />
+          ))}
+          {(commit.concerns ?? [])
+            .filter((k) => k.unit === undefined || units.get(k.unit)?.kind !== "hunk")
+            .map((concern) => (
+              <ConcernCard key={concern.id} concern={concern} className="ml-0" />
+            ))}
           {said.map((comment) => (
             <ThreadCard key={comment.id} comment={comment} className="ml-0" />
           ))}
@@ -145,6 +157,9 @@ export function CommitSection({ commit }: { commit: ProjectedCommit }) {
                               {ref.narration.trim()}
                             </p>
                           ) : null}
+                          {cardsAt(answers, commit.index, unit.id, shownUnits).map((card) => (
+                            <AnswerCard key={card.id} card={card} className="ml-0" />
+                          ))}
                           <Hunk hunk={unit} commit={commit} />
                         </div>
                       ) : (

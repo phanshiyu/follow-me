@@ -104,3 +104,16 @@ export function rowsBetween(
   if (anchorRow === null || focusRow === null) return null;
   return { from: anchorRow, lines: selectionRange(visible, anchorRow, focusRow) };
 }
+
+/**
+ * The row an agent's concern sits under: its last pinned line the commit shows as its own, else
+ * the commit's last own line in the unit. null when the commit shows none.
+ */
+export function concernRow(
+  lines: readonly number[] | undefined,
+  body: readonly HunkLine[],
+  own: readonly number[],
+): number | null {
+  const pinned = bodyIndexes(body, lines ?? []).filter((i) => own.includes(i));
+  return pinned.at(-1) ?? own.at(-1) ?? null;
+}

@@ -15,6 +15,7 @@ import type { Span } from "../lib/highlight.ts";
 import { describeRows, type LineNumber, ownersOf, rowsOf, scopeOf } from "../lib/rows.ts";
 import {
   anchorFor,
+  concernRow,
   lastShown,
   pickRow,
   rowsBetween,
@@ -27,6 +28,7 @@ import { useSpans } from "../lib/useSpans.ts";
 import type { HunkLine, ProjectedCommit, TextHunk } from "../lib/wire.ts";
 import { scrollToCommit, usePage } from "../page.tsx";
 import { useDerived, useReview } from "../store.tsx";
+import { ConcernCard } from "./Cards.tsx";
 import { type BoxAction, CommentBox } from "./CommentBox.tsx";
 import { ThreadCard } from "./Thread.tsx";
 
@@ -115,6 +117,14 @@ export function Hunk({
       continue;
     const card = <ThreadCard key={comment.id} comment={comment} />;
     const row = lastShown(rowsOfAnchor(anchor, hunk.body), shownSet);
+    if (row === null) loose.push(card);
+    else threads.set(row, [...(threads.get(row) ?? []), card]);
+  }
+  const ownRows = rows.flatMap((r) => (r.kind === "line" && r.mine ? [r.line] : []));
+  for (const concern of commit.concerns ?? []) {
+    if (concern.unit !== hunk.id) continue;
+    const row = concernRow(concern.lines, hunk.body, ownRows);
+    const card = <ConcernCard key={concern.id} concern={concern} />;
     if (row === null) loose.push(card);
     else threads.set(row, [...(threads.get(row) ?? []), card]);
   }

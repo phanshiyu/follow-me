@@ -2,6 +2,7 @@ import { expect, test } from "vitest";
 import { aHunk } from "../test/factories.ts";
 import {
   anchorFor,
+  concernRow,
   lastShown,
   pickRow,
   rowsBetween,
@@ -68,4 +69,11 @@ test("an anchor names its rows by offsets, or by change indices for older commen
 test("a text selection picks the rows between its ends, and only inside rows", () => {
   expect(rowsBetween(visible, 5, 1)).toEqual({ from: 5, lines: [1, 2, 5] });
   expect(rowsBetween(visible, null, 1)).toBeNull();
+});
+
+test("a concern sits under its last pinned own line, else under the commit's last own line", () => {
+  const { body } = aHunk();
+  expect(concernRow([2, 3], body, [3, 4])).toBe(4);
+  expect(concernRow([0], body, [3, 4])).toBe(4);
+  expect(concernRow(undefined, body, [])).toBeNull();
 });
