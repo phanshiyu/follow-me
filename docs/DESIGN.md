@@ -259,12 +259,15 @@ files stay the durable record written as it goes (`reviews/vN.draft.json`) and a
   plan under the same id and URL. The new plan loads first through the same loader as a fresh
   registration, with the lock the server already holds, so a plan that no longer fits changes nothing.
   Then the old version's review is finalized to `reviews/vN.json` (and `vN.md`) if anything was said,
-  and the comment set starts empty. `api/state.previous` is `{ version, comments, responses }`: the
-  comments of the review before this version, finished or still an autosave, and what this plan
-  answered. `api/state.carried` and the `version` event's `carried` place each of those comments on
-  the new diff (see "Live update after a code change"). `POST api/comments/<cid>/replies` takes an id
-  from `previous` too; such replies are saved under `earlierReplies` in this version's draft and
-  review, since the old review file is written once, and are merged into `previous` and `carried`.
+  and the comment set starts empty. The review session goes on: everything said on every version
+  swapped in since the page opened is carried onto the new diff (see "One review across versions").
+  `api/state.previous` is `{ version, comments, responses }`: the comments of the review before this
+  version, finished or still an autosave, and what this plan answered. `api/state.carried` and the
+  `version` event's `carried` place the session's earlier comments on the new diff, followed by any
+  comment of `previous` the session does not hold (a review that ended before this one began).
+  `POST api/comments/<cid>/replies`, `api/resolved` and `api/excluded` take any of those ids;
+  replies are saved under `earlierReplies` in this version's draft and review, since the old review
+  file is written once, and are merged into `previous` and `carried`.
   `follow-me apply` and the bare entry do the swap when the server hosts the session, writing the
   branch under the server's lock.
 - **Validation sees live comments.** `session.priorReview` returns the autosave of an unfinished
@@ -275,7 +278,8 @@ files stay the durable record written as it goes (`reviews/vN.draft.json`) and a
   writes it, both voices, replies under their comment, questions and their answers last. Undecided and
   dismissed concerns are left out, and so are items the reviewer excluded, which close the report under
   a short "Excluded" list. `follow-me report` (`feedback` is its old name), `GET api/report` and the
-  `vN.md` written on end all call it.
+  `vN.md` written on end all call it. For a review that swapped versions it renders the whole
+  session on the open version's diff (see "One review across versions").
 - **Concerns and questions.** A plan may carry `concerns` on commits and unit refs; validation derives
   `k_` ids, allows one per unit, and the reviewer's decisions live in `Review.concerns`. A comment of
   `kind: "question"` is answered by a response with status `answered` whose `at` points at narration or a
@@ -363,14 +367,44 @@ line clamped into that hunk. Nothing left on the path gives `unit: null`. Commen
 carry with `unit: null, changed: false`. When the old commits are gone from the repo, vanished
 comments carry to the first unit on their path with `newLine: null`.
 
+## One review across versions
+
+The reviewer answers the code writer once, at the end, so one review is everything said while the
+page stayed open, whatever versions were swapped in. At each swap the server carries (`carrySession`
+in `src/evolve.ts`) what the session already carried, moved again from its place on the old diff,
+plus the comments said on the old version. A placement that changed stays changed; a kept unit
+keeps it in place (its line shifts with the hunk), a vanished one moves to the nearest hunk of the
+path by its last line, and a path with no hunks left leaves it on no unit: the code is gone.
+`since` records the last version whose code it still matched. Kept concerns the next plan no
+longer has are carried the same way with their decision (`carryConcerns`); decisions on concerns
+the next plan still has, resolutions and exclusions move into the new view as they are.
+
+On disk the session lives beside the open version, with nothing copied: `reviews/vN.draft.json`
+and then `reviews/vN.json` hold `carried`, one `{ version, comment, since, unit, offsets, changed,
+path, newLine }` per earlier comment (the comment itself stays in `reviews/v<version>.json`, its
+later replies in the `earlierReplies` of the versions after it), and `carriedConcerns`, each
+concern whole with its decision, since no review file holds it. `carried` present, even empty,
+means this version continues a review. The swap writes the new draft at once, so a restarted
+server's loader reads `carried` back (`sessionComments` in `src/session.ts`) and the session goes
+on; `follow-me report` reads a finished `vN.json` the same way. Older review files have no
+`carried` and read as reviews that began on their own version.
+
+The report folds the session in before rendering: an unchanged comment keeps its rows (its commit
+is the one that now takes its hunk), a changed one points at the row of its carried line, or at
+its hunk when it has none, and is labelled "the code changed after v<since>"; a gone one is listed
+under its path as "the code is gone after v<since>" with the rows it quoted; message and plan
+comments stay as they are. Each id appears once.
+
 ## Hand-off
 
 follow-me never holds a forge token, so the end of a review is a hand-off, not a post. The reviewer
 decides what leaves: `Review.excluded` lists the comment and concern ids to keep out
 (`POST api/excluded { comment | concern, excluded }`, autosaved, written into the review and sent in
 `api/state`). `follow-me report --json` (and `GET api/report?format=json`) prints every item as
-`{ path, oldPath, newLine, oldLine, startNewLine, startOldLine, severity, kind, body, thread, resolved,
-excluded }` in file order. Line numbers are the original branch's: the tip's for an added or context
+`{ id, path, oldPath, newLine, oldLine, startNewLine, startOldLine, severity, kind, body, thread,
+resolved, excluded }` in file order, plus `changed: { since, gone }` on an item said on an earlier
+version whose code changed after v`since` (or is gone, with no lines). `id` names the comment or
+concern, so the page toggles a carried item like any other. Line numbers are the original branch's: the tip's for an added or context
 row, the base's for a removed one, computed from the hunk and the projected commit as the quoting code
 does. The split's last tree equals the tip, so the numbers are the ones a merge request shows for the
 same base. The agent, not follow-me, then posts the non-excluded items with `glab` or `gh`, after
