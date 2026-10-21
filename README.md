@@ -7,6 +7,10 @@ follow-me splits a branch's net change into small commits in an order a reader c
 [![npm](https://img.shields.io/npm/v/@shiyuphan/follow-me)](https://www.npmjs.com/package/@shiyuphan/follow-me)
 [![ci](https://github.com/phanshiyu/follow-me/actions/workflows/ci.yml/badge.svg)](https://github.com/phanshiyu/follow-me/actions/workflows/ci.yml)
 
+<p align="center"><img src="assets/playback.gif" width="960" alt="Playback of an eight-commit branch: each commit opens with its narration, then its changed lines appear chunk by chunk beside a sequence diagram"></p>
+
+*Playback at 1x, sped up 1.5 times for the GIF. The voice is not in the GIF; the browser reads the narration aloud.*
+
 ## Why
 
 People commit in the order things happened: wip, fix, actually fix, revert. A reviewer then reads that history or gives up and reads one big diff. Neither shows how the change was thought through.
