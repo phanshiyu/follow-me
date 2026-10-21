@@ -45,7 +45,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.135.0",
-    "mermaid": "12.2.0"
+    "mermaid": "12.2.0",
+    "prismjs": "1.30.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",

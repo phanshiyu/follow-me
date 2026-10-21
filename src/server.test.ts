@@ -337,6 +337,23 @@ test("the Mermaid bundle and the chunks it imports are served as JavaScript", as
   await run.done;
 });
 
+test("Prism components are served by name and nothing else is reachable through the route", async (t) => {
+  const run = await start(t, twoCommitState());
+  for (const name of ["core", "clike", "javascript", "markup-templating"]) {
+    const res = await fetch(new URL(`/vendor/prism/${name}.js`, run.url));
+    assert.deepEqual(
+      [name, res.status, res.headers.get("content-type")],
+      [name, 200, "text/javascript; charset=utf-8"],
+    );
+  }
+  for (const bad of ["nope", "%2e%2e%2fpackage", "..%2fcomponents%2fprism-core"]) {
+    assert.equal((await fetch(new URL(`/vendor/prism/${bad}.js`, run.url))).status, 404, bad);
+  }
+  assert.equal((await fetch(new URL("/highlight.js", run.url))).status, 200);
+  await post(run.url, "api/end", {});
+  await run.done;
+});
+
 test("one server hosts two sessions, lists them, and saves each review in its own place", async (t) => {
   const [one, two] = [await tempDir(t), await tempDir(t)];
   const released: string[] = [];

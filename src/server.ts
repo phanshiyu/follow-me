@@ -100,14 +100,18 @@ export class RegistrationError extends Error {
 export const HEALTH_APP = "follow-me";
 
 const UI_DIR = new URL("../ui/", import.meta.url);
-const STATIC_FILES = new Map([
-  ["/app.js", { file: "app.js", type: "text/javascript; charset=utf-8" }],
-  ["/playback.js", { file: "playback.js", type: "text/javascript; charset=utf-8" }],
-  ["/style.css", { file: "style.css", type: "text/css; charset=utf-8" }],
+/** Every module and the stylesheet in ui/ is served flat, so a new module needs no route. */
+const STATIC_FILE = /^\/([a-z][a-z-]*\.(?:js|css))$/;
+const STATIC_TYPES = new Map([
+  ["js", "text/javascript; charset=utf-8"],
+  ["css", "text/css; charset=utf-8"],
 ]);
 /** Mermaid's ESM entry imports its chunks by relative path, so they are served beside it. */
 const MERMAID_ENTRY = new URL(import.meta.resolve("mermaid/dist/mermaid.esm.min.mjs"));
 const MERMAID_CHUNK = /^\/vendor\/chunks\/mermaid\.esm\.min\/([\w-]+\.mjs)$/;
+/** Prism is a plain script per component, loaded one at a time by the page as languages need. */
+const PRISM_CORE = new URL(import.meta.resolve("prismjs/components/prism-core.min.js"));
+const PRISM_PATH = /^\/vendor\/prism\/([a-z][a-z-]*)\.js$/;
 const MAX_BODY_BYTES = 1_000_000;
 const BASE32 = "abcdefghijklmnopqrstuvwxyz234567";
 
@@ -344,9 +348,22 @@ ${body}
 
 /** The file behind a /vendor/ path, or null. Chunk names are checked, so no path escapes. */
 function vendorFile(path: string): URL | null {
+  const part = PRISM_PATH.exec(path)?.[1];
+  if (part !== undefined) {
+    return part === "core" ? PRISM_CORE : new URL(`prism-${part}.min.js`, PRISM_CORE);
+  }
   if (path === "/vendor/mermaid.mjs") return MERMAID_ENTRY;
   const chunk = MERMAID_CHUNK.exec(path)?.[1];
   return chunk === undefined ? null : new URL(`chunks/mermaid.esm.min/${chunk}`, MERMAID_ENTRY);
+}
+
+async function readUi(name: string): Promise<Buffer> {
+  try {
+    return await readFile(fileURLToPath(new URL(name, UI_DIR)));
+  } catch (error) {
+    if (isRecord(error) && error["code"] === "ENOENT") throw new HttpError(404, "not found");
+    throw error;
+  }
 }
 
 async function sendVendor(res: ServerResponse, file: URL): Promise<void> {
@@ -568,10 +585,11 @@ export function startServer(opts: HostOptions): Promise<Host> {
     const method = req.method ?? "GET";
     const path = new URL(req.url ?? "/", "http://localhost").pathname;
 
-    const asset = method === "GET" ? STATIC_FILES.get(path) : undefined;
-    if (asset) {
-      const bytes = await readFile(fileURLToPath(new URL(asset.file, UI_DIR)));
-      res.writeHead(200, { "content-type": asset.type, "cache-control": "no-store" });
+    const asset = method === "GET" ? STATIC_FILE.exec(path)?.[1] : undefined;
+    if (asset !== undefined) {
+      const bytes = await readUi(asset);
+      const type = STATIC_TYPES.get(asset.slice(asset.lastIndexOf(".") + 1));
+      res.writeHead(200, { "content-type": type ?? "text/plain", "cache-control": "no-store" });
       res.end(bytes);
       return;
     }

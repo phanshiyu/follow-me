@@ -1,3 +1,4 @@
+import { componentsForAll, highlightBody, languageFor } from "/highlight.js";
 import {
   beatAt,
   beatStart,
@@ -61,6 +62,58 @@ let focusKey = null;
 const drafts = new Map();
 const openBoxes = new Set();
 const editing = new Set();
+
+/** Component scripts already requested, so a language shared by two files loads once. */
+const scripts = new Map();
+
+function loadScript(name) {
+  if (!scripts.has(name)) {
+    scripts.set(
+      name,
+      new Promise((resolve, reject) => {
+        const node = el("script", { src: `/vendor/prism/${name}.js` });
+        node.addEventListener("load", resolve);
+        node.addEventListener("error", () => reject(new Error(`Prism ${name} did not load`)));
+        document.head.append(node);
+      }),
+    );
+  }
+  return scripts.get(name);
+}
+
+/**
+ * Loads Prism and the grammars for the plan's files, and only those. Without a known language
+ * nothing is fetched. A failed load leaves the code plain, which is still a complete review.
+ */
+async function loadHighlighting(units) {
+  const languages = new Set(
+    units.flatMap((u) => (u.kind === "hunk" ? [languageFor(u.path)] : [])).filter(Boolean),
+  );
+  const names = componentsForAll(languages);
+  if (names.length === 0) return;
+  try {
+    // Prism reads this before it runs, and then waits to be called instead of scanning the page.
+    window.Prism ??= { manual: true };
+    await loadScript("core");
+    for (const name of names) await loadScript(name);
+  } catch {
+    // Plain code is the fallback.
+  }
+}
+
+/** unit id -> its lines as coloured spans, or null when the file stays plain. */
+const highlighted = new Map();
+
+function spansOf(unit) {
+  if (!highlighted.has(unit.id)) {
+    const grammar = window.Prism?.languages?.[languageFor(unit.path)];
+    highlighted.set(
+      unit.id,
+      grammar ? highlightBody(unit.body, (text) => window.Prism.tokenize(text, grammar)) : null,
+    );
+  }
+  return highlighted.get(unit.id);
+}
 
 async function api(method, path, body) {
   const res = await fetch(`${sessionPrefix}${path}`, {
@@ -311,7 +364,16 @@ function lineBox(unit, commit) {
 function diffLine(unit, commit, index, mine) {
   const line = unit.body[index];
   const key = lineKey(unit.id, index);
-  const text = el("span", { class: "text", text: line.text.replace(/\n$/, "") });
+  const spans = spansOf(unit)?.[index];
+  const text = spans
+    ? el(
+        "span",
+        { class: "text" },
+        ...spans.map((s) =>
+          el("span", { class: s.tone ? `tok-${s.tone}` : undefined, text: s.text }),
+        ),
+      )
+    : el("span", { class: "text", text: line.text.replace(/\n$/, "") });
   const at = numbers.get(unit.id)?.[index];
   const gutter = el(
     "span",
@@ -1342,6 +1404,7 @@ guarded(async () => {
     ? `${state.anchor.branch} · Code review`
     : `${state.anchor.branch} · Review of plan v${state.version}`;
   $("end").textContent = walk ? "Finish code review" : "End review";
+  await loadHighlighting(state.units);
   setUpPlayer();
   if (walk) enterPlay();
   else render();
