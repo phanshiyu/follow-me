@@ -16,8 +16,8 @@ import { useReview } from "../store.tsx";
 import { SeverityChip } from "./Severity.tsx";
 
 /**
- * Submit review: an optional summary and the concerns nobody decided. Submitting sends the held
- * flags to the agent and opens the hand-off page.
+ * Submit review: an optional summary and the concerns nobody decided. Submitting finishes the
+ * review and opens the hand-off page. Comments are not held back, so it sends none.
  */
 export function SubmitDialog({
   open,
@@ -33,7 +33,6 @@ export function SubmitDialog({
   const undecided = state.commits.flatMap((c) =>
     (c.concerns ?? []).filter((k) => !decided.has(k.id)).map((k) => ({ concern: k, commit: c })),
   );
-  const pending = state.comments.filter((c) => c.pending === true).length;
   const decideAll = (decision: "kept" | "dismissed") =>
     run(async () => {
       for (const { concern } of undecided) await api.decide(concern.id, decision);
@@ -53,9 +52,8 @@ export function SubmitDialog({
         <DialogHeader>
           <DialogTitle>Submit review</DialogTitle>
           <DialogDescription>
-            {pending === 0
-              ? "Nothing is held back; your questions already went to the agent."
-              : `${pending} pending flag${pending === 1 ? "" : "s"} go${pending === 1 ? "es" : ""} to the agent now.`}
+            Your flags and questions already reached the agent. Submitting finishes the review and
+            opens the hand-off.
           </DialogDescription>
         </DialogHeader>
         <Textarea

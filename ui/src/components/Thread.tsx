@@ -82,11 +82,6 @@ export function ThreadCard({ comment, className }: { comment: WireComment; class
       <div className="mb-1 flex items-center gap-2 text-muted-foreground text-xs">
         <span className="font-medium text-foreground">{who(comment)}</span>
         {comment.severity === undefined ? null : <SeverityChip severity={comment.severity} />}
-        {comment.pending ? (
-          <span className="rounded-full bg-amber-500/15 px-2 py-px text-amber-800 dark:text-amber-300">
-            Pending
-          </span>
-        ) : null}
       </div>
       {comment.author === "agent" ? <Markdown text={comment.body} /> : <Text>{comment.body}</Text>}
       {comment.diagram === undefined ? null : (
@@ -130,15 +125,6 @@ export function ThreadCard({ comment, className }: { comment: WireComment; class
           <Button variant="ghost" size="xs" onClick={() => setLocallyResolved(comment.id, true)}>
             Resolve
           </Button>
-          {comment.pending ? (
-            <Button
-              variant="ghost"
-              size="xs"
-              onClick={() => void run(() => api.remove(comment.id))}
-            >
-              Discard
-            </Button>
-          ) : null}
         </div>
       )}
     </Card>

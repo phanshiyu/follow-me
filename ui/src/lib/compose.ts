@@ -7,12 +7,11 @@ export type Draft = {
   readonly severity: Severity | null;
 };
 
-/** The comment a saved box posts. Ask makes a question; Flag a change request, pending or not. */
+/** The comment a saved box posts. Ask makes a question; Flag a change request. */
 export function composeComment(
   anchor: Anchor,
   context: WireComment["context"],
   draft: Draft,
-  pending: boolean,
 ): NewComment {
   return {
     anchor,
@@ -20,6 +19,5 @@ export function composeComment(
     body: draft.body,
     ...(draft.kind === "ask" ? { kind: "question" } : {}),
     ...(draft.severity === null ? {} : { severity: draft.severity }),
-    ...(pending ? { pending: true } : {}),
   };
 }

@@ -100,7 +100,6 @@ function Page() {
   const [stackOpen, setStackOpen] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [submitOpen, setSubmitOpen] = useState(false);
-  const pending = state.comments.filter((c) => c.pending === true).length;
   usePageKeys(
     () => setStackOpen(true),
     () => setSheetOpen(true),
@@ -120,9 +119,6 @@ function Page() {
           <StackPicker open={stackOpen} onOpenChange={setStackOpen} />
           <div className="flex items-center justify-end gap-2">
             <AskBranch />
-            <span className="hidden text-muted-foreground lg:inline">
-              Review · {pending} pending
-            </span>
             <Button size="sm" onClick={() => setSubmitOpen(true)}>
               Submit review
             </Button>

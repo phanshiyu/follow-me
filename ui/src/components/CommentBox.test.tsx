@@ -14,7 +14,7 @@ async function pickRowFour() {
   await userEvent.keyboard(" ");
 }
 
-test("a flag is held until Submit review, then the hand-off opens", async () => {
+test("a flag reaches the agent when saved, and Submit review only finishes the review", async () => {
   const { server } = await renderReview(aState());
   server.on("POST", "/api/comments", (call) => {
     const body = typeof call.body === "object" && call.body !== null ? call.body : {};
@@ -32,21 +32,23 @@ test("a flag is held until Submit review, then the hand-off opens", async () => 
   await userEvent.keyboard("f");
   await userEvent.keyboard("Guard both in one call");
   await page.getByRole("button", { name: "major" }).click();
-  await page.getByRole("textbox").click();
-  await userEvent.keyboard("{Meta>}{Enter}{/Meta}");
+  await expect.element(page.getByRole("button", { name: "Send flag" })).toBeVisible();
+  await page.getByRole("button", { name: "Send flag" }).click();
 
   const thread = page.getByRole("article", { name: "Thread" });
-  await expect.element(thread.getByText("Pending")).toBeVisible();
   await expect.element(thread.getByText("major")).toBeVisible();
-  await expect.element(page.getByText("Review · 1 pending")).toBeVisible();
-  expect(server.calls.find((c) => c.method === "POST")?.body).toMatchObject({
+  await expect.element(page.getByText("Pending")).not.toBeInTheDocument();
+  await expect.element(page.getByText(/pending/)).not.toBeInTheDocument();
+  const posted = server.calls.find((c) => c.method === "POST");
+  expect(posted?.body).toEqual({
+    anchor: expect.objectContaining({ kind: "hunk", commit: 1 }),
+    context: expect.objectContaining({ path: "src/lib.js" }),
     body: "Guard both in one call",
     severity: "major",
-    pending: true,
   });
 
   await page.getByRole("button", { name: "Submit review" }).click();
-  await expect.element(page.getByText("1 pending flag goes to the agent now.")).toBeVisible();
+  await expect.element(page.getByText(/already reached the agent/)).toBeVisible();
   await page.getByRole("dialog").getByRole("button", { name: "Submit review" }).click();
   await expect.poll(() => location.pathname.endsWith("/report")).toBe(true);
   expect(server.calls.some((c) => c.method === "POST" && c.path === "/api/submit")).toBe(true);

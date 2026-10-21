@@ -27,7 +27,7 @@ function itemsOf(state: State): ReportItem[] {
     };
   };
   return state.comments
-    .filter((c) => c.author !== "agent" && c.pending !== true)
+    .filter((c) => c.author !== "agent")
     .map((c) => {
       const answer = c.replies?.findLast((r) => r.author === "agent")?.body;
       const body =

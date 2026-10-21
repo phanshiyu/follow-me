@@ -58,7 +58,6 @@ export const api = {
     }
     return posted;
   },
-  remove: (id: string) => call<unknown>("DELETE", `/api/comments/${id}`),
   reply: (id: string, body: string) =>
     call<{ id: string }>("POST", `/api/comments/${id}/replies`, { author: "reviewer", body }),
   decide: (id: string, decision: "kept" | "dismissed", severity?: Severity) =>

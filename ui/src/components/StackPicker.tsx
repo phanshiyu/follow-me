@@ -75,14 +75,6 @@ export function StackPicker({
                       {badges.open}
                     </span>
                   ) : null}
-                  {badges.pending > 0 ? (
-                    <span
-                      title={`${badges.pending} pending`}
-                      className="rounded-full bg-amber-500/15 px-1.5 tabular-nums"
-                    >
-                      {badges.pending} pending
-                    </span>
-                  ) : null}
                   {badges.undecided > 0 ? (
                     <span
                       title="Agent concerns to decide"

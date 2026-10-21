@@ -12,7 +12,7 @@ test("a thread waits on the reviewer once the agent has the last word", () => {
   expect(waitingOnReviewer(aComment({ author: "agent" }))).toBe(true);
 });
 
-test("badges count open, waiting and pending threads and undecided concerns of one commit", () => {
+test("badges count open and waiting threads and undecided concerns of one commit", () => {
   const concern: PlacedConcern = JSON.parse(
     '{"id":"k_00000001","severity":"major","kind":"bug","text":"x"}',
   );
@@ -20,7 +20,7 @@ test("badges count open, waiting and pending threads and undecided concerns of o
   if (commit === undefined) throw new Error("the state has two commits");
   const comments = [
     aComment({ id: JSON.parse('"c_aaaaaa"'), replies: [aReply()] }),
-    aComment({ id: JSON.parse('"c_bbbbbb"'), pending: true, kind: undefined }),
+    aComment({ id: JSON.parse('"c_bbbbbb"'), kind: undefined }),
     aComment({ id: JSON.parse('"c_cccccc"') }),
     aComment({ id: JSON.parse('"c_dddddd"'), anchor: { kind: "plan" } }),
   ];
@@ -28,7 +28,6 @@ test("badges count open, waiting and pending threads and undecided concerns of o
     {
       open: 2,
       waiting: 1,
-      pending: 1,
       undecided: 1,
     },
   );

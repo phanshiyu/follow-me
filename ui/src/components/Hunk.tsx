@@ -58,18 +58,15 @@ function rowOf(node: Node | null, within: HTMLElement): number | null {
   return row && within.contains(row) ? Number(row.dataset["row"]) : null;
 }
 
-/**
- * What the box offers. A question goes to the agent now, because the answer is wanted while
- * reading, and the server never holds one. A flag waits for Submit review, with Flag now beside it.
- */
-export function boxActions(post: (pending: boolean, draft: Draft) => Promise<boolean>) {
-  return (kind: BoxKind): BoxAction[] =>
-    kind === "ask"
-      ? [{ label: "Ask now", primary: true, run: (d) => post(false, d) }]
-      : [
-          { label: "Flag now", run: (d) => post(false, d) },
-          { label: "Add to review", primary: true, run: (d) => post(true, d) },
-        ];
+/** What the box offers. Both kinds reach the agent as soon as they are saved. */
+export function boxActions(post: (draft: Draft) => Promise<boolean>) {
+  return (kind: BoxKind): BoxAction[] => [
+    {
+      label: kind === "ask" ? "Send question" : "Send flag",
+      primary: true,
+      run: post,
+    },
+  ];
 }
 
 /**
@@ -196,7 +193,7 @@ export function Hunk({
   const range = drag === null ? null : new Set(selectionRange(visible, drag.from, drag.to));
   const tabStop = focus !== null && shownSet.has(focus) ? focus : visible[0];
 
-  const post = async (pending: boolean, draft: Draft) => {
+  const post = async (draft: Draft) => {
     if (pick === null) return false;
     const anchor = anchorFor(
       { id: hunk.id, commit: commit.index, body: hunk.body, owners: own },
@@ -207,7 +204,7 @@ export function Hunk({
       path: hunk.path,
       lines: snapshotRows(hunk.body, pick.lines),
     };
-    const ok = await run(() => api.comment(composeComment(anchor, context, draft, pending)));
+    const ok = await run(() => api.comment(composeComment(anchor, context, draft)));
     if (ok) setPick(null);
     return ok;
   };

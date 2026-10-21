@@ -14,11 +14,9 @@ import { ThreadCard } from "./Thread.tsx";
 
 function usePostOnBranch() {
   const { run } = useReview();
-  return (pending: boolean, draft: Draft) =>
+  return (draft: Draft) =>
     run(() =>
-      api.comment(
-        composeComment({ kind: "plan" }, { commitMessage: "", path: null }, draft, pending),
-      ),
+      api.comment(composeComment({ kind: "plan" }, { commitMessage: "", path: null }, draft)),
     );
 }
 

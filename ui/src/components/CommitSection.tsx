@@ -38,14 +38,13 @@ export function CommitSection({ commit }: { commit: ProjectedCommit }) {
       (c.anchor.kind === "message" || c.anchor.kind === "position") &&
       c.anchor.commit === commit.index,
   );
-  const post = (anchor: "message" | "position") => (pending: boolean, draft: Draft) =>
+  const post = (anchor: "message" | "position") => (draft: Draft) =>
     run(() =>
       api.comment(
         composeComment(
           { kind: anchor, commit: commit.index },
           { commitMessage: commit.message, path: null },
           draft,
-          pending,
         ),
       ),
     );

@@ -45,7 +45,7 @@ export function applyEvent(state: State, event: ServerEvent): State {
     }
     default:
       // version and ended carry nothing to fold in, and a newer server may send types this page
-      // does not know, such as "submitted" before the released flags arrive as comment events.
+      // does not know.
       return next({});
   }
 }

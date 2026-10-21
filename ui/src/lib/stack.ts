@@ -7,7 +7,6 @@ export type Badges = {
   readonly open: number;
   /** Of those, the ones where the agent spoke last, so the reviewer owes the next word. */
   readonly waiting: number;
-  readonly pending: number;
   readonly undecided: number;
 };
 
@@ -29,7 +28,6 @@ export function badgesOf(
   return {
     open: open.length,
     waiting: open.filter(waitingOnReviewer).length,
-    pending: here.filter((c) => c.pending === true).length,
     undecided: (commit.concerns ?? []).filter((k) => !decided.has(k.id)).length,
   };
 }

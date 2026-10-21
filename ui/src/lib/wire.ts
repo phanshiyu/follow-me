@@ -1,5 +1,5 @@
 // The server's JSON as the page reads it. The domain types are the contract; this file only adds
-// the fields the server owner is landing beside this page (pending flags, exclusions, the report).
+// the fields the server owner is landing beside this page (exclusions, the report).
 
 import type {
   Comment,
@@ -34,8 +34,8 @@ export type {
   UnitRef,
 } from "../../../src/types.ts";
 
-/** A flag held back until Submit review; the server clears it on submit. */
-export type WireComment = Comment & { readonly pending?: true };
+/** Every comment reaches the agent as it is saved, so the page ignores any `pending` mark. */
+export type WireComment = Omit<Comment, "pending">;
 
 /** GET api/state. */
 export type State = {
