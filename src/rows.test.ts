@@ -107,7 +107,7 @@ test("without a projected plan the rows are quoted as git shows them", () => {
   assert.ok(text.includes("  >  same"));
 });
 
-test("the prompt and the report quote the same rows and carry the context-line rule", () => {
+test("the prompt and the report quote the same rows; the report carries the context-line rule", () => {
   const c = comment([2], [], "what is same for?");
   const input: PromptInput = {
     mode: "split",
@@ -139,7 +139,7 @@ test("the prompt and the report quote the same rows and carry the context-line r
     ),
     prompt,
   );
-  assert.ok(prompt.includes("do not move lines because of it"));
+  assert.ok(!prompt.includes("do not move lines because of it"));
 
   const report = renderReport(input.review ?? assert.fail(), commits(), diff().units, {
     branch: "feature",

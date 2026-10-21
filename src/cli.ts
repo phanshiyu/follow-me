@@ -40,7 +40,14 @@ import {
   stopServer,
   swapVersion,
 } from "./host.ts";
-import { runInstall, runUninstall, type SkillTargets, syncSkills } from "./install.ts";
+import {
+  findSkillDir,
+  InstallError,
+  runInstall,
+  runUninstall,
+  type SkillTargets,
+  syncSkills,
+} from "./install.ts";
 import { naiveDraft } from "./naive.ts";
 import { isFields, serializePlanFile, type ValidPlan, validatePlan } from "./plan.ts";
 import {
@@ -602,6 +609,7 @@ function promptInput(
     diff: session.diff,
     draftPath: session.draftPath,
     checkCommand: `follow-me check${branchFlag(args)}`,
+    ...skillFile(),
     ...(changes === undefined ? {} : { changes }),
   };
   if (mode === "walk") return { ...common, mode };
@@ -613,6 +621,16 @@ function promptInput(
     review: session.lastReview(),
     previousCommits: previous === undefined ? [] : projectedCommits(session, previous.version),
   };
+}
+
+/** The skill this package ships, which holds the rules prompt.md points at; none if it is missing. */
+function skillFile(): { skillPath?: string } {
+  try {
+    return { skillPath: join(findSkillDir(), "SKILL.md") };
+  } catch (error) {
+    if (error instanceof InstallError) return {};
+    throw error;
+  }
 }
 
 /** The commits of a frozen plan as projected now, or none when it no longer fits the branch. */

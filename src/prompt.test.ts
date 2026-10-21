@@ -164,21 +164,25 @@ test("the prompt dumps units grouped by path with indexed change lines", () => {
   );
 });
 
-test("the prompt names the draft path, the format and the rules", () => {
-  const text = renderPrompt(first);
-  assert.ok(text.includes("Write the plan as JSON to /d/draft.json."));
-  assert.ok(text.includes('"schema": "follow-me/plan@1"'));
-  assert.ok(text.includes(`"base": "${"1".repeat(40)}"`));
-  assert.ok(text.includes('"units": ["h_0123456789ab", "h_ba9876543210:0-3,7"]'));
-  assert.ok(text.includes("Every change line must be used exactly once across all commits."));
-  assert.ok(
-    text.includes(
-      'A bare "h_x" takes every change line of that hunk that no other commit claimed.',
-    ),
+test("the prompt names the session and the skill section, and leaves the rules to the skill", () => {
+  const text = renderPrompt({ ...first, skillPath: "/pkg/skills/follow-me/SKILL.md" });
+  assert.equal(
+    text.split("\n## Units")[0],
+    [
+      "# follow-me: plan the commits",
+      "",
+      'Write the draft as "Writing the draft" in the follow-me skill says, in author mode. If it is not loaded, read /pkg/skills/follow-me/SKILL.md.',
+      "",
+      "- draft: /d/draft.json",
+      `- base: ${"1".repeat(40)}`,
+      `- tip: ${"2".repeat(40)}`,
+      "- check: follow-me check",
+      "",
+    ].join("\n"),
   );
-  assert.ok(text.includes("A failing test comes before the fix that makes it pass."));
   assert.ok(!text.includes("## Previous plan"));
   assert.ok(!text.includes("## Open review comments"));
+  assert.ok(!text.includes("## Questions"));
 });
 
 test("a previous plan and open comments are appended with the response instruction", () => {
@@ -191,8 +195,6 @@ test("a previous plan and open comments are appended with the response instructi
     text.includes(
       [
         "## Previous plan",
-        "",
-        "Commits are numbered from 1.",
         "",
         "1. Add parser",
         "  - h_aaaaaaaaaaaa:0-3,7",
@@ -213,7 +215,7 @@ test("a previous plan and open comments are appended with the response instructi
   );
   assert.ok(text.includes("- c_ghijkl  on the position of commit 2"));
   assert.ok(text.includes("- c_mnopqr  on the whole plan"));
-  assert.ok(text.includes("Answer every comment below with one entry in `responses`"));
+  assert.ok(text.includes("## Open review comments, on plan v2\n"));
 });
 
 test("rendering the same input twice gives identical text", () => {
@@ -252,7 +254,7 @@ test("feedback is a markdown digest grouped by plan, then commit", () => {
   );
 });
 
-test("the walk prompt writes for a first-time reviewer and asks for a note only where it adds", () => {
+test("the walk prompt names reviewer mode and the branch in the check command", () => {
   const walk = renderPrompt({
     mode: "walk",
     diff: fixtureDiff(),
@@ -260,38 +262,11 @@ test("the walk prompt writes for a first-time reviewer and asks for a note only 
     checkCommand: "follow-me check --branch pr-7",
   });
   assert.ok(walk.startsWith("# follow-me: tell the story of this branch\n"));
-  assert.ok(
-    walk.includes(
-      "The reader is a reviewer meeting this branch for the first time. They will read it commit\nby commit",
-    ),
-  );
-  assert.ok(
-    walk.includes("Add a `narration` to a commit, or to a unit, only when it says something"),
-  );
-  assert.ok(walk.includes("A note is one plain paragraph on why"));
-  assert.ok(walk.includes("Put the why in the body first"));
-  assert.doesNotMatch(walk, /aloud|playback|first person|spoken/i);
-  assert.ok(walk.includes("Check your work with `follow-me check --branch pr-7`"));
+  assert.ok(walk.includes('"Writing the draft" in the follow-me skill says, in reviewer mode.'));
+  assert.ok(walk.includes("- check: follow-me check --branch pr-7\n"));
   assert.ok(walk.includes("[3]+ new2"));
-  assert.ok(
-    walk.includes('{ "unit": "h_ba9876543210", "narration": "The loop is boring on purpose." }'),
-  );
   const split = renderPrompt(first);
-  assert.ok(split.startsWith("# follow-me: plan the commits\n"));
-  assert.ok(!split.includes("reviewer meeting this branch"));
-});
-
-test("both prompts explain the optional Mermaid diagram and keep the note plain", () => {
-  const prompts = {
-    split: renderPrompt(first),
-    walk: renderPrompt({ mode: "walk", diff: fixtureDiff(), draftPath: "/d", checkCommand: "c" }),
-  };
-  for (const [mode, text] of Object.entries(prompts)) {
-    assert.ok(text.includes('`{ "unit": "<ref>", "diagram": "..." }`'), mode);
-    assert.ok(text.includes('"diagram": "flowchart LR\\n  parse --> validate --> apply"'), mode);
-    assert.ok(text.includes("a state machine, a call graph, or the before and after shape"), mode);
-    assert.ok(text.includes("The note stays plain text even when a diagram is present"), mode);
-  }
+  assert.ok(split.includes("in author mode."));
 });
 
 function reportFixture(): { review: Review; commits: ReportCommit[] } {
@@ -478,24 +453,6 @@ test("a review with no comments and no kept concerns says so", () => {
   );
 });
 
-test("the prompts carry the question instruction, and only the walk prompt asks for concerns", () => {
-  const walk = renderPrompt({
-    mode: "walk",
-    diff: fixtureDiff(),
-    draftPath: "/d",
-    checkCommand: "c",
-  });
-  const split = renderPrompt(first);
-  for (const text of [walk, split]) {
-    assert.ok(text.includes("## Questions from the reviewer"));
-    assert.ok(text.includes("A question is not a request to change the plan."));
-    assert.ok(text.includes('`"at"` naming the commit (1-based)'));
-  }
-  assert.ok(walk.includes("## Concerns\n\nYou are also a careful reviewer."));
-  assert.ok(walk.includes("Never write more than one concern per unit."));
-  assert.ok(!split.includes("careful reviewer"));
-});
-
 test("questions are listed apart from change requests, with their lines and replies", () => {
   const review: Review = JSON.parse(
     JSON.stringify({
@@ -532,7 +489,7 @@ test("questions are listed apart from change requests, with their lines and repl
     }),
   );
   const text = renderPrompt({ ...first, previousPlan: fixturePlan(), review });
-  const questions = text.indexOf("The reviewer asked this question about plan v2.");
+  const questions = text.indexOf("## Questions from the reviewer, on plan v2");
   const changes = text.indexOf("## Open review comments");
   assert.ok(questions > 0 && changes > questions);
   assert.ok(text.slice(questions, changes).includes("- c_whyyyy"));

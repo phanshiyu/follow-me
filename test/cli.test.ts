@@ -489,9 +489,9 @@ test("prompt --walk writes for a reviewer and names the branch in the check comm
   assert.equal(prompt.code, 0, prompt.err);
   assert.match(prompt.out, /^# follow-me: tell the story of this branch\n/);
   assert.ok(
-    prompt.out.includes("The reader is a reviewer meeting this branch for the first time."),
+    prompt.out.includes('"Writing the draft" in the follow-me skill says, in reviewer mode.'),
   );
-  assert.ok(prompt.out.includes("Check your work with `follow-me check --branch feature`"));
+  assert.ok(prompt.out.includes("- check: follow-me check --branch feature\n"));
 });
 
 test("walk without a plan prints the two commands to run instead", (t) => {

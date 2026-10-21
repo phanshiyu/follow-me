@@ -35,3 +35,13 @@ Tokens are an estimate: bytes / 4. No tokenizer or API was called.
 
 The two prompts are 66% of the fixture session and 97% of the real one. The re-plan prompt sends
 the whole unit dump again for a commit that changed one hunk, and quotes one comment twice.
+
+## Cuts
+
+Each row is the total after that commit, measured with the same script. Per-step numbers for the
+final build are in the last table.
+
+| cut | fixture bytes | ~tokens | real branch bytes | ~tokens | what moved |
+|---|---:|---:|---:|---:|---|
+| baseline | 24314 | 6079 | 474939 | 118735 | |
+| a. rules into the skill, top-down order | 22765 | 5691 | 473388 | 118347 | skill 3894 to 12134 (read once); prompt.md 6457 to 1891 and re-plan prompt 9655 to 4432 on the fixture |

@@ -23,7 +23,7 @@ export type SkillTargets = {
 
 export type InstallOptions = SkillTargets & { readonly list: boolean };
 
-class InstallError extends Error {
+export class InstallError extends Error {
   override readonly name = "InstallError";
 }
 

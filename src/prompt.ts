@@ -27,6 +27,8 @@ export type PromptInput = {
   readonly draftPath: string;
   /** The exact command that validates the draft, including any --branch the user passed. */
   readonly checkCommand: string;
+  /** The skill file that holds the instructions, for an agent that has not loaded it. */
+  readonly skillPath?: string;
   /** Set when the branch moved after plan `since` and the draft carries that plan over. */
   readonly changes?: Changes;
 } & (
@@ -256,99 +258,27 @@ function renderComment(comment: Comment, ctx: Context): string {
   return lines.join("\n");
 }
 
-const QUESTIONS = `A question is not a request to change the plan. Answer it by explaining, not by moving lines. Where the asked-about lines now live, add or rewrite the \`narration\` (the page shows it as your note) of that commit or unit so it answers the question, in plain sentences. When the answer is about flow, structure or order across files, add a \`diagram\` there too. Then write one response with \`"status": "answered"\`, a \`note\` of one to three sentences that answers the question directly, and \`"at"\` naming the commit (1-based) and unit that carry the explanation. Move lines only if answering shows the order itself was wrong. Say so in the note, and answer the question as well. If the diff cannot answer it, use \`"deferred"\` and say what is missing.`;
+const TITLES = {
+  split: "plan the commits",
+  walk: "tell the story of this branch",
+} satisfies Record<PromptInput["mode"], string>;
 
-const CONCERNS = `You are also a careful reviewer. Add a concern only for something you would raise in a pull request: a bug or unhandled case, a change with no test where one is expected, a name that misleads, or a risky change such as a migration, concurrency or security. Pin it to the change lines with \`lines\`. Say what goes wrong and when, in one or two sentences. Severity: \`blocker\` breaks behaviour or loses data, \`major\` should be fixed before merge, \`minor\` is worth a note. Do not flag style, formatting or taste. Do not repeat the note. Most commits deserve no concern, and a plan with none is fine. Never write more than one concern per unit. Concerns are in your voice as a reviewer, while the note stays the author's.
-
-A concern is \`{ "severity": "blocker" | "major" | "minor", "kind": "bug" | "missing-test" | "naming" | "risk", "text": "...", "lines": [0, 1] }\`. \`lines\` holds change indices of that unit and is allowed only on a unit ref. Write \`"concerns": [ ... ]\` on a commit, or on a unit written as an object: \`{ "unit": "h_x:0-3", "concerns": [ ... ] }\`. Never write an id; follow-me derives one.`;
-
-const ORDERING = `Order the commits so the story reads naturally:
-- Scaffolding and types come before the code that uses them.
-- A failing test comes before the fix that makes it pass.
-- Renames and moves come before the edits that build on them.
-- One idea per commit. Prefer many small commits over a few large ones.
-- Commits do not need to compile or pass tests on their own.
-- The last commit must bring the tree to exactly the tip, which follows from covering every unit.
-
-Write each commit message as a short imperative title, then a blank line and a body that
-says why. Put the why in the body first, before anything else. Keep the title to 50
-characters or fewer; put detail in the body.`;
-
-const GOALS = {
-  split: {
-    title: "plan the commits",
-    goal: `You are reordering a finished branch into a series of commits that a reader can follow
-as the author's thought process. The final tree is fixed. You only decide how its change
-lines are grouped and ordered.
-
-${ORDERING}`,
-  },
-  walk: {
-    title: "tell the story of this branch",
-    goal: `The reader is a reviewer meeting this branch for the first time. They will read it commit
-by commit and comment on the code itself. The final tree is fixed. You decide how its change
-lines are grouped and ordered, and why each step is there.
-
-${ORDERING}
-
-Add a \`narration\` to a commit, or to a unit, only when it says something the commit message
-body does not. The page shows it as your note. A note is one plain paragraph on why, in plain
-text with no markdown. Say why, not what the lines already show. Leave it out when the body
-already says it.`,
-  },
-} satisfies Record<PromptInput["mode"], { readonly title: string; readonly goal: string }>;
-
-const FORMAT = (
-  draftPath: string,
-  base: string,
-  tip: string,
-): string => `Write the plan as JSON to ${draftPath}. Write only the file, in this format:
-
-{
-  "schema": "follow-me/plan@1",
-  "base": "${base}",
-  "tip": "${tip}",
-  "commits": [
-    { "message": "Add the Token type\\n\\nThe parser needs it.", "units": ["h_0123456789ab", "h_ba9876543210:0-3,7"] },
-    {
-      "message": "Parse tokens",
-      "narration": "Tokens are read in one pass, so the loop below never backtracks.",
-      "units": [{ "unit": "h_ba9876543210", "narration": "The loop is boring on purpose." }, "f_0123456789ab"]
-    }
-  ],
-  "responses": [
-    { "comment": "c_abc234", "status": "addressed", "note": "Split the hunk and moved it earlier." }
-  ]
+/** Where the fixed instructions live: the skill a harness loads once, not every prompt. */
+function pointer(input: PromptInput): string {
+  const mode = input.mode === "split" ? "author mode" : "reviewer mode";
+  const where =
+    input.skillPath === undefined ? "" : ` If it is not loaded, read ${input.skillPath}.`;
+  return `Write the draft as "Writing the draft" in the follow-me skill says, in ${mode}.${where}`;
 }
 
-\`narration\` is optional on a commit and on a unit, and the page shows it as your note. A unit
-with a note is written as \`{ "unit": "<ref>", "narration": "..." }\` instead of the plain ref string.
-
-\`diagram\` is optional on a commit and on a unit, written the same way:
-\`{ "unit": "<ref>", "diagram": "..." }\`. It is Mermaid source that the review page draws beside
-the code: a commit's diagram under its commit, a unit's under its hunk. Add one only where a picture says what the code and prose cannot: data flowing between
-modules, a state machine, a call graph, or the before and after shape of a structure. Most commits
-need none. The first line names the diagram type, for example:
-
-  "diagram": "flowchart LR\\n  parse --> validate --> apply"
-
-The note stays plain text even when a diagram is present.
-\`responses\` is [] when there are no review comments. \`status\` is one of "addressed",
-"declined", "deferred" or, for a question, "answered", and \`note\` says what you did or why not.
-An "answered" response also carries \`"at": { "commit": 3, "unit": "h_x" }\`: the commit, counted from 1,
-and optionally the unit that holds the explanation.`;
-
-const RULES = (
-  checkCommand: string,
-): string => `- A unit is "h_…" (a text hunk), "f_…" (a whole file) or "m_…" (a mode change).
-- "h_x:0-3,7" takes change lines 0, 1, 2, 3 and 7 of hunk h_x. Indices are the [n] shown below.
-- A bare "h_x" takes every change line of that hunk that no other commit claimed.
-- Every change line must be used exactly once across all commits. Never repeat a line.
-- Use the unit ids exactly as printed. Do not invent ids.
-- "f_…" and "m_…" units are taken whole, never with a line list.
-- Every commit needs a non-empty message and at least one unit.
-- Keep every file syntactically whole in every commit: a function with its closing brace, a block with both ends, an import before or with its first use. Commits need not build or pass tests, but each file a commit writes must parse.
-- Check your work with \`${checkCommand}\` and fix every issue it prints, syntax errors included.`;
+function sessionLines(input: PromptInput): string {
+  return [
+    `- draft: ${input.draftPath}`,
+    `- base: ${input.diff.base}`,
+    `- tip: ${input.diff.tip}`,
+    `- check: ${input.checkCommand}`,
+  ].join("\n");
+}
 
 function renderUnit(unit: Unit): string {
   return unit.kind === "hunk" ? renderHunk(unit) : renderOtherUnit(unit);
@@ -364,7 +294,7 @@ function renderChanges(changes: Changes, input: PromptInput, ctx: Context): stri
   );
   const parts = [
     `## Changes since v${since}\n`,
-    `The branch moved after plan v${since}. ${input.draftPath} already holds that plan on the new tip: every unit whose hunk did not change keeps its commit, and any commit left with no unit was dropped. Put each new unit below into a commit, an existing one or a new one, and keep the rest as it is.`,
+    `The branch moved after plan v${since}. The draft holds that plan on the new tip.`,
   ];
   if (vanished.length > 0) {
     parts.push(
@@ -382,7 +312,7 @@ function renderChanges(changes: Changes, input: PromptInput, ctx: Context): stri
   }
   if (orphans.length > 0) {
     parts.push(
-      `\nThe reviewer commented on hunks that changed. Write a response for each saying what you changed, and post the same with \`follow-me reply <id>\`:\n`,
+      "\nComments on hunks that changed:\n",
       orphans.map((c) => renderComment(c, ctx)).join("\n"),
     );
   }
@@ -391,22 +321,17 @@ function renderChanges(changes: Changes, input: PromptInput, ctx: Context): stri
 
 /** The planner prompt for a coding agent. Pure and deterministic for the same input. */
 export function renderPrompt(input: PromptInput): string {
-  const { diff, draftPath } = input;
-  const { title, goal } = GOALS[input.mode];
+  const { diff } = input;
   const head = [
-    `# follow-me: ${title}\n\n${goal}`,
-    `## Output format\n\n${FORMAT(draftPath, diff.base, diff.tip)}`,
-    `## Rules\n\n${RULES(input.checkCommand)}`,
+    `# follow-me: ${TITLES[input.mode]}\n\n${pointer(input)}\n\n${sessionLines(input)}`,
   ];
-  const units = `## Units\n\nChange lines are shown as \`[n]+ text\` or \`[n]- text\`. Indented lines without a bracket are context and cannot be selected.\n\n${renderUnits(diff)}`;
+  const units = `## Units\n\n${renderUnits(diff)}`;
   if (input.mode === "walk") {
     const sections = [
       ...head,
       ...(input.changes === undefined
         ? []
         : [renderChanges(input.changes, input, { commits: [], units: diff.units })]),
-      `## Concerns\n\n${CONCERNS}`,
-      `## Questions from the reviewer\n\n${QUESTIONS}\n\n${CONTEXT_RULE}`,
       units,
     ];
     return `${sections.join("\n\n")}\n`;
@@ -421,28 +346,22 @@ export function renderPrompt(input: PromptInput): string {
     units,
   ];
   const { previousPlan, review } = input;
-  if (previousPlan) {
-    sections.push(
-      `## Previous plan\n\nCommits are numbered from 1.\n\n${renderPreviousPlan(previousPlan)}`,
-    );
-  }
+  if (previousPlan) sections.push(`## Previous plan\n\n${renderPreviousPlan(previousPlan)}`);
   const theirs = review?.comments.filter((c) => c.author !== "agent") ?? [];
   const asked = theirs.filter((c) => c.kind === "question");
   const changes = theirs.filter((c) => c.kind !== "question");
-  const questions = [`## Questions from the reviewer\n`, QUESTIONS, `\n${CONTEXT_RULE}`];
   if (review && asked.length > 0) {
-    questions.push(
-      `\nThe reviewer asked ${asked.length === 1 ? "this question" : "these questions"} about plan v${review.planVersion}. Commits are numbered from 1. Write one response for each.\n`,
-      asked.map((c) => renderComment(c, ctx)).join("\n"),
+    sections.push(
+      [
+        `## Questions from the reviewer, on plan v${review.planVersion}\n`,
+        asked.map((c) => renderComment(c, ctx)).join("\n"),
+      ].join("\n"),
     );
   }
-  sections.push(questions.join("\n"));
   if (review && changes.length > 0) {
     sections.push(
       [
-        `## Open review comments\n`,
-        `A reviewer commented on plan v${review.planVersion}. Commits are numbered from 1.`,
-        "Answer every comment below with one entry in `responses`, changing the plan where you agree.\n",
+        `## Open review comments, on plan v${review.planVersion}\n`,
         changes.map((c) => renderComment(c, ctx)).join("\n"),
       ].join("\n"),
     );
