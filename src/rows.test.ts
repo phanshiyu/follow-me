@@ -74,12 +74,13 @@ test("watch quotes a context-line comment with its file lines and the picked row
   assert.ok(
     text.includes(
       [
-        "- new question c_abcdef on src/lib.js:1-2 in commit 1 (h_aaaaaaaaaaaa rows 1-2; 1 context line, 1 added)",
-        "    -old1",
-        "  > +new1",
-        "  >  same",
-        "    -old2",
-        "    +new2",
+        "- c_abcdef question on src/lib.js:1-2 in commit 1 (h_aaaaaaaaaaaa rows 1-2; 1 context line, 1 added)",
+        "      -old1",
+        "    > +new1",
+        "    >  same",
+        "      -old2",
+        "      +new2",
+        "  why is same left alone?",
       ].join("\n"),
     ),
     text,
@@ -104,7 +105,55 @@ test("without a projected plan the rows are quoted as git shows them", () => {
     units: diff().units,
   });
   assert.ok(text.includes("on src/lib.js:2 in commit 1 (h_aaaaaaaaaaaa rows 2; 1 context line)"));
-  assert.ok(text.includes("  >  same"));
+  assert.ok(text.includes("    >  same"));
+});
+
+test("a new comment is quoted in at most six rows of 160 characters, and the rest is one line", () => {
+  const long = "x".repeat(200);
+  const body = Array.from({ length: 12 }, (_, i) =>
+    i === 4 ? { op: "+", text: `${long}\n`, change: 0 } : { op: " ", text: `c${i}\n` },
+  );
+  const hunk = JSON.parse(
+    JSON.stringify({
+      kind: "hunk",
+      id: "h_aaaaaaaaaaaa",
+      path: "src/lib.js",
+      oldStart: 0,
+      changeCount: 1,
+      body,
+    }),
+  );
+  const text = renderEvents(
+    [
+      event(comment([6], [], "why?")),
+      { seq: 2, type: "comment-updated", comment: comment([6], [], "why, really?") },
+      {
+        seq: 3,
+        type: "reply",
+        commentId: JSON.parse('"c_abcdef"'),
+        reply: { id: JSON.parse('"r_abcdef"'), author: "reviewer", body: "ok", createdAt: "t" },
+      },
+      { seq: 4, type: "resolved", commentId: JSON.parse('"c_abcdef"'), resolved: true },
+    ],
+    { commits: [], units: new Map([[hunk.id, hunk]]) },
+  );
+  assert.equal(
+    text,
+    [
+      "- c_abcdef question on src/lib.js:7 in commit 1 (h_aaaaaaaaaaaa rows 6; 1 context line)",
+      `      +${"x".repeat(156)}…`,
+      "       c5",
+      "    >  c6",
+      "       c7",
+      "       c8",
+      "       c9",
+      "  why?",
+      "- c_abcdef edited: why, really?",
+      "- c_abcdef reviewer replied: ok",
+      "- c_abcdef resolved",
+      "",
+    ].join("\n"),
+  );
 });
 
 test("the prompt and the report quote the same rows; the report carries the context-line rule", () => {

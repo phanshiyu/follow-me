@@ -1131,35 +1131,45 @@ function renderIncluded(
   return out.join("\n");
 }
 
+function indented(body: string): string {
+  return `  ${body.split("\n").join("\n  ")}`;
+}
+
+/** "- head: body" for a one-line body, else the body indented under the head. */
+function said(head: string, body: string): string[] {
+  return body.includes("\n") ? [`${head}:`, indented(body)] : [`${head}: ${body}`];
+}
+
+/**
+ * A new comment carries its short quote, since the agent has not seen it; everything else is one
+ * line naming its id, because the agent already has the comment it refers to.
+ */
 function renderEvent(event: ServerEvent, ctx: Context | null): string[] {
   switch (event.type) {
-    case "comment":
-    case "comment-updated": {
+    case "comment": {
       const { comment: c } = event;
-      const what = c.kind === "question" ? "question" : "comment";
-      const verb = event.type === "comment" ? "new" : "edited";
-      const lines = [`- ${verb} ${what} ${c.id} on ${describeAnchor(c.anchor, ctx)}`];
-      const rows = anchorRows(ctx, c.anchor);
-      if (rows.length > 0) lines.push(...rows.map((r) => `  ${r}`));
-      if (c.context.path) lines.push(`  - file: ${c.context.path}`);
-      if (c.severity) lines.push(`  - severity: ${c.severity}`);
-      if (c.follows) lines.push(`  - asks again after ${c.follows}`);
-      lines.push(`  - ${c.body.split("\n").join("\n    ")}`);
+      const what = c.kind === "question" ? "question" : (c.severity ?? "comment");
+      const lines = [`- ${c.id} ${what} on ${describeAnchor(c.anchor, ctx)}`];
+      if (c.follows) lines.push(`  asks again after ${c.follows}`);
+      lines.push(...shortQuote(anchorRows(ctx, c.anchor)).map((r) => `    ${r}`));
+      lines.push(indented(c.body));
       return lines;
     }
+    case "comment-updated":
+      return said(`- ${event.comment.id} edited`, event.comment.body);
     case "comment-deleted":
-      return [`- comment ${event.id} was deleted`];
+      return [`- ${event.id} deleted`];
     case "reply":
-      return [`- ${event.reply.author} replied under ${event.commentId}: ${event.reply.body}`];
+      return said(`- ${event.commentId} ${event.reply.author} replied`, event.reply.body);
     case "concern": {
       const severity = event.severity === undefined ? "" : ` as ${event.severity}`;
       const note = event.note === undefined ? "" : `: ${event.note}`;
-      return [`- concern ${event.concernId} ${event.decision}${severity}${note}`];
+      return [`- ${event.concernId} ${event.decision}${severity}${note}`];
     }
     case "resolved":
-      return [`- question ${event.commentId} marked ${event.resolved ? "resolved" : "open again"}`];
+      return [`- ${event.commentId} ${event.resolved ? "resolved" : "reopened"}`];
     case "version":
-      return [`- plan v${event.version} is now open`];
+      return [`- plan v${event.version} is open`];
     case "submitted":
       return ["- the reviewer submitted the review"];
     case "ended":
@@ -1171,11 +1181,7 @@ function renderEvent(event: ServerEvent, ctx: Context | null): string[] {
   }
 }
 
-/** A markdown digest of what happened on the review page, for `follow-me watch`. */
+/** What happened on the review page, for the entry and `follow-me watch`. */
 export function renderEvents(events: readonly ServerEvent[], ctx: Context | null = null): string {
-  const first = events[0]?.seq;
-  const last = events.at(-1)?.seq;
-  const range = first === last ? `event ${first}` : `events ${first}-${last}`;
-  const body = events.flatMap((event) => renderEvent(event, ctx));
-  return [`# Review activity (${range})`, "", ...body, ""].join("\n");
+  return `${events.flatMap((event) => renderEvent(event, ctx)).join("\n")}\n`;
 }

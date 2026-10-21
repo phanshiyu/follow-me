@@ -1044,11 +1044,9 @@ test("watch prints what the reviewer does and exits 0, and exits 2 when nothing 
   const digest = run(repo.dir, "watch", "--since", "0");
   assert.equal(digest.code, 0, digest.err);
   assert.ok(
-    digest.out.startsWith(
-      `# Review activity (event 1)\n\n- new question ${id} on the whole plan\n`,
-    ),
+    digest.out.startsWith(`- ${id} question on the whole plan\n  Why one big commit?\n`),
+    digest.out,
   );
-  assert.ok(digest.out.includes("  - Why one big commit?\n"));
   assert.ok(digest.out.includes("next: follow-me reply <comment> --body <text>"));
   assert.ok(digest.out.includes("follow-me watch --since 1"));
   assert.equal(run(repo.dir, "watch", "--since", "x").code, 1);
@@ -1378,7 +1376,7 @@ test("follow-me with no command walks the states: prompt, issues, review, questi
   await fetch(new URL("api/comments", url), comment("why one commit?", { kind: "question" }));
   const heard = await listening;
   assert.equal(heard.code, 0, heard.err);
-  assert.match(heard.out, /new question c_[a-z2-7]{6} on the message of commit 1/);
+  assert.match(heard.out, /^- c_[a-z2-7]{6} question on the message of commit 1$/m);
   assert.match(heard.out, /why one commit\?/);
   assert.equal(heard.out.includes("change this"), false);
   assert.equal(
@@ -1612,15 +1610,12 @@ test("follow-me brings a killed server back on its port and prints only what the
   assert.equal(back.out.split("\n")[0], "review server restarted, nothing lost");
   assert.equal(serverRecord(home)?.port, dead.port);
   assert.match(back.out, /bravo/);
-  assert.match(back.out, new RegExp(`reviewer replied under ${alpha}: alpha, again`));
-  assert.equal(back.out.includes("- alpha"), false, back.out);
+  assert.match(back.out, new RegExp(`${alpha} reviewer replied: alpha, again`));
+  assert.equal(back.out.includes("\n  alpha\n"), false, back.out);
 
   await flag("charlie");
   const next = run(repo.dir, "--wait", "0");
-  assert.match(
-    next.out,
-    /^# Review activity \(event \d+\)\n\n- new comment c_[a-z2-7]{6} on the message of commit 1\n {2}- charlie\n/,
-  );
+  assert.match(next.out, /^- c_[a-z2-7]{6} \w+ on the message of commit 1\n {2}charlie\n/);
   assert.equal(next.out.includes("bravo"), false);
 
   const state = JSON.parse(await (await fetch(new URL("api/state", url))).text());
