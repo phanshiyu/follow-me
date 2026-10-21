@@ -282,6 +282,43 @@ test("a draft from an unfinished session comes back through loadDraftComments", 
   await first.done;
 });
 
+test("a session registered with saved comments replays them, replies included, oldest first", async (t) => {
+  const saved = (id: string, at: string, replies: unknown[] = []) => ({
+    ...newComment(id),
+    id,
+    createdAt: at,
+    ...(replies.length === 0 ? {} : { replies }),
+  });
+  const reply = {
+    id: "r_aaaaaa",
+    author: "reviewer",
+    body: "and this",
+    createdAt: "2026-10-21T12:02:00Z",
+  };
+  const run = await start(
+    t,
+    twoCommitState([
+      saved("c_bbbbbb", "2026-10-21T12:03:00Z"),
+      saved("c_aaaaaa", "2026-10-21T12:01:00Z", [reply]),
+    ]),
+  );
+  const log = await jsonOf(await fetch(new URL("api/events?since=0&timeout=0", run.url)));
+  assert.deepEqual(
+    log.events.map(
+      (e: { seq: number; type: string; comment?: { id: string }; reply?: { id: string } }) => [
+        e.seq,
+        e.type,
+        e.comment?.id ?? e.reply?.id,
+      ],
+    ),
+    [
+      [1, "comment", "c_aaaaaa"],
+      [2, "reply", "r_aaaaaa"],
+      [3, "comment", "c_bbbbbb"],
+    ],
+  );
+});
+
 test("requests from a foreign origin are refused", async (t) => {
   const run = await start(t, twoCommitState());
   const res = await fetch(new URL("api/comments", run.url), {

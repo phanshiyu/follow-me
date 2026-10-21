@@ -1199,7 +1199,7 @@ function renderEvent(event: ServerEvent, ctx: Context | null): string[] {
     case "version":
       return [`- plan v${event.version} is now open`];
     case "submitted":
-      return ["- the reviewer submitted the review; the held flags follow as new comments"];
+      return ["- the reviewer submitted the review"];
     case "ended":
       return [`- the reviewer ended the review; the report is next to ${event.review}`];
     default: {

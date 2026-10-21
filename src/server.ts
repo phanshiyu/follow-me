@@ -422,6 +422,29 @@ function earlierOf(view: View) {
   return [...view.earlierReplies].map(([comment, replies]) => ({ comment, replies }));
 }
 
+/**
+ * What a restarted server's log begins with: each saved comment and each reply as the event that
+ * first carried it, oldest first, so a client that reads from 0 sees the whole conversation.
+ */
+function replayOf(view: View): EventBody[] {
+  const said: { readonly at: string; readonly event: EventBody }[] = [];
+  for (const comment of view.comments.values()) {
+    said.push({
+      at: comment.createdAt,
+      event: { type: "comment", comment: withReplies(comment, undefined) },
+    });
+    for (const reply of comment.replies ?? []) {
+      said.push({ at: reply.createdAt, event: { type: "reply", commentId: comment.id, reply } });
+    }
+  }
+  for (const [commentId, replies] of view.earlierReplies) {
+    for (const reply of replies) {
+      said.push({ at: reply.createdAt, event: { type: "reply", commentId, reply } });
+    }
+  }
+  return said.sort((a, b) => a.at.localeCompare(b.at)).map((s) => s.event);
+}
+
 function mintReplyId(taken: ReadonlySet<string>): ReplyId {
   for (;;) {
     let id = "r_";
@@ -461,6 +484,7 @@ function hostSession(
     for (const wake of [...waiters]) wake();
     for (const listener of [...listeners]) listener();
   };
+  for (const event of replayOf(view)) emit(event);
   const waitForEvents = (since: number, timeoutMs: number, signal: AbortSignal) =>
     new Promise<{ readonly seq: number; readonly events: readonly ServerEvent[] }>((resolve) => {
       const news = () => events.filter((e) => e.seq > since);

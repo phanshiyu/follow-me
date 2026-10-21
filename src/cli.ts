@@ -29,6 +29,7 @@ import {
   postComment,
   postReply,
   probeHealth,
+  readServerRecord,
   registerWith,
   type Started,
   sessionUrl,
@@ -41,7 +42,7 @@ import {
 } from "./host.ts";
 import { runInstall, runUninstall, type SkillTargets, syncSkills } from "./install.ts";
 import { naiveDraft } from "./naive.ts";
-import { serializePlanFile, type ValidPlan, validatePlan } from "./plan.ts";
+import { isFields, serializePlanFile, type ValidPlan, validatePlan } from "./plan.ts";
 import {
   type Changes,
   type PromptInput,
@@ -771,6 +772,45 @@ async function openOnServer(session: Session, mode: ReviewMode | null): Promise<
   return summary === undefined ? null : { port: live.port, summary };
 }
 
+/**
+ * The session's review after its server died: the lock still names the dead server. A fresh
+ * server takes the port the old one had, so the open page's origin stays valid and it reconnects;
+ * the session registers again from disk, where the page autosaved everything. Null when the
+ * session was not hosted by a dead server or its review already ended.
+ */
+async function revive(session: Session): Promise<Open | null> {
+  const home = stateDir();
+  const record = readServerRecord(home);
+  const lock = session.lockState();
+  if (record === null || lock.kind !== "stale" || lock.pid !== record.pid) return null;
+  const latest = session.plans().at(-1);
+  if (latest === undefined || reviewsOf(session).some((r) => r.version === latest.version)) {
+    return null;
+  }
+  const server = (await findServer(home)) ?? (await spawnDetached(home, record.port));
+  const registration: Registration = {
+    dir: session.dir,
+    mode: reviewMode(session),
+    version: latest.version,
+    hash: latest.hash,
+    lockToken: null,
+  };
+  let summary: HostedSummary;
+  try {
+    summary = await registerWith(server.port, registration);
+  } catch (error) {
+    if (error instanceof RegistrationError) return null;
+    throw error;
+  }
+  say("review server restarted, nothing lost");
+  if (server.port !== record.port) {
+    say(portFallbackMessage(record.port, server.port));
+    say(`follow-me review: ${sessionUrl(server.port, summary)}`);
+    say("the open page cannot follow it to the new port; reopen it at that URL");
+  }
+  return { port: server.port, summary };
+}
+
 function timeoutOf(args: Args): number | undefined {
   const raw = args.values.get("timeout");
   if (raw === undefined) return undefined;
@@ -1089,30 +1129,49 @@ function promptHandoff(session: Session, cwd: string, mode: ReviewMode, args: Ar
   return 0;
 }
 
-type Cursor = { readonly session: string; readonly seq: number };
+/**
+ * Where the last `follow-me` stopped reading this hosted session. seq is a position in one
+ * server's log, so it only counts while the log is the same (id and openedAt); seen holds every
+ * comment and reply id already read, which survives a restarted server that numbers its replay
+ * afresh.
+ */
+type Cursor = {
+  readonly session: string;
+  readonly seq: number;
+  readonly seen: ReadonlySet<string>;
+};
 
 function cursorPath(session: Session): string {
   return join(session.dir, "cursor.json");
 }
 
-/** Where the last `follow-me` stopped reading this hosted session's events; 0 for a new one. */
-function readCursor(session: Session, summary: HostedSummary): number {
+function logOf(summary: HostedSummary): string {
+  return `${summary.id}@${summary.openedAt}`;
+}
+
+function readCursor(session: Session, summary: HostedSummary): Cursor {
   let raw: unknown;
   try {
     raw = JSON.parse(readFileSync(cursorPath(session), "utf8"));
   } catch {
-    return 0;
+    raw = null;
   }
-  if (typeof raw !== "object" || raw === null) return 0;
-  const seen = "session" in raw ? raw.session : undefined;
-  const seq = "seq" in raw ? raw.seq : undefined;
-  const same = seen === `${summary.id}@${summary.openedAt}`;
-  return same && typeof seq === "number" && Number.isInteger(seq) && seq >= 0 ? seq : 0;
+  const { session: log, seq, seen: ids } = isFields<"session" | "seq" | "seen">(raw) ? raw : {};
+  const seen = new Set(Array.isArray(ids) ? ids.filter((id) => typeof id === "string") : []);
+  const counts =
+    log === logOf(summary) && typeof seq === "number" && Number.isInteger(seq) && seq >= 0;
+  return { session: logOf(summary), seq: counts ? seq : 0, seen };
 }
 
-function writeCursor(session: Session, summary: HostedSummary, seq: number): void {
-  const cursor: Cursor = { session: `${summary.id}@${summary.openedAt}`, seq };
-  writeFileSync(cursorPath(session), `${JSON.stringify(cursor)}\n`);
+function writeCursor(session: Session, cursor: Cursor): void {
+  const { session: log, seq, seen } = cursor;
+  writeFileSync(cursorPath(session), `${JSON.stringify({ session: log, seq, seen: [...seen] })}\n`);
+}
+
+/** The comment or reply id an event first carries, or null for events without one. */
+function saidId(event: ServerEvent): string | null {
+  if (event.type === "comment") return event.comment.id;
+  return event.type === "reply" ? event.reply.id : null;
 }
 
 function waitOf(args: Args): number {
@@ -1137,24 +1196,33 @@ async function listen(session: Session, open: Open, args: Args): Promise<number>
   const { port, summary } = open;
   const waitMs = waitOf(args) * 1000;
   const deadline = Date.now() + waitMs;
-  let since = readCursor(session, summary);
+  let cursor = readCursor(session, summary);
   let version = summary.version;
   for (;;) {
     const left = Math.max(0, deadline - Date.now());
     let batch: Awaited<ReturnType<typeof pollEvents>>;
     try {
-      batch = await pollEvents(port, summary, since, Math.min(left, POLL_MS));
+      batch = await pollEvents(port, summary, cursor.seq, Math.min(left, POLL_MS));
     } catch (error) {
       if (!(error instanceof RegistrationError)) throw error;
       // The log restarted under us (a new server); read it from the start.
-      since = 0;
-      writeCursor(session, summary, 0);
+      cursor = { ...cursor, seq: 0 };
+      writeCursor(session, cursor);
       continue;
     }
-    since = batch.seq;
-    writeCursor(session, summary, since);
+    const fresh = batch.events.filter((e) => {
+      const id = saidId(e);
+      return id === null || !cursor.seen.has(id);
+    });
+    const seen = new Set(cursor.seen);
+    for (const event of batch.events) {
+      const id = saidId(event);
+      if (id !== null) seen.add(id);
+    }
+    cursor = { ...cursor, seq: batch.seq, seen };
+    writeCursor(session, cursor);
     for (const event of batch.events) if (event.type === "version") version = event.version;
-    const news = batch.events.filter(isNews);
+    const news = fresh.filter(isNews);
     if (news.length > 0) {
       const ctx = { commits: projectedCommits(session, version), units: session.diff.units };
       process.stdout.write(renderEvents(news, ctx));
@@ -1190,7 +1258,7 @@ async function listen(session: Session, open: Open, args: Args): Promise<number>
 async function entry(cwd: string, args: Args): Promise<number> {
   syncSkills(homedir(), say);
   const session = await openFresh(cwd, args);
-  const hosted = await openOnServer(session, null);
+  const hosted = (await openOnServer(session, null)) ?? (await revive(session));
   const mode = hosted?.summary.mode ?? (await entryMode(session, args));
   const moved = await sinceLastPlan(session);
   if (moved !== null) {
@@ -1389,7 +1457,7 @@ function notOpen(session: Session): number {
  */
 async function watch(cwd: string, args: Args): Promise<number> {
   const session = await openSession(cwd, sessionOpts(args));
-  const open = await openOnServer(session, null);
+  const open = (await openOnServer(session, null)) ?? (await revive(session));
   if (open === null) return notOpen(session);
   const sinceRaw = args.values.get("since");
   let since = sinceRaw === undefined ? 0 : Number(sinceRaw);

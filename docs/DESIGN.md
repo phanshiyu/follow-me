@@ -297,9 +297,24 @@ the report`, and every `next:` line while the page is up says the reviewer is st
 `follow-me` again; only `submitted` and `ended` say otherwise.
 
 Listening long-polls `api/events` for up to `--wait` seconds (default 90, at most 300) from a cursor
-kept in `cursor.json` beside the session, keyed by the hosted session's id and `openedAt`, so a repeated
-call prints only what is new and a restarted server reads from the start. The agent's own replies and version
-swaps are not news. A `submitted` or `ended` event ends the loop with the report.
+kept in `cursor.json` beside the session. The cursor holds `seq`, which counts only while the log is
+the same one (the hosted session's id and `openedAt`), and `seen`, every comment and reply id already
+read. A repeated call prints only what is new; after a restart it reads the new log from 0 and drops
+what `seen` holds, so renumbered events are neither replayed nor skipped. The agent's own replies and
+version swaps are not news. A `submitted` or `ended` event ends the loop with the report.
+
+## Reconnect
+
+A server can die under an open page and a listening agent. The page autosaves every comment, reply and
+decision to `reviews/vN.draft.json`, so the draft is the source of truth. When `follow-me` or `watch`
+finds the session's lock naming the pid in `server.json` and that pid dead, it starts a detached server
+on the recorded port, registers the latest plan again (the loader takes over the stale lock and reads
+the draft) and prints `review server restarted, nothing lost`. A new session's log begins with a replay:
+one `comment` event per saved comment (without its replies) and one `reply` event per reply, ordered by
+`createdAt`, so `api/events?since=0` and the stream rebuild the conversation. The same port keeps the
+page's origin, so it reconnects on its own; when another program holds the port the server takes a free
+one and the CLI prints the new URL and says the page must be reopened. A pid that is alive but does not
+answer is left alone, since its lock cannot be taken.
 
 ## Live update after a code change
 

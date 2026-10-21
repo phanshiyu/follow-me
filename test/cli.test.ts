@@ -1557,6 +1557,72 @@ test("a fix the agent commits while the page is open swaps in with the threads c
   );
 });
 
+test("follow-me brings a killed server back on its port and prints only what the agent has not read", async (t) => {
+  const skillHome = mkdtempSync(join(tmpdir(), "follow-me-skillhome-"));
+  t.after(() => rmSync(skillHome, { recursive: true, force: true }));
+  const { home, run } = cliIn(t, { HOME: skillHome });
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  git(repo.dir, "config", "user.email", "fixture@example.com");
+  const diff = await loadDiff(repo.dir, "main", "feature");
+  run(repo.dir, "extract");
+  writeWholeDraft(repo.dir, repo.base, repo.branch, [...diff.units.keys()]);
+  const opened = run(repo.dir, "--no-open", "--wait", "0");
+  const [, url] = SESSION_URL.exec(opened.out) ?? [];
+  assert.ok(url, opened.out);
+  const send = async (path: string, body: object) => {
+    const res = await fetch(new URL(path, url), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return JSON.parse(await res.text()).id;
+  };
+  const flag = (body: string) =>
+    send("api/comments", {
+      anchor: { kind: "message", commit: 0 },
+      context: { commitMessage: "feat: everything", path: null },
+      body,
+    });
+  const alpha = await flag("alpha");
+  assert.match(run(repo.dir, "--wait", "0").out, /alpha/);
+  await flag("bravo");
+  await send(`api/comments/${alpha}/replies`, { author: "reviewer", body: "alpha, again" });
+
+  const dead = serverRecord(home);
+  assert.ok(dead);
+  process.kill(dead.pid, "SIGKILL");
+  await eventually("the server is gone", () => !isAlive(dead.pid));
+  const back = run(repo.dir, "--wait", "0");
+  assert.equal(back.code, 0, back.err);
+  assert.equal(back.out.split("\n")[0], "review server restarted, nothing lost");
+  assert.equal(serverRecord(home)?.port, dead.port);
+  assert.match(back.out, /bravo/);
+  assert.match(back.out, new RegExp(`reviewer replied under ${alpha}: alpha, again`));
+  assert.equal(back.out.includes("- alpha"), false, back.out);
+
+  await flag("charlie");
+  const next = run(repo.dir, "--wait", "0");
+  assert.match(
+    next.out,
+    /^# Review activity \(event \d+\)\n\n- new comment c_[a-z2-7]{6} on the message of commit 1\n {2}- charlie\n/,
+  );
+  assert.equal(next.out.includes("bravo"), false);
+
+  const state = JSON.parse(await (await fetch(new URL("api/state", url))).text());
+  assert.deepEqual(
+    state.comments.map((c: { body: string; replies?: { body: string }[] }) => [
+      c.body,
+      (c.replies ?? []).map((r) => r.body),
+    ]),
+    [
+      ["alpha", ["alpha, again"]],
+      ["bravo", []],
+      ["charlie", []],
+    ],
+  );
+});
+
 test("follow-me on a branch someone else wrote plans a reviewer's reading and applies nothing", async (t) => {
   const skillHome = mkdtempSync(join(tmpdir(), "follow-me-skillhome-"));
   t.after(() => rmSync(skillHome, { recursive: true, force: true }));
