@@ -66,7 +66,9 @@
       <p id="confirm-text"></p>
       <form method="dialog" class="row">
         <button id="confirm-ok" type="submit" value="end" class="primary">End review</button>
-        <button type="submit" value="keep">Keep reviewing</button>
+        <button id="confirm-keep-all" type="submit" value="keep-all" hidden>Keep all</button>
+        <button id="confirm-dismiss-all" type="submit" value="dismiss-all" hidden>Dismiss all</button>
+        <button id="confirm-back" type="submit" value="back">Keep reviewing</button>
       </form>
     </dialog>
     <dialog id="keys" class="keys" aria-labelledby="keys-title">
@@ -80,6 +82,8 @@
         <dt><kbd>r</kbd></dt><dd>Replay the narration</dd>
         <dt><kbd>c</kbd></dt><dd>Request a change on the current chunk</dd>
         <dt><kbd>q</kbd></dt><dd>Ask a question about the current chunk</dd>
+        <dt><kbd>y</kbd></dt><dd>Keep the agent's concern on this chunk</dd>
+        <dt><kbd>x</kbd></dt><dd>Dismiss it</dd>
         <dt><kbd>m</kbd></dt><dd>Mute</dd>
         <dt><kbd>⌘ Enter</kbd></dt><dd>Save a comment, <kbd>Esc</kbd> cancels</dd>
       </dl>

@@ -1,3 +1,18 @@
+import {
+  allConcerns,
+  anchorLine,
+  blockersToHold,
+  bodyIndexes,
+  concernsInChunk,
+  dwellExtra,
+  pickConcern,
+  SEVERITIES,
+  severityOf,
+  toDecide,
+  topSeverity,
+  undecided,
+  undecidedPrompt,
+} from "/concerns.js";
 import { componentsForAll, highlightBody, languageFor } from "/highlight.js";
 import { applyEvent, backoffMs, bannerText, decisionsById, keepCommit, nextSince } from "/live.js";
 import {
@@ -77,6 +92,8 @@ const editing = new Set();
 const kindDrafts = new Map();
 /** Answers shown or paused on, so a replay does not stop again. */
 const seenAnswers = new Set();
+/** Blockers playback already stopped on. */
+const seenBlockers = new Set();
 /** The previous version's questions with where they now sit, refreshed on every render. */
 let cards = [];
 
@@ -241,7 +258,11 @@ function commentForm({
   close,
   kinds = false,
 }) {
-  const choice = kindDrafts.get(key) ?? { kind: inferKind(drafts.get(key) ?? ""), touched: false };
+  const choice = kindDrafts.get(key) ?? {
+    kind: inferKind(drafts.get(key) ?? ""),
+    touched: false,
+    severity: "",
+  };
   if (kinds) kindDrafts.set(key, choice);
   const toggles = new Map();
   const paint = () => {
@@ -274,7 +295,7 @@ function commentForm({
     guarded(async () => {
       const body = area.value.trim();
       if (!body) return;
-      await submit(body, choice.kind);
+      await submit(body, choice.kind, choice.severity);
       done();
       close();
       if (player.view === "play") notice = "Comment saved. Space to continue.";
@@ -308,6 +329,18 @@ function commentForm({
     toggle.append(button);
   }
   paint();
+  const severity = el("select", {
+    "aria-label": "Severity, optional",
+    onchange: () => {
+      choice.severity = severity.value;
+    },
+  });
+  severity.append(el("option", { value: "", text: "No severity" }));
+  for (const level of [...SEVERITIES].reverse()) {
+    severity.append(el("option", { value: level, text: level }));
+  }
+  severity.value = choice.severity;
+  if (kinds) toggle.append(severity);
   return el(
     "div",
     { class: "box", "data-box": key },
@@ -393,11 +426,16 @@ function commentView(comment) {
   const question = comment.kind === "question";
   const where = comment.anchor.kind === "hunk" ? ` · ${describeAnchor(comment.anchor)}` : "";
   const again = comment.follows ? " · asked again" : "";
+  const rating = comment.severity ? ` · ${comment.severity}` : "";
   const replyKey = `reply:${comment.id}`;
   return el(
     "div",
     { class: question ? "comment question" : "comment" },
-    el("div", { class: "meta" }, `${commentLabel(comment)} · ${comment.id}${where}${again}`),
+    el(
+      "div",
+      { class: "meta" },
+      `${commentLabel(comment)} · ${comment.id}${where}${again}${rating}`,
+    ),
     el("div", { class: "text", text: comment.body }),
     ...(comment.replies ?? []).map(replyView),
     openBoxes.has(replyKey)
@@ -564,9 +602,153 @@ function renderAnswers() {
   );
 }
 
+/** Severity picked for an undecided concern, applied when it is kept. */
+const pickedSeverity = new Map();
+
+/** Records a decision on a concern; the server's event repeats it harmlessly. */
+function decide(concern, decision, extra = {}) {
+  return guarded(async () => {
+    const severity = extra.severity ?? pickedSeverity.get(concern.id);
+    const body = {
+      decision,
+      ...(severity && severity !== concern.severity ? { severity } : {}),
+      ...(extra.note === undefined ? {} : { note: extra.note }),
+    };
+    await api("POST", `/api/concerns/${concern.id}`, body);
+    state.decisions = { ...state.decisions, [concern.id]: { concern: concern.id, ...body } };
+    pickedSeverity.delete(concern.id);
+    if (player.view === "play") notice = null;
+    render();
+  });
+}
+
+function severitySelect(current, onchange) {
+  const select = el("select", { "aria-label": "Severity" });
+  for (const level of SEVERITIES) {
+    select.append(el("option", { value: level, text: level }));
+  }
+  select.value = current;
+  select.addEventListener("change", () => onchange(select.value));
+  return select;
+}
+
+/**
+ * The agent's concern as a card in its own voice. It is never spoken. Undecided it offers keep and
+ * dismiss; kept it takes the reviewer's own words; dismissed it folds to one row.
+ */
+function concernView(concern, { after } = {}) {
+  const decision = state.decisions[concern.id];
+  const verdict = decision?.decision ?? "undecided";
+  const level = severityOf(concern, state.decisions);
+  const attrs = { "data-concern": concern.id, "data-after": after };
+  if (verdict === "dismissed") {
+    return el(
+      "div",
+      { class: "concern dismissed", ...attrs },
+      el("span", { text: `Dismissed · ${concern.text}` }),
+      el("button", {
+        class: "link",
+        text: "Undo",
+        onclick: () => decide(concern, "kept"),
+      }),
+    );
+  }
+  const noteKey = `note:${concern.id}`;
+  return el(
+    "section",
+    {
+      class: `concern sev-${level} ${verdict}`,
+      "aria-label": `Agent concern, ${level}`,
+      ...attrs,
+    },
+    el(
+      "div",
+      { class: "concern-head" },
+      el("span", { class: "who", text: "Agent" }),
+      el("span", { class: "chip", text: level }),
+      el("span", { class: "kind-tag", text: concern.kind }),
+      verdict === "kept" ? el("span", { class: "verdict", text: "Kept" }) : null,
+    ),
+    el("div", { class: "said", text: concern.text }),
+    verdict === "kept" && decision.note
+      ? el("div", { class: "said mine", text: `You: ${decision.note}` })
+      : null,
+    verdict === "kept"
+      ? commentForm({
+          key: noteKey,
+          placeholder: "Your words (optional)",
+          action: "Save note",
+          initial: decision.note ?? "",
+          submit: (note) => decide(concern, "kept", { note, severity: level }),
+          close: () => {},
+        })
+      : null,
+    el(
+      "div",
+      { class: "concern-actions" },
+      verdict === "undecided"
+        ? el("button", {
+            class: "primary",
+            text: "Keep",
+            title: "Keep this concern in the report (y)",
+            onclick: () => decide(concern, "kept"),
+          })
+        : null,
+      el("button", {
+        text: "Dismiss",
+        title: "Drop this concern (x)",
+        onclick: () => decide(concern, "dismissed"),
+      }),
+      el(
+        "label",
+        { class: "sev-pick" },
+        "Severity ",
+        severitySelect(level, (next) => {
+          if (verdict === "kept") decide(concern, "kept", { severity: next, note: decision.note });
+          else {
+            pickedSeverity.set(concern.id, next);
+            render();
+          }
+        }),
+      ),
+    ),
+  );
+}
+
+/** The commit's concerns with no unit, shown under its message. */
+function commitConcerns(commit) {
+  return (commit.concerns ?? []).filter((c) => c.unit === undefined);
+}
+
+/** Concerns on the commit that are still undecided, for the list dot and the stage reminder. */
+function openConcerns() {
+  return undecided(allConcerns(state.commits), state.decisions);
+}
+
+/** The concern y and x act on: the chunk on screen, else the commit being read. */
+function actionableConcern() {
+  const commit = state.commits[selected];
+  if (!commit) return null;
+  const at = player.view === "play" ? currentBeat() : -1;
+  const unit = beats[at]?.kind === "chunk" ? unitsById.get(beats[at].unit) : undefined;
+  const chunk =
+    unit?.kind === "hunk" ? concernsInChunk(commit.concerns ?? [], beats, at, unit.body) : [];
+  return pickConcern(commit.concerns ?? [], chunk, state.decisions);
+}
+
+function decideCurrent(decision) {
+  const concern = actionableConcern();
+  if (concern) decide(concern, decision);
+}
+
 /** Only a question is written with a kind; absent means a change request. */
 function kindField(kind) {
   return kind === "question" ? { kind } : {};
+}
+
+/** A reviewer's own severity rating, when they gave one. */
+function rated(severity) {
+  return severity ? { severity } : {};
 }
 
 /** A button that opens into a comment form, focused. */
@@ -585,8 +767,14 @@ function commentBox({ key, label, placeholder, anchor, context }) {
     key,
     placeholder,
     kinds: true,
-    submit: (body, kind) =>
-      api("POST", "/api/comments", { anchor, context, body, ...kindField(kind) }),
+    submit: (body, kind, severity) =>
+      api("POST", "/api/comments", {
+        anchor,
+        context,
+        body,
+        ...kindField(kind),
+        ...rated(severity),
+      }),
     close: () => openBoxes.delete(key),
   });
 }
@@ -621,7 +809,7 @@ function lineBox(unit, commit) {
     key: `line:${commit.index}:${unit.id}`,
     placeholder: `Comment on ${describeLines(unit.body, numbers.get(unit.id) ?? [], changes)}`,
     kinds: true,
-    submit: (body, kind) =>
+    submit: (body, kind, severity) =>
       api("POST", "/api/comments", {
         anchor: { kind: "hunk", unit: unit.id, commit: commit.index, changes },
         context: {
@@ -631,6 +819,7 @@ function lineBox(unit, commit) {
         },
         body,
         ...kindField(kind),
+        ...rated(severity),
       }),
     close: () => {
       selection = null;
@@ -793,13 +982,30 @@ function unitView(unit, commit) {
     );
     const picking = selection?.commit === commit.index && selection.unit === unit.id;
     const boxAfter = picking ? Math.max(...selection.lines) : -1;
+    const own = ownLines(unit, commit.index);
+    const raised = (commit.concerns ?? []).filter((c) => c.unit === unit.id);
+    const under = new Map();
+    for (const concern of raised) {
+      const at = anchorLine(concern, unit.body, own);
+      if (at !== null) under.set(at, [...(under.get(at) ?? []), concern]);
+    }
+    const flagged = new Map(
+      raised.flatMap((c) =>
+        bodyIndexes(unit.body, c.lines ?? []).map((i) => [i, severityOf(c, state.decisions)]),
+      ),
+    );
     content = el(
       "div",
       { class: "diff" },
       ...rows.flatMap((row) => {
         if (row.kind === "fold") return [foldRow(row.lines, row.commit)];
         const line = diffLine(unit, commit, row.line, row.mine);
-        return row.line === boxAfter ? [line, lineBox(unit, commit)] : [line];
+        const level = flagged.get(row.line);
+        if (level) line.classList.add("flagged", `flag-${level}`);
+        const cardsUnder = (under.get(row.line) ?? []).map((c) =>
+          concernView(c, { after: lineKey(unit.id, row.line) }),
+        );
+        return [line, ...cardsUnder, ...(row.line === boxAfter ? [lineBox(unit, commit)] : [])];
       }),
     );
   } else {
@@ -826,6 +1032,19 @@ function unitView(unit, commit) {
   );
 }
 
+/** A dot in the commit list while the commit holds concerns nobody has decided. */
+function concernDot(commit) {
+  const open = undecided(commit.concerns ?? [], state.decisions);
+  const level = topSeverity(open, state.decisions);
+  if (level === null) return null;
+  return el("span", {
+    class: `dot sev-${level}`,
+    role: "img",
+    "aria-label": `${open.length} undecided ${level} concern${open.length === 1 ? "" : "s"}`,
+    title: `${open.length} agent concern${open.length === 1 ? "" : "s"} to decide`,
+  });
+}
+
 function renderList() {
   const list = $("commits");
   const hadFocus = list.contains(document.activeElement);
@@ -849,6 +1068,7 @@ function renderList() {
           },
           el("span", { class: "index", text: String(i + 1) }),
           el("span", { class: "title", text: firstLine(commit.message) }),
+          concernDot(commit),
           playing
             ? el("span", { class: "mark", title: "Playing", text: "▶" })
             : watched.has(i)
@@ -965,6 +1185,7 @@ function renderMain() {
           commit.refs.map((r) => r.unit),
         ),
       ).map(answerView),
+      ...commitConcerns(commit).map((c) => concernView(c)),
       // A walk plan's messages and order are the planner's, not the author's, so only code is
       // up for comment there.
       isWalk()
@@ -1203,6 +1424,9 @@ function renderStage() {
       { tabindex: "-1" },
       el("span", { text: `Commit ${selected + 1} of ${state.commits.length}` }),
       ...parts.map((p) => el("span", { class: "part", text: ` · ${p}` })),
+      toDecide(openConcerns().length) === null
+        ? null
+        : el("span", { class: "part to-decide", text: ` · ${toDecide(openConcerns().length)}` }),
     ),
   );
   const strip = $("strip");
@@ -1280,6 +1504,7 @@ function applyPlayback() {
     for (const node of main.querySelectorAll("[data-line], .unit")) {
       node.classList.remove("pending", "struck", "in-chunk");
     }
+    for (const node of main.querySelectorAll(".concern")) node.classList.remove("pending");
     return;
   }
   const { states, upcoming, current } = lineStates(beats, steps, player.position, selected);
@@ -1291,6 +1516,9 @@ function applyPlayback() {
     node.classList.toggle("pending", look === "hidden");
     node.classList.toggle("struck", look === "struck");
     node.classList.toggle("in-chunk", inChunk.has(key) && look !== "hidden");
+  }
+  for (const node of main.querySelectorAll(".concern[data-after]")) {
+    node.classList.toggle("pending", states.get(node.dataset.after) === "hidden");
   }
   for (const node of main.querySelectorAll(".unit")) {
     node.classList.toggle(
@@ -1374,12 +1602,36 @@ function present() {
 
 /** Waits out one step. A say step lasts its reading time or until speech ends, whichever is later. */
 async function perform(step, generation) {
+  if (step.kind === "show") {
+    const extra = dwellExtra(chunkConcerns(step.beat), state.decisions, player.speed);
+    return sleep(step.ms + extra, generation);
+  }
   if (step.kind !== "say" || silent()) return sleep(step.ms, generation);
   const [read, heard] = await Promise.all([
     sleep(step.ms, generation),
     speak(step.text, generation).then((ok) => ok && sleep(step.tail, generation)),
   ]);
   return read && heard && generation === player.generation;
+}
+
+/** The concerns that belong to a chunk beat. */
+function chunkConcerns(beat) {
+  const unit = unitsById.get(beats[beat]?.unit);
+  const commit = state.commits[beats[beat]?.commit];
+  if (unit?.kind !== "hunk" || !commit) return [];
+  return concernsInChunk(commit.concerns ?? [], beats, beat, unit.body);
+}
+
+/** A blocker stops playback as soon as the lines it is about are on screen. */
+function holdForConcern() {
+  const step = steps[player.position];
+  if (step === undefined) return;
+  const held = blockersToHold(chunkConcerns(step.beat), step, state.decisions, seenBlockers);
+  if (held.length === 0) return;
+  for (const concern of held) seenBlockers.add(concern.id);
+  notice = "The agent flagged a blocker here. Keep or dismiss it, then Space to continue.";
+  pause();
+  render();
 }
 
 /** Stops on an answer to the reviewer's own question, once the narration has been heard. */
@@ -1402,6 +1654,7 @@ async function playLoop(generation) {
     player.position += 1;
     present();
     holdForAnswer();
+    holdForConcern();
   }
   player.playing = false;
   renderList();
@@ -1503,7 +1756,7 @@ function commentOnChunk(kind) {
     selection = { commit: beat.commit, unit: beat.unit, from: beat.lines[0], lines: beat.lines };
     focusKey = `line:${beat.commit}:${beat.unit}`;
   }
-  kindDrafts.set(focusKey, { kind, touched: true });
+  kindDrafts.set(focusKey, { kind, touched: true, severity: "" });
   render();
 }
 
@@ -1624,22 +1877,39 @@ function commentSummary() {
   return parts.length === 0 ? "No comments" : parts.join(" and ");
 }
 
-/** Asks before ending, with what the review holds; resolves true to end. */
+/**
+ * Asks before ending, with what the review holds. Resolves "end", or with agent concerns still
+ * undecided "keep-all", "dismiss-all" or "back".
+ */
 function confirmEnd() {
   const sheet = $("confirm-end");
   const unsent = hasUnsentText() ? " Some comment boxes have text you have not sent." : "";
-  $("confirm-text").textContent = `${commentSummary()}.${unsent}`;
+  const open = openConcerns().length;
+  const text = `${commentSummary()}.${unsent}`;
+  $("confirm-text").textContent = open === 0 ? text : `${undecidedPrompt(open)} ${text}`;
   $("confirm-ok").textContent = $("end").textContent;
+  $("confirm-ok").hidden = open > 0;
+  $("confirm-keep-all").hidden = open === 0;
+  $("confirm-dismiss-all").hidden = open === 0;
+  $("confirm-back").textContent = open === 0 ? "Keep reviewing" : "Go back";
   sheet.returnValue = "";
   sheet.showModal();
   return new Promise((resolve) => {
-    sheet.addEventListener("close", () => resolve(sheet.returnValue === "end"), { once: true });
+    sheet.addEventListener("close", () => resolve(sheet.returnValue || "back"), { once: true });
   });
 }
 
 async function endReview() {
   if (player.playing) pause();
-  if (!(await confirmEnd())) return;
+  const answer = await confirmEnd();
+  if (answer === "back" || answer === "keep") return;
+  if (answer === "keep-all" || answer === "dismiss-all") {
+    const decision = answer === "keep-all" ? "kept" : "dismissed";
+    for (const concern of openConcerns()) {
+      await api("POST", `/api/concerns/${concern.id}`, { decision });
+      state.decisions = { ...state.decisions, [concern.id]: { concern: concern.id, decision } };
+    }
+  }
   const { saved } = await api("POST", "/api/end");
   player.generation += 1;
   synth?.cancel();
@@ -1689,6 +1959,8 @@ const KEYS = {
   r: () => player.view === "play" && toBeat(currentBeat()),
   c: () => commentOnChunk("change"),
   q: () => commentOnChunk("question"),
+  y: () => decideCurrent("kept"),
+  x: () => decideCurrent("dismissed"),
   m: toggleMute,
   "?": toggleKeys,
 };

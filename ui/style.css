@@ -14,6 +14,9 @@
   --select-bg: #fff3c4;
   --select-edge: #b38600;
   --comment-bg: #eef3ff;
+  --sev-blocker: #b42318;
+  --sev-major: #8a5300;
+  --sev-minor: #5f6774;
   --question-bg: #eef1f4;
   --question-edge: #5f6774;
   --tok-comment: #5b6472;
@@ -45,6 +48,9 @@
     --select-bg: #4a4012;
     --select-edge: #e0b830;
     --comment-bg: #1b2538;
+    --sev-blocker: #ff9b9b;
+    --sev-major: #f0b64a;
+    --sev-minor: #9aa3b2;
     --question-bg: #222831;
     --question-edge: #8d96a5;
     --tok-comment: #adb5c3;
@@ -1148,4 +1154,150 @@ body.index {
   font: 12px / 1.5 var(--font-mono);
   background: var(--panel);
   border-radius: 4px;
+}
+
+.concern {
+  margin: 6px 10px 8px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--panel);
+  border: 1px dashed var(--border);
+  border-left: 4px solid var(--sev, var(--sev-minor));
+  font-family: system-ui, sans-serif;
+  white-space: normal;
+}
+
+.diff .concern {
+  margin-left: calc(var(--gutter) + 2ch);
+  max-width: 70ch;
+}
+
+.concern.sev-blocker {
+  --sev: var(--sev-blocker);
+}
+
+.concern.sev-major {
+  --sev: var(--sev-major);
+}
+
+.concern.sev-minor {
+  --sev: var(--sev-minor);
+}
+
+.concern.kept {
+  border-style: solid;
+}
+
+.concern.pending {
+  display: none;
+}
+
+.concern.dismissed {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  border-left-color: var(--border);
+  padding: 2px 12px;
+}
+
+.concern-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.concern .who {
+  font-weight: 600;
+}
+
+.concern .chip {
+  padding: 0 8px;
+  border: 1px solid var(--sev);
+  border-radius: 10px;
+  color: var(--sev);
+  font-weight: 600;
+}
+
+.concern .kind-tag,
+.concern .verdict {
+  color: var(--muted);
+}
+
+.concern .said {
+  margin: 4px 0;
+}
+
+.concern .said.mine {
+  color: var(--muted);
+}
+
+.concern-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.concern .sev-pick {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.concern .box {
+  margin: 6px 0;
+}
+
+.concern textarea {
+  min-height: 40px;
+}
+
+.dl.flagged .gutter::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  top: 3px;
+  bottom: 3px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--flag);
+}
+
+.dl.flag-blocker {
+  --flag: var(--sev-blocker);
+}
+
+.dl.flag-major {
+  --flag: var(--sev-major);
+}
+
+.dl.flag-minor {
+  --flag: var(--sev-minor);
+}
+
+.dot {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--sev-minor);
+}
+
+.dot.sev-blocker {
+  background: var(--sev-blocker);
+}
+
+.dot.sev-major {
+  background: var(--sev-major);
+}
+
+.to-decide {
+  color: var(--sev-major);
+}
+
+.kind select {
+  margin-left: auto;
 }
