@@ -933,6 +933,36 @@ test("row offsets, context rows included, survive POST, PUT, state, autosave and
   assert.equal(saved.comments[1].id, b.id);
 });
 
+test("an agent-authored comment is accepted, shown in state and events, and a reviewer cannot fake one", async (t) => {
+  const run = await start(t, twoCommitState());
+  const posted = await post(run.url, "api/comments", {
+    ...newComment("Here is why."),
+    author: "agent",
+    diagram: "flowchart LR\n  a --> b",
+  });
+  assert.equal(posted.status, 201);
+  const state = await jsonOf(await fetch(new URL("api/state", run.url)));
+  assert.equal(state.comments[0].author, "agent");
+  assert.equal(state.comments[0].diagram, "flowchart LR\n  a --> b");
+  const events = await jsonOf(await fetch(new URL("api/events?since=0&timeout=0", run.url)));
+  assert.equal(events.events[0].comment.author, "agent");
+
+  const reviewer = await post(run.url, "api/comments", newComment("A question."));
+  assert.equal(
+    (await jsonOf(await fetch(new URL("api/state", run.url)))).comments[1].author,
+    undefined,
+  );
+  assert.equal(reviewer.status, 201);
+  for (const extra of [
+    { author: "reviewer" },
+    { author: "agent", diagram: "not mermaid" },
+    { diagram: "flowchart LR\n  a --> b" },
+  ]) {
+    const res = await post(run.url, "api/comments", { ...newComment("x"), ...extra });
+    assert.equal(res.status, 400, JSON.stringify(extra));
+  }
+});
+
 test("offsets outside the hunk body, unsorted or on a file unit are refused and change nothing", async (t) => {
   const run = await start(t, twoCommitState());
   await post(run.url, "api/comments", newComment("kept"));

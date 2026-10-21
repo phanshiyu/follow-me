@@ -7,7 +7,7 @@ import {
   renderPrompt,
   renderReport,
 } from "./prompt.ts";
-import type { Comment, Diff, ServerEvent } from "./types.ts";
+import type { Comment, Diff, Review, ServerEvent } from "./types.ts";
 
 // The hunk reads: -old1 +new1 " same" -old2 +new2. In the base old1 is line 1, same is line 2, old2
 // is line 3; in the tip new1 is line 1, same is line 2, new2 is line 3.
@@ -152,4 +152,43 @@ test("the prompt and the report quote the same rows and carry the context-line r
   );
   assert.ok(report.includes("### c_abcdef · src/lib.js · line 2"));
   assert.ok(report.includes("do not move lines because of it"));
+});
+
+test("a thread the agent started reaches the report only once the reviewer answers", () => {
+  const open: Comment = {
+    ...comment([2], [], "same is the shared parser state."),
+    author: "agent",
+  };
+  const answered: Comment = {
+    ...open,
+    replies: [
+      {
+        id: JSON.parse('"r_abcdef"'),
+        author: "reviewer",
+        body: "Then why mutate it?",
+        createdAt: "t",
+      },
+    ],
+  };
+  const review = (c: Comment): Review => ({
+    schema: "follow-me/review@1",
+    mode: "split",
+    planVersion: JSON.parse("1"),
+    planHash: "x",
+    endedAt: "2026-01-01T00:00:00.000Z",
+    comments: [c],
+  });
+  const opts = { branch: "feature", responses: [] };
+  const silent = renderReport(review(open), commits(), diff().units, opts);
+  assert.equal(silent, "# Review of plan v1\n\nNo comments.\n");
+  const text = renderReport(review(answered), commits(), diff().units, opts);
+  assert.ok(
+    text.includes(
+      "## Threads you started\n\n### c_abcdef · src/lib.js · line 2\n\n```diff\n  -old1",
+    ),
+    text,
+  );
+  assert.ok(
+    text.includes("Agent: same is the shared parser state.\nReviewer replied: Then why mutate it?"),
+  );
 });

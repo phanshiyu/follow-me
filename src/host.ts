@@ -31,7 +31,7 @@ import {
   SessionFileError,
   SessionLockedError,
 } from "./session.ts";
-import type { HostedSummary, PlanVersion, ServerEvent, ServerRecord } from "./types.ts";
+import type { Comment, HostedSummary, PlanVersion, ServerEvent, ServerRecord } from "./types.ts";
 
 const RECORD = "server.json";
 const DEFAULT_IDLE_MS = 30_000;
@@ -374,6 +374,20 @@ export async function postReply(
   const body = await call(port, "POST", path, reply);
   const id = isFields(body) ? body["id"] : undefined;
   if (typeof id !== "string") throw new RegistrationError("the server answered without a reply id");
+  return id;
+}
+
+/** Posts a comment the agent starts and returns its id; the server mints id and time. */
+export async function postComment(
+  port: number,
+  summary: HostedSummary,
+  comment: Omit<Comment, "id" | "createdAt">,
+): Promise<string> {
+  const body = await call(port, "POST", `${summary.url}api/comments`, comment);
+  const id = isFields(body) ? body["id"] : undefined;
+  if (typeof id !== "string") {
+    throw new RegistrationError("the server answered without a comment id");
+  }
   return id;
 }
 

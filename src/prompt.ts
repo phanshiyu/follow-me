@@ -370,8 +370,9 @@ export function renderPrompt(input: PromptInput): string {
       `## Previous plan\n\nCommits are numbered from 1.\n\n${renderPreviousPlan(previousPlan)}`,
     );
   }
-  const asked = review?.comments.filter((c) => c.kind === "question") ?? [];
-  const changes = review?.comments.filter((c) => c.kind !== "question") ?? [];
+  const theirs = review?.comments.filter((c) => c.author !== "agent") ?? [];
+  const asked = theirs.filter((c) => c.kind === "question");
+  const changes = theirs.filter((c) => c.kind !== "question");
   const ctx: Context = { commits: input.previousCommits ?? [], units: diff.units };
   const questions = [`## Questions from the reviewer\n`, QUESTIONS, `\n${CONTEXT_RULE}`];
   if (review && asked.length > 0) {
@@ -769,6 +770,19 @@ function renderQuestions(
   return out;
 }
 
+/** Threads the agent opened, with what the reviewer said back. */
+function renderThreads(ctx: Context, threads: readonly Comment[]): string[] {
+  const out = ["## Threads you started", ""];
+  for (const c of threads) {
+    const where = whereComment(ctx, c);
+    const place = where.path === null ? where.label : `${where.path} · ${where.label}`;
+    out.push(`### ${c.id} · ${place}`, "", ...quoteBlock(where.quote));
+    if (where.quote.length > 0) out.push("");
+    out.push(`Agent: ${c.body}`, ...renderReplies(c), "");
+  }
+  return out;
+}
+
 /** Plan feedback for a split review: what the planner answers through `responses`. */
 function renderPlanFeedback(ctx: Context, comments: readonly Comment[]): string[] {
   const { commits } = ctx;
@@ -827,8 +841,13 @@ export function renderReport(
 ): string {
   const ctx: Context = { commits, units };
   const walk = review.mode === "walk";
-  const questions = review.comments.filter((c) => c.kind === "question");
-  const rest = review.comments.filter((c) => c.kind !== "question");
+  const fromReviewer = review.comments.filter((c) => c.author !== "agent");
+  // A thread the agent started matters to it only once the reviewer has answered.
+  const started = review.comments.filter(
+    (c) => c.author === "agent" && (c.replies ?? []).some((r) => r.author === "reviewer"),
+  );
+  const questions = fromReviewer.filter((c) => c.kind === "question");
+  const rest = fromReviewer.filter((c) => c.kind !== "question");
   const issues = walk ? rest : rest.filter((c) => c.severity !== undefined);
   const feedback = walk ? [] : rest.filter((c) => c.severity === undefined);
   const items = buildItems(ctx, keptConcerns(review, commits), issues);
@@ -843,7 +862,12 @@ export function renderReport(
     out.push(...renderItems(items, units, 2));
   } else {
     out.push(`# Review of plan v${review.planVersion}`, "");
-    if (feedback.length === 0 && items.length === 0 && questions.length === 0) {
+    if (
+      feedback.length === 0 &&
+      items.length === 0 &&
+      questions.length === 0 &&
+      started.length === 0
+    ) {
       out.push("No comments.", "");
       return out.join("\n");
     }
@@ -853,6 +877,7 @@ export function renderReport(
     }
   }
   if (questions.length > 0) out.push(...renderQuestions(ctx, questions, opts.responses));
+  if (started.length > 0) out.push(...renderThreads(ctx, started));
   if (walk && items.length > 0) {
     out.push(
       "Address each issue above in the code on this branch, then tell the reviewer what you changed and what you chose not to change and why.",

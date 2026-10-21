@@ -293,6 +293,10 @@ export type Comment = {
   readonly follows?: CommentId;
   readonly severity?: Severity;
   readonly replies?: readonly Reply[];
+  /** Absent means the reviewer. "agent" is a thread the agent started, for example an explanation. */
+  readonly author?: "agent";
+  /** Mermaid source, only on an agent's comment (a reviewer's comment has none). */
+  readonly diagram?: string;
 };
 
 /** The reviewer's verdict on one of the agent's concerns; severity overrides the agent's. */

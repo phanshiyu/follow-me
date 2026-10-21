@@ -117,7 +117,9 @@ type CommentFields =
   | "kind"
   | "follows"
   | "severity"
-  | "replies";
+  | "replies"
+  | "author"
+  | "diagram";
 
 /** Boundary parse of a comment, from a file or a request. Returns the reason when it is not one. */
 export function parseComment(v: unknown): Comment | string {
@@ -141,6 +143,13 @@ export function parseComment(v: unknown): Comment | string {
     return "body and createdAt must be strings";
   }
   if (v.kind !== undefined && v.kind !== "question") return 'kind is not "question"';
+  if (v.author !== undefined && v.author !== "agent") return 'author is not "agent"';
+  if (v.diagram !== undefined) {
+    if (typeof v.diagram !== "string") return "diagram is not a string";
+    if (v.author !== "agent") return "diagram is only for an agent's comment";
+    const problem = diagramProblem(v.diagram);
+    if (problem !== null) return `diagram: ${problem}`;
+  }
   const follows = v.follows;
   if (follows !== undefined && !(typeof follows === "string" && isCommentId(follows))) {
     return "follows is not a comment id";
@@ -163,6 +172,8 @@ export function parseComment(v: unknown): Comment | string {
     ...(follows === undefined ? {} : { follows }),
     ...(severity === undefined ? {} : { severity }),
     ...(replies.length === 0 ? {} : { replies }),
+    ...(v.author === "agent" ? { author: "agent" } : {}),
+    ...(v.diagram === undefined ? {} : { diagram: v.diagram }),
   };
 }
 
