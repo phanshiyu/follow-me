@@ -7,8 +7,11 @@
  */
 export type Spot = { readonly commit: number; readonly offset: number };
 
-/** Where a jump left from: the reading position, and the commit whose code was clicked. */
-export type Departure = { readonly spot: Spot; readonly from: number };
+/**
+ * Where a jump left from: the reading position, and the commit whose code was clicked. label names
+ * what Back returns to when that is not the commit, such as "the reply".
+ */
+export type Departure = { readonly spot: Spot; readonly from: number; readonly label?: string };
 
 export type History = readonly Departure[];
 
@@ -25,8 +28,9 @@ export function popDeparture(history: History): { spot: Spot; rest: History } | 
   return last === undefined ? null : { spot: last.spot, rest: history.slice(0, -1) };
 }
 
-/** "Back to commit 2", naming the commit the reviewer clicked in. */
+/** "Back to commit 2", naming the commit the reviewer clicked in, or "Back to the reply". */
 export function backLabel(history: History): string | null {
   const last = history.at(-1);
-  return last === undefined ? null : `Back to commit ${last.from + 1}`;
+  if (last === undefined) return null;
+  return `Back to ${last.label ?? `commit ${last.from + 1}`}`;
 }

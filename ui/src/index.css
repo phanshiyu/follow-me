@@ -977,3 +977,90 @@
   border: 1.5px solid var(--cov-partly);
   background: linear-gradient(to right, var(--cov-partly) 50%, transparent 50%);
 }
+
+/*
+ * Code an agent's reply points at. Violet is the agent's colour, apart from the yellow pick and the
+ * green and red diff. Rows carry the tint only while the reply is hovered, focused or stepped
+ * through; the first row of each ref has its number in the gutter, where the hover + sits.
+ */
+:root {
+  --ref-violet: #7c3aed;
+  --ref-tint: #f2ecff;
+  --ref-strong: #e2d4ff;
+  --ref-faint: #f8f6fd;
+  --ref-chip: #faf7ff;
+  --ref-chip-border: #d9ccfb;
+  --ref-ink: #3b1d8f;
+}
+.dark {
+  --ref-violet: #a78bfa;
+  --ref-tint: rgb(124 58 237 / 0.16);
+  --ref-strong: rgb(124 58 237 / 0.34);
+  --ref-faint: rgb(124 58 237 / 0.07);
+  --ref-chip: rgb(124 58 237 / 0.12);
+  --ref-chip-border: rgb(167 139 250 / 0.45);
+  --ref-ink: #ddd6fe;
+}
+[data-ref-tint="light"] {
+  background-color: var(--ref-tint);
+}
+[data-ref-tint="strong"] {
+  background-color: var(--ref-strong);
+}
+[data-ref-tint="faint"] {
+  background-color: var(--ref-faint);
+}
+[data-ref-tint] [data-gutter] > span:first-child {
+  box-shadow: inset -2px 0 0 var(--ref-violet);
+}
+[data-ref-badge] > * {
+  display: none;
+}
+[data-ref-badge]::before {
+  content: attr(data-ref-badge);
+}
+.ref-badge,
+[data-ref-badge]::before {
+  display: inline-grid;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: 9999px;
+  background: var(--ref-violet);
+  color: #fff;
+  font: 600 10px / 1 var(--font-sans, system-ui, sans-serif);
+}
+.ref-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px 0 2px;
+  border: 1px solid var(--ref-chip-border);
+  border-radius: 9999px;
+  background: var(--ref-chip);
+  color: var(--ref-ink);
+  font: 12px var(--font-mono, ui-monospace, monospace);
+  white-space: nowrap;
+  vertical-align: 1px;
+  cursor: pointer;
+}
+.ref-chip:hover,
+.ref-chip:focus-visible {
+  border-color: var(--ref-violet);
+  background: var(--ref-strong);
+  outline: none;
+}
+.ref-where {
+  color: var(--muted-foreground);
+  font: 11.5px var(--font-sans, system-ui, sans-serif);
+}
+/* The tip moved since the agent wrote it: grey, and its quote stands in for the code. */
+.ref-chip[data-ref-state="stale"] {
+  border-color: var(--border);
+  background: var(--muted);
+  color: var(--muted-foreground);
+}
+.ref-chip[data-ref-state="stale"] .ref-badge {
+  background: var(--muted-foreground);
+}

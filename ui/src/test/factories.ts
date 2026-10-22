@@ -4,6 +4,7 @@
 import type { Coverage } from "../lib/coverage.ts";
 import type {
   Candidate,
+  CodeRef,
   HunkLine,
   Offer,
   ProjectedCommit,
@@ -232,6 +233,24 @@ export function aGuardedState(overrides: Partial<State> = {}): State {
           )
         : c,
     ),
+    ...overrides,
+  });
+}
+
+/** A ref to aState's two guard lines at the tip, as commit 2 writes them; numbered 1. */
+export function aRef(overrides: Partial<Omit<CodeRef, "path">> & { path?: string } = {}): CodeRef {
+  const start = overrides.start ?? 4;
+  const end = overrides.end ?? start + 1;
+  return branded({
+    n: 1,
+    path: "src/lib.js",
+    start,
+    end,
+    at: null,
+    quote: ["  assertNumber(a);", "  assertNumber(b);"],
+    tip: "b".repeat(40),
+    lines: { start, end },
+    old: null,
     ...overrides,
   });
 }
