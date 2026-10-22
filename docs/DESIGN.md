@@ -73,7 +73,8 @@ Everything else is skipped and counted, as is a checker whose program is not ins
 file. Checks run four at a time and identical bytes are checked once. The last commit equals the
 tip by construction, so it is checked once and a failure there is reported as the tip's own state;
 that file is then not checked in earlier commits, where the failure would be blamed on the split.
-Any other failure prints as `$.commits[i]: <path>: <message>`; `check` exits 1 and `apply` refuses
+Any other failure prints as `commit <n>: <path>: <message>`, with commits counted from 1 as in every
+issue `check` prints; `check` exits 1 and `apply` refuses
 unless `--allow-syntax-errors`. The gate reads only the `ValidPlan`, so it adds no git calls.
 
 ## Review loop

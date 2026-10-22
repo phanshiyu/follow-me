@@ -394,45 +394,58 @@ function summarize(session: Session, cwd: string): void {
   say(`session ${relative(cwd, session.dir) || "."}`);
 }
 
+/** Commits are numbered from 1 in everything the agent reads; issues carry 0-based indices. */
+function commitName(k: number): string {
+  return `commit ${k + 1}`;
+}
+
+/** A JSON path into the draft with its commit named from 1: `$.commits[2].units[0]` reads `commit 3, units[0]`. */
+function jsonPlace(at: string): string {
+  const m = /^\$\.commits\[(\d+)\]\.?(.*)$/.exec(at);
+  if (m === null) return at;
+  const [, k = "0", rest = ""] = m;
+  return rest === "" ? commitName(Number(k)) : `${commitName(Number(k))}, ${rest}`;
+}
+
 function formatIssue(issue: PlanIssue): string {
   switch (issue.kind) {
     case "malformed":
-      return `malformed ${issue.at}: ${issue.reason}`;
+      return `malformed ${jsonPlace(issue.at)}: ${issue.reason}`;
     case "stale":
       return `stale: the plan is for tip ${short(issue.planTip)} but the session tip is ${short(issue.sessionTip)}`;
     case "empty-message":
-      return `$.commits[${issue.commit}]: empty message`;
+      return `${commitName(issue.commit)}: empty message`;
     case "empty-commit":
-      return `$.commits[${issue.commit}]: no units`;
+      return `${commitName(issue.commit)}: no units`;
     case "unknown-unit":
-      return `$.commits[${issue.commit}]: unknown unit ${issue.ref}`;
+      return `${commitName(issue.commit)}: unknown unit ${issue.ref}`;
     case "bad-selection":
-      return `$.commits[${issue.commit}]: ${issue.unit}: ${issue.reason}`;
+      return `${commitName(issue.commit)}: ${issue.unit}: ${issue.reason}`;
     case "duplicate": {
       const [a, b] = issue.commits;
       const what = issue.changes.length > 0 ? lines(issue.unit, issue.changes) : issue.unit;
-      return `${what} is claimed by commits ${a} and ${b}`;
+      return `${what} is claimed by commits ${a + 1} and ${b + 1}`;
     }
     case "unassigned": {
       const what = issue.changes.length > 0 ? lines(issue.unit, issue.changes) : issue.unit;
       return `${what} (${show(issue.path)}) is in no commit`;
     }
     case "path-conflict":
-      return `$.commits[${issue.commit}]: ${show(issue.file)} is a file while ${show(issue.under)} exists`;
+      return `${commitName(issue.commit)}: ${show(issue.file)} is a file while ${show(issue.under)} exists`;
     case "unknown-response":
       return `response to unknown comment ${issue.comment}`;
     case "bad-answer":
       return `response to ${issue.comment}: ${issue.reason}`;
     case "bad-concern":
-      return `$.commits[${issue.commit}]: concern: ${issue.reason}`;
+      return `${commitName(issue.commit)}: concern: ${issue.reason}`;
     case "too-many-concerns":
-      return `${issue.unit} has more than one concern, in commits ${issue.commits.join(" and ")}; keep the one that matters`;
+      return `${issue.unit} has more than one concern, in commits ${issue.commits.map((k) => k + 1).join(" and ")}; keep the one that matters`;
     case "bad-offer":
-      return `$.commits[${issue.commit}]: offer: ${issue.reason}`;
+      return `${commitName(issue.commit)}: offer: ${issue.reason}`;
     case "too-many-offers":
       return issue.commit === null
         ? `the plan has ${issue.count} offers; at most ${OFFERS_PER_PLAN}, and most plans need none`
-        : `$.commits[${issue.commit}] has ${issue.count} offers; at most ${OFFERS_PER_COMMIT} per commit`;
+        : `${commitName(issue.commit)} has ${issue.count} offers; at most ${OFFERS_PER_COMMIT} per commit`;
     case "final-mismatch": {
       const tip = issue.expected ? `${issue.expected.mode} ${issue.expected.blob}` : "absent";
       return `${show(issue.path)}: the last commit has ${issue.got}, the tip has ${tip}`;
@@ -446,10 +459,10 @@ function formatIssue(issue: PlanIssue): string {
 
 function formatWarning(w: PlanWarning): string {
   if (w.kind === "long-title") {
-    return `warning: $.commits[${w.commit}]: title is ${w.length} characters; keep it to 50`;
+    return `warning: ${commitName(w.commit)}: title is ${w.length} characters; keep it to 50`;
   }
   if (w.kind === "section-order") {
-    return `warning: $.commits[${w.commit}]: section ${w.section} comes after ${w.after}; sections read story, steps, details, wiring`;
+    return `warning: ${commitName(w.commit)}: section ${w.section} comes after ${w.after}; sections read story, steps, details, wiring`;
   }
   if (w.kind === "question-addressed") {
     return `warning: question ${w.comment} is marked addressed; explain it with "answered" and "at" unless answering it changed the plan`;
@@ -538,7 +551,7 @@ function syntaxOverride(args: Args): { override?: string } {
 
 function formatSyntax(report: SyntaxReport, mark = ""): string[] {
   const out = report.issues.map(
-    (i) => `${mark}$.commits[${i.commit}]: ${show(i.path)}: ${i.message}`,
+    (i) => `${mark}${commitName(i.commit)}: ${show(i.path)}: ${i.message}`,
   );
   for (const i of report.tip) {
     out.push(

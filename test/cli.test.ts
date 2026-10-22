@@ -277,7 +277,7 @@ test("check and apply refuse a commit that ends inside a function, until --allow
   assert.equal(checked.code, 1);
   assert.match(
     checked.out,
-    /^\$\.commits\[0\]: src\/guard\.js: line 3: SyntaxError: Unexpected end of input\n/m,
+    /^commit 1: src\/guard\.js: line 3: SyntaxError: Unexpected end of input\n/m,
   );
   const refused = run(repo.dir, "apply");
   assert.equal(refused.code, 1);
@@ -289,7 +289,7 @@ test("check and apply refuse a commit that ends inside a function, until --allow
 
   const allowed = run(repo.dir, "apply", "--allow-syntax-errors");
   assert.equal(allowed.code, 0, allowed.err);
-  assert.match(allowed.out, /^warning: \$\.commits\[0\]: src\/guard\.js: line 3: /);
+  assert.match(allowed.out, /^warning: commit 1: src\/guard\.js: line 3: /);
   assert.match(allowed.out, /\nproof: feature-split\^\{tree\} (\w+) equals feature\^\{tree\} \1\n/);
 });
 
@@ -1369,7 +1369,39 @@ test("check counts the agent's concerns by severity and refuses a second one on 
   writeFileSync(draftPath, planWith([one, { ...one, text: "and add never checks a." }]));
   const two = run(repo.dir, "check");
   assert.equal(two.code, 1);
-  assert.ok(two.out.includes(`${all[0]} has more than one concern, in commits 0;`));
+  assert.ok(two.out.includes(`${all[0]} has more than one concern, in commits 1;`));
+});
+
+test("check names commits from 1 in every issue, as the skill and the page do", async (t) => {
+  const { run } = cliIn(t);
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  assert.equal(run(repo.dir, "extract").code, 0);
+  const diff = await loadDiff(repo.dir, "main", "feature");
+  const [first = "", ...rest] = diff.units.keys();
+  const draftPath = join(repo.dir, ".follow-me", "feature", "draft.json");
+  const draft = (commits: unknown[]) =>
+    JSON.stringify({ schema: "follow-me/plan@1", base: repo.base, tip: repo.branch, commits });
+
+  writeFileSync(
+    draftPath,
+    draft([
+      { message: "feat: one", units: [first] },
+      { message: "feat: two", units: [first, ...rest] },
+      { message: "", units: [] },
+    ]),
+  );
+  const bad = run(repo.dir, "check");
+  assert.equal(bad.code, 1);
+  assert.match(bad.out, /is claimed by commits 1 and 2\n/);
+  assert.match(bad.out, /^commit 3: empty message$/m);
+  assert.match(bad.out, /^commit 3: no units$/m);
+  assert.doesNotMatch(bad.out, /commits? 0|\$\.commits/);
+
+  writeFileSync(draftPath, draft([{ message: "feat: one", units: [first] }, { units: rest }]));
+  const malformed = run(repo.dir, "check");
+  assert.equal(malformed.code, 1);
+  assert.match(malformed.out, /^malformed commit 2, message: expected a string$/m);
 });
 
 test("watch --follow --json prints every event until the review ends, then exits 0", async (t) => {
