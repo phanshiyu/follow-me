@@ -2158,3 +2158,73 @@ test("reply --map ties states to tip lines, names every bad entry, and show prin
   );
   await fetch(new URL("api/end", url), { method: "POST" });
 });
+
+test("reply and explain store the code their words point at, and refuse every ref that does not resolve", async (t) => {
+  const { run, repo, url } = await reviewing(t);
+  const { id } = JSON.parse(await (await postJson(url, "api/comments", PLAN_COMMENT)).text());
+
+  const bad = run(
+    repo.dir,
+    "reply",
+    id,
+    "--body",
+    "See `src/lib.js:99`, `src/nope.js:1` and `src/lib.js:3@2`, not `10:30`.",
+  );
+  assert.equal(bad.code, 1);
+  assert.equal(
+    bad.err,
+    [
+      "follow-me: --body points at code that does not resolve:",
+      "  src/lib.js:99 is past the end of the file at the tip (26 lines)",
+      "  src/nope.js:1: no such file at the tip",
+      "  src/lib.js:3@2: plan v1 has 1 commit",
+      "",
+    ].join("\n"),
+  );
+
+  const body =
+    "1. `src/lib.js:20-21` guards div\n2. `src/old-name.js:1@base` is gone\n3. `src/lib.js:20-21` again";
+  assert.equal(run(repo.dir, "reply", id, "--body", body).code, 0);
+  assert.equal(run(repo.dir, "reply", id, "--body", "No code, `items.length`.").code, 0);
+  const explained = run(repo.dir, "explain", "--body", "Start at `src/guard.js:1-3`.");
+  assert.equal(explained.code, 0, explained.err);
+
+  const state = JSON.parse(await (await fetch(new URL("api/state", url))).text());
+  const [pointed, plain] = state.comments[0].replies;
+  type Stored = { n: number; path: string; at: unknown; lines: unknown; old: unknown };
+  assert.deepEqual(
+    pointed.refs.map((r: Stored) => [r.n, r.path, r.at, r.lines, r.old]),
+    [
+      [1, "src/lib.js", null, { start: 20, end: 21 }, null],
+      [2, "src/old-name.js", "base", null, { start: 1, end: 1 }],
+    ],
+  );
+  assert.equal(pointed.refs[0].tip, repo.branch);
+  assert.deepEqual(pointed.refs[1].quote, ["export const legacy = true;"]);
+  assert.equal("refs" in plain, false);
+  assert.deepEqual(
+    state.comments[1].refs.map((r: { path: string; quote: string[] }) => [r.path, r.quote.length]),
+    [["src/guard.js", 3]],
+  );
+
+  assert.equal(
+    run(repo.dir, "show", "src/lib.js:20-21").out,
+    [
+      "src/lib.js:20-21 in the tip",
+      "  17  }",
+      "  18  ",
+      "  19  export function div(a, b) {",
+      "> 20    if (b === 0) throw new RangeError('division by zero');",
+      "> 21    return a / b;",
+      "  22  }",
+      "  23  ",
+      "  24  export function pow(a, b) {",
+      "",
+    ].join("\n"),
+  );
+  assert.match(
+    run(repo.dir, "show", "src/lib.js:3-2").err,
+    /src\/lib\.js:3-2 ends before it starts/,
+  );
+  await fetch(new URL("api/end", url), { method: "POST" });
+});

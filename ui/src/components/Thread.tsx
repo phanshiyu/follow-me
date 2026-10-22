@@ -2,12 +2,13 @@ import { type ReactNode, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { api } from "../lib/api.ts";
-import type { WireComment } from "../lib/wire.ts";
+import type { CodeRef, WireComment } from "../lib/wire.ts";
 import { usePage } from "../page.tsx";
 import { useReview } from "../store.tsx";
 import { CommentBox } from "./CommentBox.tsx";
 import { Diagram } from "./Diagram.tsx";
 import { Markdown } from "./Markdown.tsx";
+import { RefBody } from "./Refs.tsx";
 import { SeverityChip } from "./Severity.tsx";
 import { StateMachine } from "./StateMachine.tsx";
 
@@ -51,9 +52,23 @@ export function Text({ children }: { children: string }) {
 }
 
 /** The words of a turn; a reply that only carries a diagram has none. */
-function Body({ author, text }: { author: "agent" | "reviewer"; text: string }) {
+function Body({
+  author,
+  text,
+  refs,
+  id,
+  own,
+}: {
+  author: "agent" | "reviewer";
+  text: string;
+  refs: readonly CodeRef[] | undefined;
+  id: string;
+  own: number | null;
+}) {
   if (text.trim() === "") return null;
-  return author === "agent" ? <Markdown text={text} /> : <Text>{text}</Text>;
+  if (author !== "agent") return <Text>{text}</Text>;
+  if (refs === undefined || refs.length === 0) return <Markdown text={text} />;
+  return <RefBody id={id} text={text} refs={refs} own={own} />;
 }
 
 function who(comment: WireComment): string {
@@ -81,6 +96,7 @@ export function ThreadCard({
   const { run } = useReview();
   const { resolved, setLocallyResolved } = usePage();
   const [replying, setReplying] = useState(false);
+  const own = comment.anchor.kind === "plan" ? null : comment.anchor.commit;
   const { unread, markSeen } = useReview();
   const mine = unread.filter((n) => n.thread === comment.id).map((n) => n.key);
   const watched = mine.join();
@@ -129,7 +145,13 @@ export function ThreadCard({
         {comment.severity === undefined ? null : <SeverityChip severity={comment.severity} />}
         {chip}
       </div>
-      <Body author={comment.author ?? "reviewer"} text={comment.body} />
+      <Body
+        author={comment.author ?? "reviewer"}
+        text={comment.body}
+        refs={comment.refs}
+        id={comment.id}
+        own={own}
+      />
       {comment.diagram === undefined ? null : (
         <div className={cn(comment.body.trim() !== "" && "mt-2")}>
           <Diagram source={comment.diagram} title="The agent's diagram" />
@@ -144,7 +166,7 @@ export function ThreadCard({
           <div className="mb-1 font-medium text-xs">
             {reply.author === "agent" ? "Agent" : "You"}
           </div>
-          <Body author={reply.author} text={reply.body} />
+          <Body author={reply.author} text={reply.body} refs={reply.refs} id={reply.id} own={own} />
           {reply.diagram === undefined ? null : (
             <div className={cn(reply.body.trim() !== "" && "mt-2")}>
               {reply.map === undefined ? (

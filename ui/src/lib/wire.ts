@@ -21,6 +21,7 @@ export type {
   Anchor,
   Candidate,
   CarriedComment as Carried,
+  CodeRef,
   Comment,
   CommentId,
   CommentResponse,

@@ -18,6 +18,15 @@ test("Back retraces jumps last first, named by the commit clicked in, then has n
   expect(popDeparture(second?.rest ?? [])).toBeNull();
 });
 
+test("a departure with a label names what Back returns to", () => {
+  const history = pushDeparture([], {
+    spot: { commit: 1, offset: 0 },
+    from: 1,
+    label: "the reply",
+  });
+  expect(backLabel(history)).toBe("Back to the reply");
+});
+
 test("the oldest departures fall off past the limit", () => {
   let history: History = [];
   for (let i = 0; i < HISTORY_LIMIT + 3; i += 1)

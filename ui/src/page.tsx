@@ -51,6 +51,8 @@ type Page = {
    */
   isRevealed(commit: number, path?: string): boolean;
   reveal(commit: number, path: string): void;
+  /** Closes again what reveal opened, as a walkthrough does when it ends. */
+  conceal(commit: number, path: string): void;
   /** Coverage marks and figures, on unless the reviewer hid them in this session. */
   readonly coverageOn: boolean;
   setCoverageOn(on: boolean): void;
@@ -78,13 +80,15 @@ export function scrollToCommit(index: number): void {
 
 /** The commit section at the top of the viewport and how far it has scrolled under the header. */
 export function spotOfViewport(): Spot {
-  let spot: Spot = { commit: 0, offset: 0 };
+  let spot: Spot | null = null;
   for (const section of document.querySelectorAll<HTMLElement>("section[data-commit]")) {
     const top = section.getBoundingClientRect().top;
-    if (top > HEADER_PX + 1) break;
+    // Above the first commit, the spot is how far below the header that commit starts.
+    if (top > HEADER_PX + 1 && spot !== null) break;
     spot = { commit: Number(section.dataset["commit"]), offset: HEADER_PX - top };
+    if (top > HEADER_PX + 1) break;
   }
-  return spot;
+  return spot ?? { commit: 0, offset: 0 };
 }
 
 export function scrollToSpot(spot: Spot): void {
@@ -171,6 +175,14 @@ export function PageProvider({ children }: { children: ReactNode }) {
       setRevealed((before) => new Set([...before, `${commit}`, `${commit}|${path}`])),
     [],
   );
+  const conceal = useCallback(
+    (commit: number, path: string) =>
+      setRevealed(
+        (before) =>
+          new Set([...before].filter((key) => key !== `${commit}` && key !== `${commit}|${path}`)),
+      ),
+    [],
+  );
   const setPick = useCallback((next: PagePick | null) => {
     setPickState(next);
     if (next === null) setBoxState(null);
@@ -222,6 +234,7 @@ export function PageProvider({ children }: { children: ReactNode }) {
       isRevealed: (commit, path) =>
         revealed.has(path === undefined ? `${commit}` : `${commit}|${path}`),
       reveal,
+      conceal,
       coverageOn,
       setCoverageOn,
     };
@@ -243,6 +256,7 @@ export function PageProvider({ children }: { children: ReactNode }) {
     setIndexOpen,
     revealed,
     reveal,
+    conceal,
     coverageOn,
     setCoverageOn,
   ]);

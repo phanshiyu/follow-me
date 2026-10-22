@@ -157,7 +157,20 @@ export type GoToPlaces = (
   subject?: Subject,
 ) => void;
 
-const GoToContext = createContext<{ goTo: GoTo; goToPlaces: GoToPlaces } | null>(null);
+/**
+ * Leaves for somewhere the caller scrolls to itself, so Back returns here; `label` names what Back
+ * returns to. departures counts the spots Back can still return to.
+ */
+export type Depart = (from: number, label?: string) => void;
+
+type Going = {
+  readonly goTo: GoTo;
+  readonly goToPlaces: GoToPlaces;
+  readonly depart: Depart;
+  readonly departures: number;
+};
+
+const GoToContext = createContext<Going | null>(null);
 export const GoToProvider = GoToContext.Provider;
 
 function useGoToContext() {
@@ -174,17 +187,17 @@ export function useGoToPlaces(): GoToPlaces {
   return useGoToContext().goToPlaces;
 }
 
+export function useDepart(): { depart: Depart; departures: number } {
+  const { depart, departures } = useGoToContext();
+  return { depart, departures };
+}
+
 /**
  * Go to definition. Holding Cmd (Ctrl off macOS) underlines a name in the code once the server
  * knows where it is defined; Cmd-click jumps there, lists the places, or peeks at code the branch
  * does not change. Back, Alt+Left or the header chip, returns to where the jump started.
  */
-export function useDefinitions(): {
-  back: ReactNode;
-  layer: ReactNode;
-  goTo: GoTo;
-  goToPlaces: GoToPlaces;
-} {
+export function useDefinitions(): Going & { back: ReactNode; layer: ReactNode } {
   const { state } = useReview();
   const { units } = useDerived();
   const { reveal } = usePage();
@@ -211,6 +224,13 @@ export function useDefinitions(): {
     },
     [reveal, units],
   );
+
+  const depart = useCallback<Depart>((from, label) => {
+    const spot = spotOfViewport();
+    setHistory((before) =>
+      pushDeparture(before, { spot, from, ...(label === undefined ? {} : { label }) }),
+    );
+  }, []);
 
   const goBack = useCallback(() => {
     setShown(null);
@@ -399,7 +419,7 @@ export function useDefinitions(): {
     </Popover>
   );
 
-  return { back, layer, goTo, goToPlaces };
+  return { back, layer, goTo, goToPlaces, depart, departures: history.length };
 }
 
 function onListKeys(event: KeyboardEvent<HTMLElement>): void {
@@ -452,8 +472,25 @@ function Choices({
   );
 }
 
-/** The definition's own lines, highlighted, for code this page does not show. */
-function Peek({ candidate, kind, empty }: { candidate: Candidate; kind: string; empty: string }) {
+/**
+ * The definition's own lines, highlighted, for code this page does not show. A ref's peek names
+ * its range and where it sits itself, and `badge` puts its number beside them and tints the lines.
+ */
+export function Peek({
+  candidate,
+  kind,
+  empty,
+  place,
+  where,
+  badge,
+}: {
+  candidate: Candidate;
+  kind: string;
+  empty: string;
+  place?: string;
+  where?: string;
+  badge?: number;
+}) {
   const { state } = useReview();
   const label = labelOf(candidate, state.commits);
   const body = useMemo(
@@ -464,9 +501,10 @@ function Peek({ candidate, kind, empty }: { candidate: Candidate; kind: string; 
   return (
     <div>
       <div className="flex items-baseline gap-2 border-b px-3 py-1.5 text-xs">
-        <span className="font-medium font-mono">{label.place}</span>
+        {badge === undefined ? null : <span className="ref-badge">{badge}</span>}
+        <span className="font-medium font-mono">{place ?? label.place}</span>
         <span className="text-muted-foreground">{kind}</span>
-        <span className="ml-auto text-muted-foreground">{label.where}</span>
+        <span className="ml-auto text-muted-foreground">{where ?? label.where}</span>
       </div>
       {candidate.preview.length === 0 ? (
         <p className="px-3 py-2 text-muted-foreground text-xs">{empty}</p>
@@ -475,7 +513,7 @@ function Peek({ candidate, kind, empty }: { candidate: Candidate; kind: string; 
         {candidate.preview.map((text, i) => (
           // Preview lines have no identity beyond their position.
           // biome-ignore lint/suspicious/noArrayIndexKey: see above
-          <div key={i} className="flex">
+          <div key={i} className="flex" data-ref-tint={badge === undefined ? undefined : "strong"}>
             <span className="w-12 shrink-0 select-none pr-3 text-right text-muted-foreground/70">
               {candidate.newLine + i}
             </span>

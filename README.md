@@ -75,6 +75,8 @@ The red blob in the party hat is your branch tip. Nothing follow-me does moves i
 ![Cmd-clicking format in pow opens a peek of its definition, which lives outside this branch](assets/screenshots/definition.png)
 *Cmd-click a name to jump to where it is defined, even in a later commit, and Alt+Left to come back. A definition the branch does not change opens as a peek.*
 
+When your agent's answer names code, like `src/lib.js:4-5`, each place becomes a numbered chip. Hover the answer to tint those lines, click a chip to jump there and Alt+Left to come back. An answer that names several places is a walkthrough: press Enter on it, then `.` and `,` to step.
+
 ![Coverage while reading: gutter bars mark covered, partly covered and uncovered lines, with counts per commit, per file and for the branch, and a popover listing the test that ran a line](assets/screenshots/coverage.png)
 *Coverage while reading. Your agent runs the tests with coverage and passes the lcov to `follow-me coverage`; follow-me never runs anything. Bars show covered, partly covered and uncovered lines, `x` jumps to the next uncovered line, and clicking a bar lists the tests that ran it.*
 
@@ -87,7 +89,7 @@ The red blob in the party hat is your branch tip. Nothing follow-me does moves i
 ![The hand-off page: every kept item with its original-branch path and line, an include checkbox, and copy buttons](assets/screenshots/handoff.png)
 *Submit review. Each item carries the original branch's path and line, so your agent can post it to the merge request as is.*
 
-Keys: `[` shows or hides the index, `j` and `k` move between commits, Cmd-click (Ctrl-click) goes to a definition and Alt+Left comes back, arrows and Shift+arrows pick rows inside a hunk, `c` comments on the pick, `v` marks a commit viewed, `g` shows or hides coverage and `x` jumps to the next uncovered line, `?` lists the rest. An unfinished review autosaves and comes back when the page is opened again.
+Keys: `[` shows or hides the index, `j` and `k` move between commits, Cmd-click (Ctrl-click) goes to a definition and Alt+Left comes back, arrows and Shift+arrows pick rows inside a hunk, `c` comments on the pick, `v` marks a commit viewed, `g` shows or hides coverage and `x` jumps to the next uncovered line, `.` and `,` step through the agent's walkthrough, `?` lists the rest. An unfinished review autosaves and comes back when the page is opened again.
 
 ### Reviewing someone else's branch
 
