@@ -11,6 +11,7 @@ import {
   isSeverity,
   parsePlacedConcern,
 } from "./plan.ts";
+import { parseRefText } from "./refs.ts";
 import type {
   Anchor,
   CarriedComment,
@@ -83,13 +84,24 @@ function parseAnchor(v: unknown): Anchor | string {
   return { kind: "hunk", unit: v.unit, commit, changes, offsets };
 }
 
+/** A place written as a ref string (`path:a-b`, tip lines) or as { path, start, end }. */
+function parsePlace(raw: unknown): Loc | string | null {
+  if (typeof raw !== "string") return parseLoc(raw);
+  const spec = parseRefText(raw);
+  if (spec === null) return null;
+  if (spec.at !== null) return `${JSON.stringify(raw)}: a map is in tip lines; drop the @`;
+  return parseLoc({ path: spec.path, start: spec.start, end: spec.end });
+}
+
 function parseLocs(v: unknown, at: string, needed: boolean): Loc[] | string {
-  const what = `${at}: expected a list of { path, start, end }${needed ? " with at least one place" : ""}`;
+  const what = `${at}: expected a list of "path:a-b" or { path, start, end }${needed ? " with at least one place" : ""}`;
   if (!isArray(v) || (needed && v.length === 0)) return what;
   const out: Loc[] = [];
   for (const [i, raw] of v.entries()) {
-    const loc = parseLoc(raw);
-    if (loc === null) return `${at}[${i}]: expected { path, start, end } with 1 <= start <= end`;
+    const loc = parsePlace(raw);
+    if (loc === null)
+      return `${at}[${i}]: expected "path:a-b" or { path, start, end } with 1 <= start <= end`;
+    if (typeof loc === "string") return `${at}[${i}]: ${loc}`;
     out.push(loc);
   }
   return out;

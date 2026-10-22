@@ -2238,12 +2238,19 @@ test("reply --map ties states to tip lines, names every bad entry, and show prin
     /--map needs --diagram/,
   );
 
+  const versioned = write({ states: { Checking: ["src/lib.js:1@2"], Adding: [place(2)] } });
+  assert.match(
+    versioned.err,
+    /map\.states\.Checking\[0\]: "src\/lib\.js:1@2": a map is in tip lines; drop the @\n$/,
+  );
+
+  // A place is a ref string, as replies write them, or the object form.
   const good = write({
-    states: { Checking: [place(1, 3), place(5)], Adding: [place(6, 7)] },
+    states: { Checking: ["src/lib.js:1-3", place(5)], Adding: [place(6, 7)] },
     // [*] marks the start in the diagram; a move from it in the map is dropped, not refused.
     transitions: [
       { from: "[*]", to: "Checking", at: [] },
-      { from: "Checking", to: "Adding", event: "numbers", at: [place(4)] },
+      { from: "Checking", to: "Adding", event: "numbers", at: ["src/lib.js:4"] },
     ],
   });
   assert.equal(good.code, 0, good.err);

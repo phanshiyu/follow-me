@@ -157,4 +157,6 @@ test("the skill asks for one coverage run per test and maps states, transitions 
   );
   assert.ok(offers.includes("a transition to the line that performs it"));
   assert.ok(offers.includes("a self-loop to the line only that path runs"));
+  // Places in the map are written like refs, and the shape shows one in `at`.
+  assert.ok(offers.includes('"at": ["src/upload.tsx:28"]'));
 });
