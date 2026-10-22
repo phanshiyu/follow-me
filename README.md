@@ -77,6 +77,9 @@ The red blob in the party hat is your branch tip. Nothing follow-me does moves i
 
 When your agent's answer names code, like `src/lib.js:4-5`, each place becomes a numbered chip. Hover the answer to tint those lines, click a chip to jump there and Alt+Left to come back. An answer that names several places is a walkthrough: press Enter on it, then `.` and `,` to step.
 
+![An agent reply naming three places as numbered chips, one in a later commit, with those lines tinted and numbered in the code and the walkthrough bar at step 1 of 3](assets/screenshots/refs.png)
+*A walkthrough. Each place the agent names is tinted and numbered on the code, the current step strongest, and the bar at the bottom says where you are.*
+
 ![Coverage while reading: gutter bars mark covered, partly covered and uncovered lines, with counts per commit, per file and for the branch, and a popover listing the test that ran a line](assets/screenshots/coverage.png)
 *Coverage while reading. Your agent runs the tests with coverage and passes the lcov to `follow-me coverage`; follow-me never runs anything. Bars show covered, partly covered and uncovered lines, `x` jumps to the next uncovered line, and clicking a bar lists the tests that ran it.*
 
