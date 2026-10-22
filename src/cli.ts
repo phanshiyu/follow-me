@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { definitionIndex, isIdentifier } from "./definition.ts";
 import { DiffParseError, formatUnitRef, isUnitId } from "./diff.ts";
 import {
   BranchRefusedError,
@@ -66,6 +67,7 @@ import {
   renderReport,
   renderShownComment,
   renderShownConcern,
+  renderShownDefinitions,
   renderShownUnit,
   reportItems,
 } from "./prompt.ts";
@@ -121,9 +123,10 @@ Other commands:
                                             Mermaid source
   explain [--commit <n>] [--unit <id>] [--lines <a-b>] --body <text> [--diagram <file>]
                                             start a thread on the page without being asked
-  show <h_…|c_…|k_…|path:line[@n|@base]>   print a unit, a comment's thread, a concern, or the
-                                            lines around path:line in commit n, instead of
-                                            reading files
+  show <h_…|c_…|k_…|path:line[@n|@base]|name>
+                                            print a unit, a comment's thread, a concern, the
+                                            lines around path:line in commit n, or where a name
+                                            is defined, instead of reading files
   report [--json] [--markdown]              print the report of the latest review; --json lists
                                             the items to post to a merge request
 
@@ -177,11 +180,13 @@ Interactive loop (while the review page is open):
                                             --lines are change lines of the unit, commits count
                                             from 1; with no target it is about the whole plan.
                                             watch leaves these out like your replies
-  show <h_…|c_…|k_…|path:line[@n|@base]> [--branch <name>]
+  show <h_…|c_…|k_…|path:line[@n|@base]|name> [--branch <name>]
                                             print a unit with the commits that take it, a
                                             comment with its rows and thread, a concern with its
-                                            lines, or the lines around path:line at the tip, in
-                                            commit n of the plan, or in the base
+                                            lines, the lines around path:line at the tip, in
+                                            commit n of the plan, or in the base, or each place
+                                            a name is defined at the tip with the commit it
+                                            lands in
   report [--json] [--markdown] [--branch <name>]
                                             print the report of the open review, or of the last
                                             one that ended. Markdown lists issues by file and
@@ -1719,7 +1724,7 @@ async function explain(cwd: string, args: Args): Promise<number> {
   return 0;
 }
 
-const SHOW_USAGE = "usage: follow-me show <h_…|c_…|k_…|path:line[@<commit>|@base]>";
+const SHOW_USAGE = "usage: follow-me show <h_…|c_…|k_…|path:line[@<commit>|@base]|name>";
 
 /** Every comment the session has, with the plan version it was made on: live ones first. */
 async function knownComments(
@@ -1828,6 +1833,12 @@ async function showRef(cwd: string, args: Args): Promise<number> {
       }
     }
     throw new UsageError(`no concern ${ref} in a plan that fits the branch`);
+  }
+  if (isIdentifier(ref)) {
+    const commits = latest === undefined ? [] : projectedCommits(session, latest.version);
+    const index = definitionIndex(session.root, session.diff.tip, units, commits);
+    process.stdout.write(renderShownDefinitions(ref, await index.lookup(ref, null)));
+    return 0;
   }
   process.stdout.write(showLines(session, ref));
   return 0;

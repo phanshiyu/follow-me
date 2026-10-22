@@ -1959,3 +1959,56 @@ test("follow-me on a branch someone else wrote plans a reviewer's reading and ap
   assert.equal(state.mode, "walk");
   assert.equal(git(repo.dir, "branch", "--list", "feature-split"), "");
 });
+
+test("show <name> prints each definition at the tip with the commit it lands in", async (t) => {
+  const { run } = cliIn(t);
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  assert.equal(run(repo.dir, "extract").code, 0);
+  const diff = await loadDiff(repo.dir, "main", "feature");
+  const [first] = [...diff.units.values()].filter((u) => u.path === "src/lib.js");
+  assert.ok(first !== undefined);
+  const rest = [...diff.units.keys()].filter((id) => id !== first.id);
+  writeFileSync(
+    join(repo.dir, ".follow-me", "feature", "draft.json"),
+    JSON.stringify({
+      schema: "follow-me/plan@1",
+      base: repo.base,
+      tip: repo.branch,
+      commits: [
+        { message: "Guard add", units: [first.id] },
+        { message: "Add the guard", units: rest },
+      ],
+      responses: [],
+    }),
+  );
+  assert.equal(run(repo.dir, "apply").code, 0);
+
+  // add calls assertNumber in commit 1; commit 2 defines it.
+  assert.equal(
+    run(repo.dir, "show", "assertNumber").out,
+    [
+      "src/guard.js:1 function, in commit 2",
+      "    1  export function assertNumber(x) {",
+      "    2    if (typeof x !== 'number') throw new TypeError('not a number');",
+      "    3  }",
+      "",
+    ].join("\n"),
+  );
+  assert.equal(
+    run(repo.dir, "show", "sub").out,
+    [
+      "src/lib.js:9 function, unchanged by the branch",
+      "     9  export function sub(a, b) {",
+      "    10    return a - b;",
+      "    11  }",
+      "    12  ",
+      "    13  export function mul(a, b) {",
+      "    14    assertNumber(a);",
+      "    15    assertNumber(b);",
+      "    16    return a * b;",
+      "",
+    ].join("\n"),
+  );
+  assert.equal(run(repo.dir, "show", "nowhere").out, "no definition of nowhere at the tip\n");
+});

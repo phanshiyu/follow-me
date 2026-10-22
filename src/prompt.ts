@@ -2,6 +2,7 @@ import { tipStartOf } from "./diff.ts";
 import { anchorOn, concernOn, type Evolution } from "./evolve.ts";
 import type {
   Anchor,
+  Candidate,
   CarriedConcern,
   Comment,
   CommentResponse,
@@ -1323,4 +1324,28 @@ export function renderShownConcern(concern: PlacedConcern, commit: number, ctx: 
     concern.text,
     "",
   ].join("\n");
+}
+
+function utf8(latin1: string): string {
+  return Buffer.from(latin1, "latin1").toString("utf8");
+}
+
+/** Where a name is defined, each with the commit it lands in and its first lines at the tip. */
+export function renderShownDefinitions(name: string, candidates: readonly Candidate[]): string {
+  if (candidates.length === 0) return `no definition of ${name} at the tip\n`;
+  return `${candidates
+    .flatMap((c) => {
+      const where =
+        c.commit !== null
+          ? `in commit ${c.commit + 1}`
+          : c.unit !== null
+            ? `in ${c.unit}, which no commit of the plan takes`
+            : "unchanged by the branch";
+      const width = String(c.newLine + c.preview.length - 1).length;
+      return [
+        `${utf8(c.path)}:${c.newLine} ${c.kind}, ${where}`,
+        ...c.preview.map((l, i) => `    ${String(c.newLine + i).padStart(width)}  ${utf8(l)}`),
+      ];
+    })
+    .join("\n")}\n`;
 }
