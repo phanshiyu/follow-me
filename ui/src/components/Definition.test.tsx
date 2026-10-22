@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import { page, userEvent } from "vitest/browser";
+import { isMac } from "../lib/definition.ts";
 import type { Candidate, TextHunk } from "../lib/wire.ts";
 import { aCandidate, aHunk, aLongState } from "../test/factories.ts";
 import { goToCommit, indexEntry } from "../test/pages.ts";
@@ -69,10 +70,13 @@ const underlined = () => {
   return range instanceof Range ? range.toString() : null;
 };
 
+/** The key the page treats as Cmd: Cmd on macOS, Ctrl elsewhere, the same rule the page uses. */
+const MOD = isMac(navigator.platform) ? "Meta" : "Control";
+
 async function commandClick() {
-  await userEvent.keyboard("{Meta>}");
+  await userEvent.keyboard(`{${MOD}>}`);
   await usage().click();
-  await userEvent.keyboard("{/Meta}");
+  await userEvent.keyboard(`{/${MOD}}`);
 }
 
 test("holding Cmd over a name underlines it once the server knows its definition", async () => {
@@ -82,7 +86,7 @@ test("holding Cmd over a name underlines it once the server knows its definition
   expect(underlined()).toBeNull();
   expect(server.calls.some((c) => c.path.startsWith("/api/definition"))).toBe(false);
 
-  await userEvent.keyboard("{Meta>}");
+  await userEvent.keyboard(`{${MOD}>}`);
   await expect.poll(underlined).toBe("assertNumber");
   const code = usage().element().closest<HTMLElement>("[data-code]");
   expect(code?.style.cursor).toBe("pointer");
@@ -90,7 +94,7 @@ test("holding Cmd over a name underlines it once the server knows its definition
     { method: "GET", path: "/api/definition?name=assertNumber&from=src%2Flib.js", body: undefined },
   ]);
 
-  await userEvent.keyboard("{/Meta}");
+  await userEvent.keyboard(`{/${MOD}}`);
   await expect.poll(underlined).toBeNull();
   expect(code?.style.cursor).toBe("");
 });
