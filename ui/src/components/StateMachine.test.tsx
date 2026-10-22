@@ -310,6 +310,30 @@ test("an aggregate run marks edges from their lines, without test names", async 
   await expect.element(notDriven()).not.toBeInTheDocument();
 }, 60_000);
 
+test("an aggregate run says paths need per-test runs, and Ask the agent posts that as a question", async () => {
+  const { server } = await withMachine();
+  server.on("POST", "/api/comments", () => ({ id: "c_ask001" }));
+  await expect
+    .element(card().getByText("Paths and sequences need one coverage run per test."))
+    .toBeVisible();
+  await card().getByRole("button", { name: "Ask the agent" }).click();
+  await expect
+    .poll(() => server.calls.find((c) => c.method === "POST" && c.path === "/api/comments")?.body)
+    .toEqual({
+      anchor: { kind: "message", commit: 1 },
+      context: { commitMessage: "Guard add\n\nadd now rejects strings.", path: null },
+      body: "Paths and sequences need one coverage run per test. Please run the tests one at a time with coverage and pass each run with `follow-me coverage <lcov> --test <id>`.",
+      kind: "question",
+    });
+  await expect.element(card().getByText("Asked the agent.")).toBeVisible();
+}, 60_000);
+
+test("with per-test runs, or no run, there is nothing to ask", async () => {
+  await withMachine("per-test");
+  await expect.element(notDriven()).toBeVisible();
+  expect(card().getByRole("button", { name: "Ask the agent" }).query()).toBeNull();
+}, 60_000);
+
 const notDriven = () => card().getByRole("region", { name: /^Not driven by any one test/ });
 const outlinedEdges = () => diagram()?.querySelectorAll(".sm-sequence").length;
 

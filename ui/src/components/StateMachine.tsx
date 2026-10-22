@@ -26,7 +26,7 @@ import { usePage } from "../page.tsx";
 import { useDerived, useReview } from "../store.tsx";
 import { type Subject, useGoToPlaces } from "./Definition.tsx";
 import { Diagram } from "./Diagram.tsx";
-import { NotDriven } from "./NotDriven.tsx";
+import { NotDriven, PerTestAsk } from "./NotDriven.tsx";
 
 const SVG = "http://www.w3.org/2000/svg";
 const STATE: Subject = {
@@ -523,6 +523,7 @@ export function StateMachine({
           </span>
         )}
       </p>
+      {coverage !== null && !perTest && edges.length > 0 ? <PerTestAsk commit={from} /> : null}
       <NotDriven
         sequences={sequences}
         shown={shown}

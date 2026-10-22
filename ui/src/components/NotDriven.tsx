@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { api } from "../lib/api.ts";
@@ -21,6 +21,50 @@ export function sequenceLabel(sequence: Sequence): string {
 /** The body a Flag as missing test box starts with for a sequence. */
 export function missingSequenceDraft(sequence: Sequence): string {
   return `Missing test: no single test drives ${sequenceLabel(sequence)}; each step has its own test.`;
+}
+
+/** Posts a comment on the commit message, as the commit's own Comment menu does. */
+function usePostOnCommit(commit: number): (draft: Draft) => Promise<boolean> {
+  const { state, run } = useReview();
+  const message = state.commits.find((c) => c.index === commit)?.message ?? "";
+  return (draft) =>
+    run(() =>
+      api.comment(
+        composeComment({ kind: "message", commit }, { commitMessage: message, path: null }, draft),
+      ),
+    );
+}
+
+/** What Ask the agent sends when the run has no per-test detail. */
+export const PER_TEST_ASK =
+  "Paths and sequences need one coverage run per test. Please run the tests one at a time with coverage and pass each run with `follow-me coverage <lcov> --test <id>`.";
+
+/**
+ * Under a state machine marked from an aggregate run: says what per-test runs would add, and asks
+ * the agent for them as a question, so the request goes through the normal thread loop.
+ */
+export function PerTestAsk({ commit }: { commit: number }) {
+  const post = usePostOnCommit(commit);
+  const [asked, setAsked] = useState(false);
+  return (
+    <p className="mt-1 flex flex-wrap items-center gap-x-1.5 text-muted-foreground text-xs">
+      <span>Paths and sequences need one coverage run per test.</span>
+      {asked ? (
+        <span>Asked the agent.</span>
+      ) : (
+        <Button
+          variant="link"
+          size="xs"
+          className="h-auto p-0 text-xs"
+          onClick={async () => {
+            if (await post({ body: PER_TEST_ASK, kind: "ask", severity: null })) setAsked(true);
+          }}
+        >
+          Ask the agent
+        </Button>
+      )}
+    </p>
+  );
 }
 
 /**
@@ -46,21 +90,15 @@ export function NotDriven({
   /** The commit the diagram sits in, which a flag is posted on. */
   commit: number;
 }) {
-  const { state, run } = useReview();
+  const post = usePostOnCommit(commit);
+  const heading = useId();
   const [flagging, setFlagging] = useState<number | null>(null);
   if (sequences.length === 0) return null;
-  const message = state.commits.find((c) => c.index === commit)?.message ?? "";
-  const post = (draft: Draft) =>
-    run(() =>
-      api.comment(
-        composeComment({ kind: "message", commit }, { commitMessage: message, path: null }, draft),
-      ),
-    );
   const flagged = flagging === null ? undefined : sequences[flagging];
   const more = sequences.length - SHOWN;
   return (
-    <section aria-labelledby={`not-driven-${commit}`} className="mt-3 rounded-lg border p-3">
-      <h4 id={`not-driven-${commit}`} className="font-medium text-sm" title={ORDER_NOTE}>
+    <section aria-labelledby={heading} className="mt-3 rounded-lg border p-3">
+      <h4 id={heading} className="font-medium text-sm" title={ORDER_NOTE}>
         Not driven by any one test · {sequences.length}
       </h4>
       <p className="mt-0.5 text-muted-foreground text-xs">
