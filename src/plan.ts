@@ -11,7 +11,11 @@ import type {
   Entry,
   FileUnit,
   ModeUnit,
+  Offer,
+  OfferId,
+  OfferKind,
   PlacedConcern,
+  PlacedOffer,
   PlanFile,
   PlanIssue,
   PlannedCommit,
@@ -57,6 +61,14 @@ export function isConcernId(s: unknown): s is ConcernId {
   return typeof s === "string" && /^k_[0-9a-f]{8}$/.test(s);
 }
 
+export function isOfferId(s: unknown): s is OfferId {
+  return typeof s === "string" && /^o_[0-9a-f]{8}$/.test(s);
+}
+
+/** At most this many offers in one commit and in the whole plan; most plans need none. */
+export const OFFERS_PER_COMMIT = 1;
+export const OFFERS_PER_PLAN = 3;
+
 export function isPlanVersion(n: unknown): n is PlanVersion {
   return typeof n === "number" && Number.isInteger(n) && n >= 1;
 }
@@ -80,6 +92,11 @@ export function isSeverity(s: unknown): s is Severity {
 
 function isConcernKind(s: unknown): s is ConcernKind {
   return CONCERN_KINDS.some((x) => x === s);
+}
+
+const OFFER_KINDS: readonly OfferKind[] = ["state-machine", "sequence", "diagram"];
+function isOfferKind(s: unknown): s is OfferKind {
+  return OFFER_KINDS.some((x) => x === s);
 }
 
 /** Narrows to an object whose named fields are still unknown, which holds for any object. */
@@ -133,10 +150,11 @@ type Extras = {
   readonly narration?: string;
   readonly diagram?: string;
   readonly concerns?: readonly Concern[];
+  readonly offers?: readonly Offer[];
 };
 
 type ExtrasError = {
-  readonly field: "narration" | "diagram" | "concerns";
+  readonly field: "narration" | "diagram" | "concerns" | "offers";
   readonly error: string;
 };
 
@@ -181,12 +199,48 @@ function parseConcerns(v: unknown, onUnit: boolean): readonly Concern[] | string
   return out;
 }
 
-/** The optional narration, diagram and concerns of a commit or unit entry, or what is wrong. */
+/** An offer is { kind, label }; the label names the thing to draw. */
+function parseOffer(v: unknown): Offer | string {
+  if (!isFields<"kind" | "label">(v)) return "expected an object";
+  if (!isOfferKind(v.kind)) return `kind: expected one of ${OFFER_KINDS.join(", ")}`;
+  if (typeof v.label !== "string" || v.label.trim() === "") {
+    return 'label: expected what to draw, like "Draw UploadButton as a state machine"';
+  }
+  return { kind: v.kind, label: v.label };
+}
+
+/** A stored offer as validation placed it: with its id and its unit. */
+export function parsePlacedOffer(v: unknown): PlacedOffer | string {
+  if (!isFields<"id" | "unit">(v)) return "expected an object";
+  if (!isOfferId(v.id)) return "id: expected an offer id";
+  if (v.unit !== undefined && !(typeof v.unit === "string" && isUnitId(v.unit))) {
+    return "unit: expected a unit id";
+  }
+  const offer = parseOffer(v);
+  if (typeof offer === "string") return offer;
+  return { ...offer, id: v.id, ...(v.unit === undefined ? {} : { unit: v.unit }) };
+}
+
+/** Absent, null and [] all mean no offers. */
+function parseOffers(v: unknown): readonly Offer[] | string {
+  if (v === undefined || v === null) return [];
+  if (!isArray(v)) return "expected an array";
+  const out: Offer[] = [];
+  for (const [i, raw] of v.entries()) {
+    const offer = parseOffer(raw);
+    if (typeof offer === "string") return `[${i}]: ${offer}`;
+    out.push(offer);
+  }
+  return out;
+}
+
+/** The optional narration, diagram, concerns and offers of a commit or unit entry, or what is wrong. */
 function parseExtras(
   v: {
     readonly narration?: unknown;
     readonly diagram?: unknown;
     readonly concerns?: unknown;
+    readonly offers?: unknown;
   },
   onUnit: boolean,
 ): Extras | ExtrasError {
@@ -198,7 +252,12 @@ function parseExtras(
   if (problem !== null) return { field: "diagram", error: problem };
   const concerns = parseConcerns(v.concerns, onUnit);
   if (typeof concerns === "string") return { field: "concerns", error: concerns };
-  return withExtras(narration, diagram, concerns);
+  const offers = parseOffers(v.offers);
+  if (typeof offers === "string") return { field: "offers", error: offers };
+  return {
+    ...withExtras(narration, diagram, concerns),
+    ...(offers.length === 0 ? {} : { offers }),
+  };
 }
 
 type Text = Pick<Extras, "narration" | "diagram">;
@@ -231,15 +290,24 @@ function serializeExtras(x: Extras): Record<string, unknown> {
   return {
     ...withText(x.narration ?? null, x.diagram ?? null),
     ...(x.concerns === undefined ? {} : { concerns: x.concerns.map(serializeConcern) }),
+    ...(x.offers === undefined
+      ? {}
+      : { offers: x.offers.map((o) => ({ kind: o.kind, label: o.label })) }),
   };
 }
 
-/** A unit entry is "h_x:0-3" or { "unit": "h_x:0-3", "narration", "diagram", "concerns" }. */
+/**
+ * A unit entry is "h_x:0-3" or { "unit": "h_x:0-3", "narration", "diagram", "concerns", "offers" }.
+ */
 function parseUnitEntry(u: unknown): UnitRef | { readonly error: string } {
   if (typeof u === "string") return parseUnitRef(u);
-  if (!isFields<"unit" | "narration" | "diagram" | "concerns">(u) || typeof u.unit !== "string") {
+  if (
+    !isFields<"unit" | "narration" | "diagram" | "concerns" | "offers">(u) ||
+    typeof u.unit !== "string"
+  ) {
     return {
-      error: 'expected a unit ref string or { "unit", "narration", "diagram", "concerns" }',
+      error:
+        'expected a unit ref string or { "unit", "narration", "diagram", "concerns", "offers" }',
     };
   }
   const ref = parseUnitRef(u.unit);
@@ -286,7 +354,15 @@ export function parsePlanFile(draft: unknown): PlanFile | PlanIssue[] {
   else {
     for (const [i, c] of draft.commits.entries()) {
       const at = `$.commits[${i}]`;
-      if (!isFields<"message" | "section" | "narration" | "diagram" | "concerns" | "units">(c)) {
+      type Fields =
+        | "message"
+        | "section"
+        | "narration"
+        | "diagram"
+        | "concerns"
+        | "offers"
+        | "units";
+      if (!isFields<Fields>(c)) {
         bad(at, "expected an object");
         continue;
       }
@@ -355,7 +431,10 @@ export function serializePlanFile(file: PlanFile): unknown {
       ...(c.section === undefined ? {} : { section: c.section }),
       ...serializeExtras(c),
       units: c.units.map((ref) =>
-        ref.narration === undefined && ref.diagram === undefined && ref.concerns === undefined
+        ref.narration === undefined &&
+        ref.diagram === undefined &&
+        ref.concerns === undefined &&
+        ref.offers === undefined
           ? formatUnitRef(ref)
           : { unit: formatUnitRef(ref), ...serializeExtras(ref) },
       ),
@@ -618,6 +697,50 @@ function placeConcerns(
   return placedPerCommit;
 }
 
+/** "o_" + 8 hex over the unit and the label: stable while the offer stays at its place. */
+function deriveOfferId(unit: UnitId | null, o: Offer): OfferId {
+  const hex = createHash("sha256")
+    .update(`offer\0${unit ?? ""}\0${o.label}`)
+    .digest("hex")
+    .slice(0, 8);
+  const id = `o_${hex}`;
+  if (!isOfferId(id)) throw new Error(`sha256 produced ${id}`);
+  return id;
+}
+
+/** Gives every offer its id: the commit's own first, then those of its unit refs in order. */
+function placeOffers(file: PlanFile, issues: PlanIssue[]): PlacedOffer[][] {
+  const ids = new Set<string>();
+  return file.commits.map((commit, k) => {
+    const placed: PlacedOffer[] = [];
+    const add = (o: Offer, unit: UnitId | null): void => {
+      const id = deriveOfferId(unit, o);
+      if (ids.has(id)) {
+        issues.push({ kind: "bad-offer", commit: k, reason: `${id} repeats another offer` });
+        return;
+      }
+      ids.add(id);
+      placed.push({ ...o, id, ...(unit === null ? {} : { unit }) });
+    };
+    for (const o of commit.offers ?? []) add(o, null);
+    for (const ref of commit.units) for (const o of ref.offers ?? []) add(o, ref.unit);
+    return placed;
+  });
+}
+
+/** At most OFFERS_PER_COMMIT in a commit, its units' included, and OFFERS_PER_PLAN in all. */
+function offerLimits(file: PlanFile): PlanIssue[] {
+  const counts = file.commits.map(
+    (c) => (c.offers ?? []).length + c.units.reduce((n, r) => n + (r.offers ?? []).length, 0),
+  );
+  const issues: PlanIssue[] = counts.flatMap((count, commit): PlanIssue[] =>
+    count > OFFERS_PER_COMMIT ? [{ kind: "too-many-offers", commit, count }] : [],
+  );
+  const total = counts.reduce((a, b) => a + b, 0);
+  if (total > OFFERS_PER_PLAN) issues.push({ kind: "too-many-offers", commit: null, count: total });
+  return issues;
+}
+
 function project(
   diff: Diff,
   file: PlanFile,
@@ -625,6 +748,7 @@ function project(
   issues: PlanIssue[],
 ): ProjectedCommit[] {
   const concerns = placeConcerns(diff, file, claims, issues);
+  const offers = placeOffers(file, issues);
   const { stateAt, tipOf } = projector(diff, claims.owners);
   const present = new Map<RepoPath, boolean>();
   for (const f of diff.textFiles.values()) present.set(f.path, f.base !== null);
@@ -635,6 +759,7 @@ function project(
   const commits = file.commits.map((commit, k): ProjectedCommit => {
     const refs = claims.resolved[k] ?? [];
     const mine = concerns[k] ?? [];
+    const offered = offers[k] ?? [];
     const touched = [...new Set(refs.flatMap((r) => diff.units.get(r.unit)?.path ?? []))].sort();
     const changes = touched.map((path) => {
       const state = stateAt(path, k);
@@ -661,6 +786,7 @@ function project(
       ...(commit.section === undefined ? {} : { section: commit.section }),
       ...withText(commit.narration ?? null, commit.diagram ?? null),
       ...(mine.length === 0 ? {} : { concerns: mine }),
+      ...(offered.length === 0 ? {} : { offers: offered }),
       refs,
       changes,
     };
@@ -729,6 +855,7 @@ export function validatePlan(
     if (c.message.trim() === "") issues.push({ kind: "empty-message", commit: k });
     if (c.units.length === 0) issues.push({ kind: "empty-commit", commit: k });
   });
+  issues.push(...offerLimits(file));
 
   const assignment: PlanIssue[] = [];
   const claims = claim(diff, file, assignment);

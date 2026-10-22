@@ -69,6 +69,8 @@ import {
   isCommentId,
   isConcernId,
   isFields,
+  OFFERS_PER_COMMIT,
+  OFFERS_PER_PLAN,
   serializePlanFile,
   type ValidPlan,
   validatePlan,
@@ -412,6 +414,12 @@ function formatIssue(issue: PlanIssue): string {
       return `$.commits[${issue.commit}]: concern: ${issue.reason}`;
     case "too-many-concerns":
       return `${issue.unit} has more than one concern, in commits ${issue.commits.join(" and ")}; keep the one that matters`;
+    case "bad-offer":
+      return `$.commits[${issue.commit}]: offer: ${issue.reason}`;
+    case "too-many-offers":
+      return issue.commit === null
+        ? `the plan has ${issue.count} offers; at most ${OFFERS_PER_PLAN}, and most plans need none`
+        : `$.commits[${issue.commit}] has ${issue.count} offers; at most ${OFFERS_PER_COMMIT} per commit`;
     case "final-mismatch": {
       const tip = issue.expected ? `${issue.expected.mode} ${issue.expected.blob}` : "absent";
       return `${show(issue.path)}: the last commit has ${issue.got}, the tip has ${tip}`;

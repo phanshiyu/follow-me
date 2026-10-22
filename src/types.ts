@@ -36,6 +36,8 @@ export type CommentId = Brand<string, "CommentId">;
 export type ReplyId = Brand<string, "ReplyId">;
 /** "k_" + 8 hex of sha256 over the unit, the lines and the text, so re-planning keeps it. */
 export type ConcernId = Brand<string, "ConcernId">;
+/** "o_" + 8 hex of sha256 over the unit (none for a commit offer) and the label. */
+export type OfferId = Brand<string, "OfferId">;
 export type PlanVersion = Brand<number, "PlanVersion">;
 /** Repo-relative path exactly as git prints it. */
 export type RepoPath = Brand<string, "RepoPath">;
@@ -119,6 +121,7 @@ export type UnitRef = {
   readonly narration?: string;
   readonly diagram?: string;
   readonly concerns?: readonly Concern[];
+  readonly offers?: readonly Offer[];
 };
 
 export type Severity = "blocker" | "major" | "minor";
@@ -143,6 +146,21 @@ export type PlacedConcern = Concern & {
   readonly unit?: UnitId;
 };
 
+export type OfferKind = "state-machine" | "sequence" | "diagram";
+
+/**
+ * The agent saying "I can draw this for you", written in the plan on a commit or a unit ref. It
+ * is neither a concern nor a question; the reviewer accepts it with a question or dismisses it.
+ */
+export type Offer = { readonly kind: OfferKind; readonly label: string };
+
+/** An offer as validation carries it into a projected commit: with its id and its unit. */
+export type PlacedOffer = Offer & {
+  readonly id: OfferId;
+  /** Absent for an offer on the commit as a whole. */
+  readonly unit?: UnitId;
+};
+
 /**
  * Where a commit sits in the top-down order: story is renames plus the entry point and main flow,
  * steps is what that calls in call order, details is helpers and edge cases, wiring is config,
@@ -160,6 +178,7 @@ export type PlannedCommit = {
   readonly narration?: string;
   readonly diagram?: string;
   readonly concerns?: readonly Concern[];
+  readonly offers?: readonly Offer[];
   readonly units: readonly UnitRef[];
 };
 /** "answered" is valid only for a question. */
@@ -202,6 +221,8 @@ export type ProjectedCommit = {
   readonly diagram?: string;
   /** Every concern of the commit: its own first, then those of its unit refs in order. */
   readonly concerns?: readonly PlacedConcern[];
+  /** Every offer of the commit: its own first, then those of its unit refs in order. */
+  readonly offers?: readonly PlacedOffer[];
   /** Hunk selections resolved to explicit lines; whole-file and mode units stay "rest". */
   readonly refs: readonly UnitRef[];
   readonly changes: readonly TreeChange[];
@@ -245,6 +266,9 @@ export type PlanIssue =
       readonly unit: UnitId;
       readonly commits: readonly number[];
     }
+  | { readonly kind: "bad-offer"; readonly commit: number; readonly reason: string }
+  /** More than one offer in a commit, or with commit null more than three in the plan. */
+  | { readonly kind: "too-many-offers"; readonly commit: number | null; readonly count: number }
   | {
       readonly kind: "final-mismatch";
       readonly path: RepoPath;

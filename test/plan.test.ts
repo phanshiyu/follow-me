@@ -118,7 +118,8 @@ test("malformed: every bad field is reported with its JSON path", () => {
     {
       kind: "malformed",
       at: "$.commits[0].units[1]",
-      reason: 'expected a unit ref string or { "unit", "narration", "diagram", "concerns" }',
+      reason:
+        'expected a unit ref string or { "unit", "narration", "diagram", "concerns", "offers" }',
     },
     { kind: "malformed", at: "$.commits[1]", reason: "expected an object" },
     { kind: "malformed", at: "$.responses", reason: "expected an array" },
@@ -663,4 +664,120 @@ test("an unknown section is malformed and names the allowed ones", () => {
       reason: "expected one of story, steps, details, wiring",
     },
   ]);
+});
+
+test("offers get ids from their place and label, ride on projected commits and keep plain hashes", () => {
+  const lib = unitAt(diff, "src/lib.js", 1);
+  const rest = everything(diff).filter((u) => u !== lib);
+  const machine = { kind: "state-machine", label: "Draw div as a state machine" };
+  const flow = { kind: "sequence", label: "Draw how add reaches the guard" };
+  const offered = planWith([
+    { message: "feat: guard div", units: [{ unit: lib, offers: [machine] }] },
+    { message: "feat: the rest", offers: [flow], units: rest },
+  ]);
+  const verdict = validatePlan(diff, offered);
+  assert.ok(verdict.ok, JSON.stringify(!verdict.ok && verdict.issues));
+  const [first, second] = verdict.plan.commits;
+  const unitOffer = first?.offers?.[0];
+  const commitOffer = second?.offers?.[0];
+  assert.deepEqual({ ...unitOffer, id: "" }, { ...machine, unit: lib, id: "" });
+  assert.deepEqual({ ...commitOffer, id: "" }, { ...flow, id: "" });
+  assert.match(unitOffer?.id ?? "", /^o_[0-9a-f]{8}$/);
+  assert.match(commitOffer?.id ?? "", /^o_[0-9a-f]{8}$/);
+
+  // Re-planning in another order with the same labels at the same places keeps both ids.
+  const reordered = validatePlan(
+    diff,
+    planWith([
+      { message: "feat: everything else", offers: [flow], units: rest },
+      { message: "feat: guard div last", units: [{ unit: lib, offers: [machine] }] },
+    ]),
+  );
+  assert.ok(reordered.ok);
+  assert.equal(reordered.plan.commits[0]?.offers?.[0]?.id, commitOffer?.id);
+  assert.equal(reordered.plan.commits[1]?.offers?.[0]?.id, unitOffer?.id);
+
+  // The wire form round-trips, and plans without offers serialize and hash as before.
+  const parsed = parsePlanFile(offered);
+  assert.ok(!Array.isArray(parsed));
+  assert.deepEqual(parsePlanFile(serializePlanFile(parsed)), parsed);
+  const plain = planWith([{ message: "a", units: everything(diff) }]);
+  const empty = parsePlanFile(planWith([{ message: "a", offers: [], units: everything(diff) }]));
+  const plainFile = parsePlanFile(plain);
+  assert.ok(!Array.isArray(empty) && !Array.isArray(plainFile));
+  assert.equal(JSON.stringify(serializePlanFile(empty)), JSON.stringify(plain));
+  assert.equal(planHash(empty), planHash(plainFile));
+
+  assert.deepEqual(
+    parsePlanFile(planWith([{ message: "a", offers: [{ kind: "chart", label: "x" }], units: [] }])),
+    [
+      {
+        kind: "malformed",
+        at: "$.commits[0].offers",
+        reason: "[0]: kind: expected one of state-machine, sequence, diagram",
+      },
+    ],
+  );
+  assert.deepEqual(
+    parsePlanFile(
+      planWith([{ message: "a", units: [{ unit: lib, offers: [{ kind: "diagram" }] }] }]),
+    ),
+    [
+      {
+        kind: "malformed",
+        at: "$.commits[0].units[0]",
+        reason:
+          'offers: [0]: label: expected what to draw, like "Draw UploadButton as a state machine"',
+      },
+    ],
+  );
+});
+
+test("check allows one offer per commit and three per plan", () => {
+  const units = everything(diff);
+  const offer = (label: string) => ({ kind: "diagram", label });
+  const [u0 = "", u1 = "", u2 = "", ...others] = units;
+  assert.ok(others.length > 0, "the fixture has at least four units");
+
+  const two = validatePlan(
+    diff,
+    planWith([
+      { message: "a", offers: [offer("one")], units: [{ unit: u0, offers: [offer("two")] }] },
+      { message: "b", units: units.slice(1) },
+    ]),
+  );
+  assert.deepEqual(issuesOf(two), [{ kind: "too-many-offers", commit: 0, count: 2 }]);
+
+  const four = validatePlan(
+    diff,
+    planWith([
+      { message: "a", offers: [offer("one")], units: [u0] },
+      { message: "b", offers: [offer("two")], units: [u1] },
+      { message: "c", offers: [offer("three")], units: [u2] },
+      { message: "d", offers: [offer("four")], units: others },
+    ]),
+  );
+  assert.deepEqual(issuesOf(four), [{ kind: "too-many-offers", commit: null, count: 4 }]);
+
+  const three = validatePlan(
+    diff,
+    planWith([
+      { message: "a", offers: [offer("one")], units: [u0] },
+      { message: "b", offers: [offer("two")], units: [u1] },
+      { message: "c", offers: [offer("three")], units: [u2, ...others] },
+    ]),
+  );
+  assert.ok(three.ok, JSON.stringify(!three.ok && three.issues));
+
+  const repeated = validatePlan(
+    diff,
+    planWith([
+      { message: "a", offers: [offer("same")], units: [u0] },
+      { message: "b", offers: [offer("same")], units: units.slice(1) },
+    ]),
+  );
+  assert.deepEqual(
+    issuesOf(repeated).map((i) => i.kind),
+    ["bad-offer"],
+  );
 });
