@@ -477,6 +477,8 @@ export type ServerEvent = { readonly seq: number } & (
       readonly hash: string;
       readonly carried: readonly CarriedComment[];
     }
+  /** The agent recorded a test run; the page reads it from api/coverage. */
+  | { readonly type: "coverage"; readonly tip: Sha; readonly takenAt: string }
   /** The reviewer pressed Submit: the review is done, though the page stays open. */
   | { readonly type: "submitted" }
   | { readonly type: "ended"; readonly review: string }

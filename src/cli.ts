@@ -42,6 +42,7 @@ import {
   pollEvents,
   portFallbackMessage,
   postComment,
+  postCoverage,
   postReply,
   probeHealth,
   readServerRecord,
@@ -1568,6 +1569,8 @@ async function coverage(cwd: string, args: Args): Promise<number> {
     ...(test === undefined ? {} : { test }),
   });
   session.writeCoverage(recorded);
+  const open = await openOnServer(session, null);
+  if (open !== null) await postCoverage(open.port, open.summary);
   const { covered, executable } = totalOf(
     changedLines(session.diff.units, recorded.files).values(),
   );
@@ -1587,9 +1590,12 @@ function isCommentEvent(event: ServerEvent): boolean {
   return event.type === "comment" || event.type === "comment-updated";
 }
 
-/** Events the reviewer caused; the agent's own replies, explanations and version swaps are not news. */
+/**
+ * Events the reviewer caused; the agent's own replies, explanations, version swaps and coverage
+ * are not news.
+ */
 function isNews(event: ServerEvent): boolean {
-  if (event.type === "version") return false;
+  if (event.type === "version" || event.type === "coverage") return false;
   if (event.type === "comment" || event.type === "comment-updated") {
     return event.comment.author !== "agent";
   }

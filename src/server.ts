@@ -12,12 +12,13 @@ import {
   parseNewDecision,
   parseNewReply,
 } from "./comments.ts";
+import { type CoverageJson, serializeCoverage, staleFiles } from "./coverage.ts";
 import { type DefinitionIndex, definitionIndex, isIdentifier } from "./definition.ts";
 import { isRepoPath } from "./diff.ts";
 import { carryConcerns, carrySession } from "./evolve.ts";
 import { isConcernId, isPlanVersion } from "./plan.ts";
 import { type Earlier, renderReport, reportItems } from "./prompt.ts";
-import { isLockToken } from "./session.ts";
+import { isLockToken, readCoverageIn, SessionFileError } from "./session.ts";
 import type {
   Candidate,
   CarriedComment,
@@ -681,6 +682,21 @@ function hostSession(
     return view.reviewFile;
   };
 
+  /** coverage.json as the agent last wrote it, or a 404 before its first run. */
+  const coverageFile = () => {
+    let coverage: ReturnType<typeof readCoverageIn>;
+    try {
+      coverage = readCoverageIn(view.registration.dir);
+    } catch (error) {
+      if (error instanceof SessionFileError) throw new HttpError(500, error.message);
+      throw error;
+    }
+    if (coverage === null) {
+      throw new HttpError(404, "no coverage yet; the agent records it with follow-me coverage");
+    }
+    return coverage;
+  };
+
   const hasWork = (): boolean =>
     view.comments.size > 0 || view.decisions.size > 0 || view.earlierReplies.size > 0;
 
@@ -746,6 +762,22 @@ function hostSession(
       return waitForEvents(since, timeoutMs, signal);
     },
     report: () => report(review()),
+    /**
+     * The agent's last test run, read from disk so a restarted server serves it too, with the
+     * covered files whose content changed since its tip. A new plan for the same tip stales nothing.
+     */
+    coverage: async (): Promise<CoverageJson & { readonly stale: readonly string[] }> => {
+      const coverage = coverageFile();
+      const stale = await staleFiles(view.loaded.repo, coverage, view.loaded.state.anchor.tip);
+      return { ...serializeCoverage(coverage), stale };
+    },
+    /** The agent wrote coverage.json; the page hears it as one event and reloads its marks. */
+    coverageTaken: (): { readonly tip: string; readonly takenAt: string } => {
+      open();
+      const { tip, takenAt } = coverageFile();
+      emit({ type: "coverage", tip, takenAt });
+      return { tip, takenAt };
+    },
     /** The page reads a definition the plan shows from its hunk, so only others carry a preview. */
     define: async (name: string, from: string | null): Promise<readonly Candidate[]> => {
       const found = await view.definitions.lookup(
@@ -1198,6 +1230,12 @@ export function startServer(opts: HostOptions): Promise<Host> {
       if (!isIdentifier(name)) throw new HttpError(400, "name must be an identifier");
       const candidates = await session.define(name, url.searchParams.get("from"));
       return sendJson(res, 200, { candidates });
+    }
+    if (method === "GET" && rest === "/api/coverage") {
+      return sendJson(res, 200, await session.coverage());
+    }
+    if (method === "POST" && rest === "/api/coverage") {
+      return sendJson(res, 200, session.coverageTaken());
     }
     if (method === "GET" && rest === "/api/report" && url.searchParams.get("format") === "json") {
       return sendJson(res, 200, session.reportItems());

@@ -463,6 +463,11 @@ export async function postComment(
   return id;
 }
 
+/** Tells the hosted page that coverage.json changed, so it reloads its marks. */
+export async function postCoverage(port: number, summary: HostedSummary): Promise<void> {
+  await call(port, "POST", `${summary.url}api/coverage`);
+}
+
 /** The consolidated report of the hosted session as it stands. */
 export async function fetchReport(
   port: number,

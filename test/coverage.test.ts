@@ -7,6 +7,7 @@ import { type TestContext, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { LcovError, parseLcov, recordRun, runOf, tipPlacer } from "../src/coverage.ts";
 import { isRepoPath, isSha } from "../src/diff.ts";
+import { loadDiff } from "../src/git.ts";
 import type { RepoPath } from "../src/types.ts";
 import { makeFixtureRepo } from "./fixture-repo.ts";
 
@@ -24,18 +25,36 @@ function sha(s: string) {
   return s;
 }
 
-/** Runs the CLI with its own state dir, so no review server of the user is touched. */
+/**
+ * Runs the CLI with its own state dir and HOME, so no review server or skill copy of the user is
+ * touched. A server the test leaves running is stopped when it ends.
+ */
 function cliIn(t: TestContext) {
   const home = mkdtempSync(join(tmpdir(), "follow-me-home-"));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
+  t.after(() => {
+    spawnSync(BIN, ["server", "stop"], { env: { ...process.env, FOLLOW_ME_HOME: home } });
+    rmSync(home, { recursive: true, force: true });
+  });
   return (dir: string, ...args: string[]) => {
     const r = spawnSync(BIN, args, {
       cwd: dir,
       encoding: "utf8",
-      env: { ...process.env, FOLLOW_ME_HOME: home, FOLLOW_ME_IDLE_MS: "200" },
+      env: { ...process.env, HOME: home, FOLLOW_ME_HOME: home, FOLLOW_ME_IDLE_MS: "200" },
     });
     return { code: r.status, out: r.stdout, err: r.stderr };
   };
+}
+
+function writeDraft(dir: string, base: string, tip: string, commits: readonly unknown[]): void {
+  writeFileSync(
+    join(dir, ".follow-me", "feature", "draft.json"),
+    JSON.stringify({ schema: "follow-me/plan@1", base, tip, commits, responses: [] }),
+  );
+}
+
+async function getJson(url: string, path: string) {
+  const res = await fetch(new URL(path, url));
+  return { status: res.status, body: JSON.parse(await res.text()) };
 }
 
 function lcov(dir: string, name: string, ...lines: string[]): string {
@@ -332,4 +351,75 @@ test("follow-me coverage records the run at the tip and counts the changed lines
     run(repo.dir, "coverage", one, "--at", "src/lib.js:3").err,
     "follow-me: --at needs --test\nusage: follow-me coverage <lcov> [--test <id> [--at <path:line>]]\n",
   );
+});
+
+test("on an open review the run reaches the page, outlives a re-plan and goes stale only where the tip moved", async (t) => {
+  const run = cliIn(t);
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: repo.dir, encoding: "utf8" });
+  git("checkout", "-q", "feature");
+  git("config", "user.email", "fixture@example.com");
+  run(repo.dir, "extract");
+  const before = await loadDiff(repo.dir, "main", "feature");
+  const units = [...before.units.keys()];
+  writeDraft(repo.dir, repo.base, repo.branch, [{ message: "feat: everything", units }]);
+  const opened = run(repo.dir, "--no-open", "--wait", "0");
+  assert.equal(opened.code, 0, opened.err);
+  const url = /^follow-me review: (\S+)$/m.exec(opened.out)?.[1];
+  assert.ok(url, opened.out);
+  assert.equal((await getJson(url, "api/coverage")).status, 404);
+
+  const file = lcov(
+    repo.dir,
+    "coverage/lcov.info",
+    "SF:src/lib.js",
+    "DA:4,1",
+    "DA:5,0",
+    "end_of_record",
+    "SF:src/guard.js",
+    "DA:1,1",
+    "DA:2,1",
+    "end_of_record",
+  );
+  assert.equal(run(repo.dir, "coverage", file).code, 0);
+  const taken = readCoverage(repo.dir);
+  assert.ok(typeof taken === "object" && taken !== null && "takenAt" in taken);
+  const events = await getJson(url, "api/events?since=0&timeout=0");
+  assert.deepEqual(events.body.events, [
+    { seq: 1, type: "coverage", tip: repo.branch, takenAt: taken.takenAt },
+  ]);
+  assert.deepEqual((await getJson(url, "api/coverage")).body, { ...taken, stale: [] });
+  // The agent's own run is not news for the agent.
+  assert.equal(
+    run(repo.dir, "--wait", "0").out,
+    "next: the reviewer is still working; run follow-me again to keep listening\n",
+  );
+
+  // A new plan for the same tip reorders commits and leaves every mark where it was.
+  const [first = "", ...rest] = units;
+  writeDraft(repo.dir, repo.base, repo.branch, [
+    { message: "feat: the first part", units: [first] },
+    { message: "feat: the rest", units: rest },
+  ]);
+  const replanned = run(repo.dir, "apply");
+  assert.equal(replanned.code, 0, replanned.err);
+  assert.equal((await getJson(url, "api/state")).body.version, 2);
+  assert.deepEqual((await getJson(url, "api/coverage")).body, { ...taken, stale: [] });
+
+  const lib = join(repo.dir, "src", "lib.js");
+  writeFileSync(
+    lib,
+    readFileSync(lib, "utf8").replace("division by zero", "cannot divide by zero"),
+  );
+  git("commit", "-q", "-am", "fix: say what went wrong");
+  run(repo.dir, "--wait", "0");
+  const after = await loadDiff(repo.dir, "main", "feature");
+  const tip = git("rev-parse", "feature").trim();
+  writeDraft(repo.dir, repo.base, tip, [
+    { message: "feat: everything", units: [...after.units.keys()] },
+  ]);
+  const swapped = run(repo.dir, "--wait", "0");
+  assert.match(swapped.out, /swapped the open page to plan v3/, swapped.err);
+  assert.deepEqual((await getJson(url, "api/coverage")).body, { ...taken, stale: ["src/lib.js"] });
 });

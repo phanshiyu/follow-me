@@ -1,4 +1,4 @@
-import { isRepoPath, isUnitId } from "./diff.ts";
+import { isRepoPath, isSha, isUnitId } from "./diff.ts";
 import {
   diagramProblem,
   isArray,
@@ -466,6 +466,8 @@ type EventFields =
   | "version"
   | "hash"
   | "carried"
+  | "tip"
+  | "takenAt"
   | "review";
 
 export function parseEvent(v: unknown): ServerEvent | string {
@@ -508,6 +510,11 @@ export function parseEvent(v: unknown): ServerEvent | string {
       if (typeof carried === "string") return carried;
       return { seq, type: v.type, version: v.version, hash: v.hash, carried };
     }
+    case "coverage":
+      if (typeof v.tip !== "string" || !isSha(v.tip) || typeof v.takenAt !== "string") {
+        return "malformed coverage event";
+      }
+      return { seq, type: v.type, tip: v.tip, takenAt: v.takenAt };
     case "submitted":
       return { seq, type: v.type };
     case "ended":

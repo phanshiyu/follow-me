@@ -1207,3 +1207,49 @@ test("exclusions persist in the draft and the review, and the JSON report marks 
   const review = await run.done;
   assert.deepEqual(review?.excluded, { comments: [], concerns: [CONCERN] });
 });
+
+test("api/coverage serves the agent's run from disk, 404 before it, and its event reaches the page", async (t) => {
+  const dir = await tempDir(t);
+  const host = await serve(t, fixedLoader(new Map([[dir, twoCommitState()]])));
+  const { summary } = await host.register(registration(dir));
+  const url = new URL(summary.url, host.url).href;
+  const none = await fetch(new URL("api/coverage", url));
+  assert.equal(none.status, 404);
+  assert.deepEqual(await jsonOf(none), {
+    error: "no coverage yet; the agent records it with follow-me coverage",
+  });
+  assert.equal((await post(url, "api/coverage", {})).status, 404);
+
+  const atTip = {
+    tip: "2".repeat(40),
+    takenAt: "2026-10-22T14:05:00.000Z",
+    files: { "src/a.ts": { lines: { 1: 3, 2: 0 }, branches: { 1: [1, 2] } } },
+    tests: {
+      "parses old1": { at: { path: "src/a.ts", start: 1, end: 2 }, lines: { "src/a.ts": [1] } },
+    },
+  };
+  await writeFile(join(dir, "coverage.json"), JSON.stringify(atTip));
+  const announced = await post(url, "api/coverage", {});
+  assert.equal(announced.status, 200);
+  assert.deepEqual(await eventsOf(url, 0, 50), {
+    seq: 1,
+    events: [{ seq: 1, type: "coverage", tip: atTip.tip, takenAt: atTip.takenAt }],
+  });
+  assert.deepEqual(await jsonOf(await fetch(new URL("api/coverage", url))), {
+    ...atTip,
+    stale: [],
+  });
+  // state stays small: coverage is only served on its own route.
+  assert.equal("coverage" in (await jsonOf(await fetch(new URL("api/state", url)))), false);
+
+  // A run from a commit this repo does not have describes none of the tip.
+  await writeFile(join(dir, "coverage.json"), JSON.stringify({ ...atTip, tip: "9".repeat(40) }));
+  assert.deepEqual((await jsonOf(await fetch(new URL("api/coverage", url)))).stale, ["src/a.ts"]);
+
+  await host.close();
+  await writeFile(join(dir, "coverage.json"), JSON.stringify(atTip));
+  const restarted = await serve(t, fixedLoader(new Map([[dir, twoCommitState()]])));
+  const again = await restarted.register(registration(dir));
+  const served = await fetch(new URL("api/coverage", new URL(again.summary.url, restarted.url)));
+  assert.deepEqual(await jsonOf(served), { ...atTip, stale: [] });
+});

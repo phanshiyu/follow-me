@@ -1271,6 +1271,8 @@ function renderEvent(event: ServerEvent, ctx: Context | null): string[] {
       return [`- ${event.commentId} ${event.resolved ? "resolved" : "reopened"}`];
     case "version":
       return [`- plan v${event.version} is open`];
+    case "coverage":
+      return [`- the page shows coverage from ${event.tip.slice(0, 12)}`];
     case "submitted":
       return ["- the reviewer submitted the review"];
     case "ended":
