@@ -281,7 +281,14 @@ export type PlanWarning =
   | { readonly kind: "unanswered"; readonly comment: CommentId; readonly review: PlanVersion }
   /** A title over LONG_TITLE characters; the page clamps titles, so long ones lose their end. */
   | { readonly kind: "long-title"; readonly commit: number; readonly length: number }
-  | { readonly kind: "question-addressed"; readonly comment: CommentId };
+  | { readonly kind: "question-addressed"; readonly comment: CommentId }
+  /** A commit whose section comes before the previous commit's in top-down order. */
+  | {
+      readonly kind: "section-order";
+      readonly commit: number;
+      readonly section: CommitSection;
+      readonly after: CommitSection;
+    };
 
 export type Anchor =
   | {

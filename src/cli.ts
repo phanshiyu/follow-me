@@ -445,6 +445,9 @@ function formatWarning(w: PlanWarning): string {
   if (w.kind === "long-title") {
     return `warning: $.commits[${w.commit}]: title is ${w.length} characters; keep it to 50`;
   }
+  if (w.kind === "section-order") {
+    return `warning: $.commits[${w.commit}]: section ${w.section} comes after ${w.after}; sections read story, steps, details, wiring`;
+  }
   if (w.kind === "question-addressed") {
     return `warning: question ${w.comment} is marked addressed; explain it with "answered" and "at" unless answering it changed the plan`;
   }

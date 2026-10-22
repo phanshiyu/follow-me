@@ -781,3 +781,28 @@ test("check allows one offer per commit and three per plan", () => {
     ["bad-offer"],
   );
 });
+
+test("sections out of top-down order are a warning that names the commit", () => {
+  const lib = unitAt(diff, "src/lib.js", 1);
+  const backwards = validatePlan(
+    diff,
+    planWith([
+      { message: "feat: the guard", section: "details", units: [`${lib}:2`] },
+      { message: "feat: the rest", section: "story", units: everything(diff) },
+    ]),
+  );
+  assert.ok(backwards.ok);
+  assert.deepEqual(backwards.warnings, [
+    { kind: "section-order", commit: 1, section: "story", after: "details" },
+  ]);
+
+  const inOrder = validatePlan(
+    diff,
+    planWith([
+      { message: "feat: guard div", section: "story", units: [`${lib}:2`] },
+      { message: "feat: the rest", units: everything(diff) },
+    ]),
+  );
+  assert.ok(inOrder.ok);
+  assert.deepEqual(inOrder.warnings, []);
+});

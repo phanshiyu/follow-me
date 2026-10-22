@@ -879,6 +879,14 @@ export function validatePlan(
     const length = (c.message.split("\n")[0] ?? "").length;
     if (length > LONG_TITLE) warnings.push({ kind: "long-title", commit, length });
   });
+  // Sections read top-down: story, steps, details, wiring. A later section never comes back.
+  let reached: CommitSection | null = null;
+  file.commits.forEach((c, commit) => {
+    if (c.section === undefined) return;
+    if (reached !== null && SECTIONS.indexOf(c.section) < SECTIONS.indexOf(reached)) {
+      warnings.push({ kind: "section-order", commit, section: c.section, after: reached });
+    } else reached = c.section;
+  });
   const asked = new Map(review?.comments.map((c) => [c.id, c.kind === "question"]));
   for (const r of file.responses) {
     const isQuestion = asked.get(r.comment);
