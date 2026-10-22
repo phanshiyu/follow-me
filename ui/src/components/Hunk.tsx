@@ -299,7 +299,11 @@ export function Hunk({
                 )}
               >
                 {coverage === null ? null : (
-                  <span data-coverage={mark?.kind} className="relative w-2 shrink-0 select-none">
+                  <span
+                    data-coverage={mark?.kind}
+                    data-stale={mark?.stale || undefined}
+                    className="relative w-2 shrink-0 select-none"
+                  >
                     {mark === undefined ? null : (
                       <button
                         type="button"

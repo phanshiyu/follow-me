@@ -83,6 +83,33 @@ export function BranchCoverage() {
   );
 }
 
+/** "coverage from b164dd3; this file changed since", on the line of a file the run predates. */
+export function FileStale({ path }: { path: string }) {
+  const coverage = useCoverage();
+  if (coverage === null || !coverage.stale.has(path)) return null;
+  return (
+    <span className="text-amber-800 text-xs dark:text-amber-200">
+      coverage from <code className="font-mono">{coverage.tip.slice(0, 7)}</code>; this file changed
+      since
+    </span>
+  );
+}
+
+/** "Coverage is 2 files stale": the tip moved after the run, and the agent should run it again. */
+export function StaleCoverage() {
+  const coverage = useCoverage();
+  const n = coverage?.stale.size ?? 0;
+  if (n === 0) return null;
+  return (
+    <span
+      className={cn("shrink-0 rounded-full px-2 py-0.5 text-xs tabular-nums", TONE.partly)}
+      title={`The branch moved after the run at ${coverage?.tip.slice(0, 7)}`}
+    >
+      Coverage is {n === 1 ? "1 file" : `${n} files`} stale
+    </span>
+  );
+}
+
 /** Shows or hides every mark and figure; also `g`. Only there once a run has arrived. */
 export function CoverageToggle() {
   const data = useCoverageData();
@@ -195,9 +222,15 @@ export function MarkDetails({
   const { units, owners, numbers } = useDerived();
   const goTo = useGoTo();
   if (coverage === null) return null;
+  const stale = mark.stale ? (
+    <p className="text-amber-800 text-xs dark:text-amber-200">
+      This file changed since {coverage.tip.slice(0, 7)}, so the line may have moved.
+    </p>
+  ) : null;
   if (mark.kind === "uncovered") {
     return (
       <div className="space-y-2">
+        {stale}
         <p>
           Not run by the suite at <code className="font-mono">{coverage.tip.slice(0, 7)}</code> (
           {takenLabel(coverage.takenAt)})
@@ -226,6 +259,7 @@ export function MarkDetails({
   };
   return (
     <div className="space-y-2">
+      {stale}
       <div>
         <p>{hitTimes(mark.hits)}</p>
         {mark.branches === null ? null : (

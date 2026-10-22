@@ -280,3 +280,32 @@ test("with per-test detail, a test in the branch links in with Back and one outs
   await expect.element(peek.getByText("func", { exact: true })).toBeVisible();
   await expect.element(peek.getByText("test", { exact: true })).toBeVisible();
 });
+
+test("a file changed since the run shows hatched marks and says so, and the header counts it", async () => {
+  await renderReview(aState(), (server) =>
+    server.on("GET", "/api/coverage", () => aCoverage({ stale: ["src/lib.js"] })),
+  );
+  await expect.element(page.getByText("Coverage is 1 file stale")).toBeVisible();
+  await expect
+    .element(commit(2).getByText("coverage from b164dd3; this file changed since"))
+    .toBeVisible();
+  await expect.element(row(2, /^Added 5: .* · not covered, coverage is stale$/)).toBeVisible();
+  const mark = row(2, /^Added 5/)
+    .element()
+    .querySelector<HTMLElement>("[data-coverage]");
+  expect(mark?.dataset["stale"]).toBe("true");
+  const bar = mark?.querySelector(".cov-bar");
+  expect(bar && getComputedStyle(bar).maskImage).toMatch(/repeating-linear-gradient/);
+
+  await clickMark(2, /^Added 5/, 5);
+  await expect
+    .element(details("src/lib.js", 5).getByText(/^This file changed since b164dd3/))
+    .toBeVisible();
+});
+
+test("a fresh run marks nothing stale", async () => {
+  await withCoverage();
+  await expect.element(page.getByText("Changed lines covered 66%")).toBeVisible();
+  await expect.element(page.getByText(/stale|changed since/)).not.toBeInTheDocument();
+  expect(document.querySelector("[data-stale]")).toBeNull();
+});

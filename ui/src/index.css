@@ -925,6 +925,11 @@
   bottom: 50%;
   background: var(--cov-partly);
 }
+/* A file changed since the run: the same shape, hatched, because the line may have moved. */
+[data-stale] .cov-bar {
+  opacity: 0.65;
+  mask-image: repeating-linear-gradient(135deg, #000 0 2px, transparent 2px 4px);
+}
 [data-coverage="uncovered"] .cov-bar {
   background: repeating-linear-gradient(to bottom, var(--cov-uncovered) 0 3px, transparent 3px 5px);
 }

@@ -5,7 +5,7 @@ import { HEADER_PX, PageProvider, scrollToCommit, usePage } from "../page.tsx";
 import { useCoverageData, useReview } from "../store.tsx";
 import { AskBranch, BranchSummary } from "./Branch.tsx";
 import { CommitSection } from "./CommitSection.tsx";
-import { BranchCoverage, CoverageToggle, useUncoveredSteps } from "./Coverage.tsx";
+import { BranchCoverage, CoverageToggle, StaleCoverage, useUncoveredSteps } from "./Coverage.tsx";
 import { GoToProvider, useDefinitions } from "./Definition.tsx";
 import { focusIndex, Index } from "./Index.tsx";
 import { KeySheet } from "./KeySheet.tsx";
@@ -159,6 +159,7 @@ function Page() {
             </div>
             <div className="flex items-center justify-end gap-2">
               <BranchCoverage />
+              <StaleCoverage />
               <CoverageToggle />
               <UnreadMenu />
               <AskBranch />

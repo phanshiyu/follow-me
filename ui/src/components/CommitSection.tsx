@@ -19,7 +19,7 @@ import { AnswerCard, ConcernCard } from "./Cards.tsx";
 import { CarriedCard } from "./Carried.tsx";
 import { Check } from "./Check.tsx";
 import { CommentBox } from "./CommentBox.tsx";
-import { CommitCoverage, FileCoverage } from "./Coverage.tsx";
+import { CommitCoverage, FileCoverage, FileStale } from "./Coverage.tsx";
 import { Diagram } from "./Diagram.tsx";
 import { boxActions, Hunk } from "./Hunk.tsx";
 import { ThreadCard } from "./Thread.tsx";
@@ -154,6 +154,7 @@ export function CommitSection({ commit }: { commit: ProjectedCommit }) {
                 <div className="flex items-center gap-2 pt-2 text-sm">
                   <span className="font-medium font-mono">{file.path}</span>
                   <FileCoverage tally={coverage?.files.get(fileKey(commit.index, file.path))} />
+                  <FileStale path={file.path} />
                   <Check
                     className="ml-auto"
                     checked={fileViewed}
