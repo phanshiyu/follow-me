@@ -50,6 +50,12 @@ export function Text({ children }: { children: string }) {
   return <p className="max-w-[72ch] whitespace-pre-wrap leading-6">{children}</p>;
 }
 
+/** The words of a turn; a reply that only carries a diagram has none. */
+function Body({ author, text }: { author: "agent" | "reviewer"; text: string }) {
+  if (text.trim() === "") return null;
+  return author === "agent" ? <Markdown text={text} /> : <Text>{text}</Text>;
+}
+
 function who(comment: WireComment): string {
   if (comment.author === "agent") return "Agent";
   return comment.kind === "question" ? "You asked" : "You flagged";
@@ -123,9 +129,9 @@ export function ThreadCard({
         {comment.severity === undefined ? null : <SeverityChip severity={comment.severity} />}
         {chip}
       </div>
-      {comment.author === "agent" ? <Markdown text={comment.body} /> : <Text>{comment.body}</Text>}
+      <Body author={comment.author ?? "reviewer"} text={comment.body} />
       {comment.diagram === undefined ? null : (
-        <div className="mt-2">
+        <div className={cn(comment.body.trim() !== "" && "mt-2")}>
           <Diagram source={comment.diagram} title="The agent's diagram" />
         </div>
       )}
@@ -138,9 +144,9 @@ export function ThreadCard({
           <div className="mb-1 font-medium text-xs">
             {reply.author === "agent" ? "Agent" : "You"}
           </div>
-          {reply.author === "agent" ? <Markdown text={reply.body} /> : <Text>{reply.body}</Text>}
+          <Body author={reply.author} text={reply.body} />
           {reply.diagram === undefined ? null : (
-            <div className="mt-2">
+            <div className={cn(reply.body.trim() !== "" && "mt-2")}>
               {reply.map === undefined ? (
                 <Diagram source={reply.diagram} title="The agent's diagram" />
               ) : (

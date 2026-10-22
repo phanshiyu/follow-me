@@ -96,6 +96,27 @@ test("accepting asks the agent in place and the card waits until the diagram lan
   await expect.element(chip("UploadButton as a state machine")).not.toBeInTheDocument();
 });
 
+test("a reply that only carries a diagram shows no empty words above it", async () => {
+  const accepted = JSON.parse(
+    JSON.stringify({
+      id: "c_offer1",
+      anchor: { kind: "message", commit: 1 },
+      context: { commitMessage: "Guard add", path: null },
+      body: "Draw UploadButton as a state machine",
+      createdAt: "2026-10-22T10:00:00Z",
+      kind: "question",
+      offer: OFFER,
+      replies: [aReply({ body: "", diagram: "stateDiagram-v2\n  Idle --> Uploading" })],
+    }),
+  );
+  await renderReview(withOffers({ comments: [accepted] }));
+  const enlarge = offerCard().getByRole("button", { name: "Enlarge The agent's diagram" });
+  await expect.element(enlarge).toBeVisible();
+  const turn = enlarge.element().closest(".border-l-2");
+  expect(turn?.querySelector(".prose-fm")).toBeNull();
+  expect(turn?.children[1]?.className).toBe("");
+});
+
 test("an accept the server refuses brings the chip back", async () => {
   await renderReview(withOffers());
   await chip("UploadButton as a state machine").click();
