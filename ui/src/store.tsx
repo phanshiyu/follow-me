@@ -120,6 +120,8 @@ export function ReviewProvider({ initial, children }: { initial: State; children
           keep.current = topCommit(latest.current);
           void refresh().then(() => setArrived(`v${event.version}`));
         }
+        // A new version can move the tip, which changes which files are stale.
+        if (event.type === "coverage" || event.type === "version") loadCoverage();
         if (event.type === "ended") setEnded(true);
       };
       source.onopen = () => setReconnecting(false);
@@ -132,6 +134,8 @@ export function ReviewProvider({ initial, children }: { initial: State; children
         const attempt = () => {
           refresh()
             .then(() => {
+              // A restarted server does not replay coverage events, so read it afresh too.
+              loadCoverage();
               setReconnecting(false);
               connect();
             })
@@ -150,7 +154,7 @@ export function ReviewProvider({ initial, children }: { initial: State; children
       clearTimeout(retry);
       source?.close();
     };
-  }, [ended, refresh]);
+  }, [ended, refresh, loadCoverage]);
 
   // The page shows the swapped plan in the same place: the commit that was at the top stays there.
   const version = state.version;

@@ -309,3 +309,17 @@ test("a fresh run marks nothing stale", async () => {
   await expect.element(page.getByText(/stale|changed since/)).not.toBeInTheDocument();
   expect(document.querySelector("[data-stale]")).toBeNull();
 });
+
+test("a coverage event brings the new run in, and a new version its stale files", async () => {
+  const { server } = await renderReview(aState());
+  await expect.element(row(2, /^Added 5: assertNumber\(b\);$/)).toBeVisible();
+
+  server.on("GET", "/api/coverage", () => aCoverage());
+  server.push({ type: "coverage", tip: JSON.parse('"b164dd3"'), takenAt: aCoverage().takenAt });
+  await expect.element(page.getByText("Changed lines covered 66%")).toBeVisible();
+  await expect.element(row(2, /^Added 5: .* · not covered$/)).toBeVisible();
+
+  server.on("GET", "/api/coverage", () => aCoverage({ stale: ["src/lib.js"] }));
+  server.push({ type: "version", version: JSON.parse("2"), hash: "hash2", carried: [] });
+  await expect.element(page.getByText("Coverage is 1 file stale")).toBeVisible();
+});
