@@ -529,7 +529,7 @@ test("concerns get derived ids, ride on projected commits and leave plain plans 
   assert.equal(JSON.stringify(serializePlanFile(nulled)), JSON.stringify(plain));
 });
 
-test("a unit carries one concern, on lines its commit takes, and lines only belong to units", () => {
+test("a unit carries one concern per commit, on lines its commit takes, and lines only belong to units", () => {
   const lib = unitAt(diff, "src/lib.js", 1);
   const rest = everything(diff).filter((u) => u !== lib);
   const note = (text: string, lines?: number[]) => ({
@@ -538,14 +538,31 @@ test("a unit carries one concern, on lines its commit takes, and lines only belo
     text,
     ...(lines === undefined ? {} : { lines }),
   });
-  const two = validatePlan(
+  // Each slice of a hunk split across commits may carry its own concern.
+  const slices = validatePlan(
     diff,
     planWith([
       { message: "a", units: [{ unit: `${lib}:0-1`, concerns: [note("one", [0])] }] },
       { message: "b", units: [{ unit: `${lib}:2-6`, concerns: [note("two", [3])] }, ...rest] },
     ]),
   );
-  assert.deepEqual(issuesOf(two), [{ kind: "too-many-concerns", unit: lib, commits: [0, 1] }]);
+  assert.ok(slices.ok);
+
+  const two = validatePlan(
+    diff,
+    planWith([
+      { message: "a", units: [`${lib}:0-1`] },
+      {
+        message: "b",
+        units: [
+          { unit: `${lib}:2-3`, concerns: [note("two", [3])] },
+          { unit: `${lib}:4-6`, concerns: [note("three", [5])] },
+          ...rest,
+        ],
+      },
+    ]),
+  );
+  assert.deepEqual(issuesOf(two), [{ kind: "too-many-concerns", unit: lib, commit: 1, count: 2 }]);
 
   const elsewhere = validatePlan(
     diff,

@@ -415,7 +415,7 @@ files stay the durable record written as it goes (`reviews/vN.draft.json`) and a
   `vN.md` written on end all call it. For a review that swapped versions it renders the whole
   session on the open version's diff (see "One review across versions").
 - **Concerns and questions.** A plan may carry `concerns` on commits and unit refs; validation derives
-  `k_` ids, allows one per unit, and the reviewer's decisions live in `Review.concerns`. A comment of
+  `k_` ids, allows one per unit in each commit (so each slice of a split hunk may carry its own), and the reviewer's decisions live in `Review.concerns`. A comment of
   `kind: "question"` is answered by a response with status `answered` whose `at` points at narration or a
   diagram in the new plan; validation rejects an answer that points at nothing.
 

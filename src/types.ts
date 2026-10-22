@@ -264,7 +264,9 @@ export type PlanIssue =
   | {
       readonly kind: "too-many-concerns";
       readonly unit: UnitId;
-      readonly commits: readonly number[];
+      /** The commit, 0-based, whose entries of `unit` carry `count` concerns. */
+      readonly commit: number;
+      readonly count: number;
     }
   | { readonly kind: "bad-offer"; readonly commit: number; readonly reason: string }
   /** More than one offer in a commit, or with commit null more than three in the plan. */

@@ -638,7 +638,8 @@ function deriveConcernId(unit: UnitId | null, c: Concern): ConcernId {
 
 /**
  * Gives every concern its id and checks where it sits: lines must be change lines the commit
- * takes, and a unit carries at most one concern across the whole plan.
+ * takes, and a unit carries at most one concern in each commit, so each slice of a hunk split
+ * across commits may carry its own.
  */
 function placeConcerns(
   diff: Diff,
@@ -647,8 +648,8 @@ function placeConcerns(
   issues: PlanIssue[],
 ): PlacedConcern[][] {
   const ids = new Set<string>();
-  const holders = new Map<UnitId, number[]>();
   const placedPerCommit = file.commits.map((commit, k) => {
+    const held = new Map<UnitId, number>();
     const placed: PlacedConcern[] = [];
     const add = (c: Concern, unit: UnitId | null): void => {
       const id = deriveConcernId(unit, c);
@@ -663,7 +664,7 @@ function placeConcerns(
     commit.units.forEach((ref, j) => {
       const concerns = ref.concerns ?? [];
       if (concerns.length === 0) return;
-      holders.set(ref.unit, [...(holders.get(ref.unit) ?? []), ...concerns.map(() => k)]);
+      held.set(ref.unit, (held.get(ref.unit) ?? 0) + concerns.length);
       const taken = claims.resolved[k]?.[j]?.select;
       const unit = diff.units.get(ref.unit);
       for (const c of concerns) {
@@ -687,13 +688,11 @@ function placeConcerns(
         } else add(c, ref.unit);
       }
     });
+    for (const [unit, count] of held) {
+      if (count > 1) issues.push({ kind: "too-many-concerns", unit, commit: k, count });
+    }
     return placed;
   });
-  for (const [unit, commits] of holders) {
-    if (commits.length > 1) {
-      issues.push({ kind: "too-many-concerns", unit, commits: [...new Set(commits)] });
-    }
-  }
   return placedPerCommit;
 }
 

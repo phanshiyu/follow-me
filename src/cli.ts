@@ -477,7 +477,7 @@ function formatIssue(issue: PlanIssue): string {
     case "bad-concern":
       return `${commitName(issue.commit)}: concern: ${issue.reason}`;
     case "too-many-concerns":
-      return `${issue.unit} has more than one concern, in commits ${issue.commits.map((k) => k + 1).join(" and ")}; keep the one that matters`;
+      return `${commitName(issue.commit)}: ${issue.unit} has ${issue.count} concerns; a unit takes one per commit (each slice of a split hunk may carry its own), so keep the one that matters`;
     case "bad-offer":
       return `${commitName(issue.commit)}: offer: ${issue.reason}`;
     case "too-many-offers":

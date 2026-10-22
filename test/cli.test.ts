@@ -1389,7 +1389,7 @@ test("apply swaps the open page to the new plan in place and keeps the old comme
   assert.equal(JSON.parse(readFileSync(join(reviews, "v2.json"), "utf8")).comments.length, 0);
 });
 
-test("check counts the agent's concerns by severity and refuses a second one on a unit", async (t) => {
+test("check counts the agent's concerns by severity and refuses a second one on a unit in a commit", async (t) => {
   const { run } = cliIn(t);
   const repo = makeFixtureRepo();
   t.after(repo.cleanup);
@@ -1421,7 +1421,12 @@ test("check counts the agent's concerns by severity and refuses a second one on 
   writeFileSync(draftPath, planWith([one, { ...one, text: "and add never checks a." }]));
   const two = run(repo.dir, "check");
   assert.equal(two.code, 1);
-  assert.ok(two.out.includes(`${all[0]} has more than one concern, in commits 1;`));
+  assert.ok(
+    two.out.includes(
+      `commit 1: ${all[0]} has 2 concerns; a unit takes one per commit (each slice of a split hunk may carry its own)`,
+    ),
+    two.out,
+  );
 });
 
 test("check names commits from 1 in every issue, as the skill and the page do", async (t) => {

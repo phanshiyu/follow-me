@@ -71,7 +71,7 @@ const MOVED = [
   "Severity: `blocker` breaks behaviour or loses data, `major` should be fixed before merge, `minor` is worth a note.",
   "Do not flag style, formatting or taste. Do not repeat the note.",
   "Most commits deserve no concern, and a plan with none is fine.",
-  "Never write more than one concern per unit.",
+  "At most one concern per unit in each commit.",
   "Concerns are in your voice as a reviewer, while the note stays the author's.",
   'A concern is `{ "severity": "blocker" | "major" | "minor", "kind": "bug" | "missing-test" | "naming" | "risk", "text": "...", "lines": [0, 1] }`.',
   "`lines` holds change indices of that unit and is allowed only on a unit ref.",
