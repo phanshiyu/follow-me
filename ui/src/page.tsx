@@ -81,17 +81,21 @@ export function scrollToSpot(spot: Spot): void {
   window.scrollBy(0, section.getBoundingClientRect().top - HEADER_PX + spot.offset);
 }
 
-/** The last commit section whose top has passed under the page header. */
+/**
+ * The last commit section whose top has passed the reading line, a third of the way down the
+ * screen. A jump centres its target, so the header edge would still sit in the commit left behind.
+ */
 function useCurrentCommit(): number {
   const [current, setCurrent] = useState(0);
   useEffect(() => {
     let frame = 0;
     const measure = () => {
       frame = 0;
+      const line = HEADER_PX + (window.innerHeight - HEADER_PX) / 3;
       const sections = document.querySelectorAll<HTMLElement>("section[data-commit]");
       let at = 0;
       for (const section of sections) {
-        if (section.getBoundingClientRect().top > HEADER_PX + 1) break;
+        if (section.getBoundingClientRect().top > line) break;
         at = Number(section.dataset["commit"]);
       }
       setCurrent(at);

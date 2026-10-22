@@ -69,8 +69,11 @@ If the hashes differ, `apply` exits with code 1. The commits are signed when you
 
 The red blob in the party hat is your branch tip. Nothing follow-me does moves it.
 
-![The review page: one scrolling document of commits with the stack dropdown in the sticky header, a picked line with its Ask box, and an inline thread where the agent answers in Markdown with a diagram](assets/screenshots/review.png)
-*The review page. Pick any line, changed or not, or a range; Ask or Flag opens right under it. The agent answers inline in Markdown.*
+![The review page: the index on the left groups commits by section in top-down order, and commit 2 shows a question on a line with the agent's answer inline](assets/screenshots/review.png)
+*The review page. The index groups the commits the way they read: the story first, then the steps it calls, then the details. Pick any line, changed or not, and Ask or Flag right under it; the agent answers inline.*
+
+![Cmd-clicking format in pow opens a peek of its definition, which lives outside this branch](assets/screenshots/definition.png)
+*Cmd-click a name to jump to where it is defined, even in a later commit, and Alt+Left to come back. A definition the branch does not change opens as a peek.*
 
 ![A diagram opened in the lightbox at full size](assets/screenshots/diagram.png)
 *Diagrams sit full width under the commit or reply they explain, and open full size on click.*
@@ -78,7 +81,7 @@ The red blob in the party hat is your branch tip. Nothing follow-me does moves i
 ![The hand-off page: every kept item with its original-branch path and line, an include checkbox, and copy buttons](assets/screenshots/handoff.png)
 *Submit review. Each item carries the original branch's path and line, so your agent can post it to the merge request as is.*
 
-Keys: `j` and `k` move between commits, arrows and Shift+arrows pick rows inside a hunk, `c` comments on the pick, `v` marks a commit viewed, `?` lists the rest. An unfinished review autosaves and comes back when the page is opened again.
+Keys: `[` shows or hides the index, `j` and `k` move between commits, Cmd-click (Ctrl-click) goes to a definition and Alt+Left comes back, arrows and Shift+arrows pick rows inside a hunk, `c` comments on the pick, `v` marks a commit viewed, `?` lists the rest. An unfinished review autosaves and comes back when the page is opened again.
 
 ### Reviewing someone else's branch
 

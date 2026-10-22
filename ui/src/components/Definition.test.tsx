@@ -2,7 +2,7 @@ import { expect, test } from "vitest";
 import { page, userEvent } from "vitest/browser";
 import type { Candidate, TextHunk } from "../lib/wire.ts";
 import { aCandidate, aHunk, aLongState } from "../test/factories.ts";
-import { goToCommit } from "../test/pages.ts";
+import { goToCommit, indexEntry } from "../test/pages.ts";
 import { renderReview } from "../test/render.tsx";
 
 const GUARD = "h_0000000000aa";
@@ -119,6 +119,7 @@ test("Cmd-click jumps into a commit collapsed by Viewed, and Alt+Left and the ch
   await expect.element(target).toBeInViewport();
   await expect.element(target).toHaveClass(/row-flash/);
   await expect.element(page.getByRole("checkbox", { name: "Viewed commit 6" })).toBeChecked();
+  await expect.element(indexEntry(/^6 /)).toHaveAttribute("aria-current", "location");
   const chip = page.getByRole("button", { name: "Back to commit 2" });
   await expect.element(chip).toBeVisible();
 
