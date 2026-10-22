@@ -488,9 +488,13 @@ export type FileCoverage = {
   readonly branches: ReadonlyMap<number, BranchHits>;
 };
 
-/** What one test ran: its tip lines with at least one hit, per file. at is where the test is. */
+/**
+ * What one test ran: its tip lines with at least one hit, per file. at is where the test is, and
+ * when the branch does not change that file, preview holds up to 8 of its tip lines from at.start.
+ */
 export type TestCoverage = {
   readonly at?: Loc;
+  readonly preview?: readonly string[];
   readonly lines: ReadonlyMap<RepoPath, readonly number[]>;
 };
 

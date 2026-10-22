@@ -224,7 +224,14 @@ function mergeMax(
 }
 
 /** A run of one test, named by the agent with --test, and where that test is. */
-export type NamedTest = { readonly id: string; readonly at?: Loc };
+export type NamedTest = {
+  readonly id: string;
+  readonly at?: Loc;
+  readonly preview?: readonly string[];
+};
+
+/** How many tip lines a test outside the branch's changes carries for the page's peek. */
+export const PREVIEW_LINES = 8;
 
 /**
  * The coverage after this run. A plain run replaces everything, its TN blocks becoming its tests.
@@ -246,6 +253,7 @@ export function recordRun(
   const tests = new Map(base?.tests ?? []);
   const entry: TestCoverage = {
     ...(test.at === undefined ? {} : { at: test.at }),
+    ...(test.preview === undefined ? {} : { preview: test.preview }),
     lines: hitLines(run.files),
   };
   tests.set(test.id, entry);
@@ -327,7 +335,14 @@ export type CoverageJson = {
     string,
     { readonly lines: Record<string, number>; readonly branches?: Record<string, BranchHits> }
   >;
-  readonly tests?: Record<string, { readonly at?: Loc; readonly lines: Record<string, number[]> }>;
+  readonly tests?: Record<
+    string,
+    {
+      readonly at?: Loc;
+      readonly preview?: readonly string[];
+      readonly lines: Record<string, number[]>;
+    }
+  >;
 };
 
 export function serializeCoverage(c: Coverage): CoverageJson {
@@ -345,6 +360,7 @@ export function serializeCoverage(c: Coverage): CoverageJson {
       id,
       {
         ...(t.at === undefined ? {} : { at: t.at }),
+        ...(t.preview === undefined ? {} : { preview: [...t.preview] }),
         lines: Object.fromEntries([...t.lines].map(([p, ls]) => [p, [...ls]])),
       },
     ]),
@@ -411,9 +427,16 @@ function parseFile(v: unknown): FileCoverage | string {
 }
 
 function parseTest(v: unknown): TestCoverage | string {
-  if (!isFields<"at" | "lines">(v)) return "a test is not an object";
+  if (!isFields<"at" | "preview" | "lines">(v)) return "a test is not an object";
   const at = v.at === undefined ? undefined : parseLoc(v.at);
   if (at === null) return "at is not a { path, start, end }";
+  const preview = v.preview;
+  if (
+    preview !== undefined &&
+    !(Array.isArray(preview) && preview.every((l) => typeof l === "string"))
+  ) {
+    return "preview is not a list of lines";
+  }
   const lineEntries = entries(v.lines);
   if (lineEntries === null) return "lines is not an object";
   const lines = new Map<RepoPath, readonly number[]>();
@@ -423,7 +446,11 @@ function parseTest(v: unknown): TestCoverage | string {
     }
     lines.set(path, list);
   }
-  return { ...(at === undefined ? {} : { at }), lines };
+  return {
+    ...(at === undefined ? {} : { at }),
+    ...(preview === undefined ? {} : { preview: preview.filter((l) => typeof l === "string") }),
+    lines,
+  };
 }
 
 /** The one place coverage.json becomes a Coverage. */

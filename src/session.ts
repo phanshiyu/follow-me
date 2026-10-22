@@ -236,6 +236,8 @@ export type Session = {
   /** coverage.json, the agent's last test run at the tip, or null before the first. */
   coverage(): Coverage | null;
   writeCoverage(coverage: Coverage): void;
+  /** Removes coverage.json, so the next run, per-test ones included, starts fresh. */
+  clearCoverage(): void;
   /** Serializes apply and review on this session; throws SessionLockedError when busy. */
   lock(command: string): HeldLock;
   /** Takes over the lock a live process holds with this token, so exactly one process owns it. */
@@ -454,6 +456,7 @@ function makeSession(root: string, dir: string, anchor: SessionAnchor, diff: Dif
     },
     coverage: () => readCoverageIn(dir),
     writeCoverage: (coverage) => writeJson(coveragePath(dir), serializeCoverage(coverage)),
+    clearCoverage: () => rmSync(coveragePath(dir), { force: true }),
     lock: (command) => acquireLock(dir, anchor.branch, command),
     adoptLock: (from, command) => adoptLock(dir, from, command),
     lockState: () => readLock(join(dir, "lock")),

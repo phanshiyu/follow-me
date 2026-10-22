@@ -8,6 +8,7 @@ import {
   changedLines,
   LcovError,
   type NamedTest,
+  PREVIEW_LINES,
   parseLcov,
   parseLocArg,
   recordRun,
@@ -157,8 +158,9 @@ Other commands:
                                             is defined, instead of reading files
   report [--json] [--markdown]              print the report of the latest review; --json lists
                                             the items to post to a merge request
-  coverage <lcov> [--test <id> [--at <path:line>]]
-                                            record a test run taken at the tip for the page
+  coverage <lcov> [--test <id> [--at <path:line>]] [--reset]
+                                            record a test run taken at the tip for the page;
+                                            --reset alone clears it before per-test runs
 
 help --all lists every command.`;
 
@@ -224,11 +226,12 @@ Interactive loop (while the review page is open):
                                             line in both voices, then questions with answers;
                                             --json lists the items to post to a merge request
                                             (path, lines, severity, body, thread, excluded)
-  coverage <lcov> [--test <id> [--at <path:line>]] [--branch <name>]
+  coverage <lcov> [--test <id> [--at <path:line>]] [--reset] [--branch <name>]
                                             record the lcov of a test run at the branch tip;
                                             refuses when a covered file in the working tree
                                             differs from the tip. A plain run replaces the last;
-                                            --test runs add one test each, --at is where it is
+                                            --test runs add one test each, --at is where it is.
+                                            --reset starts fresh; alone it clears the last run
   apply, while the page is open, swaps it to the new plan version in place, same URL.
 
 Old names, still working:
@@ -1557,7 +1560,8 @@ async function report(cwd: string, args: Args, walkOnly = false): Promise<number
   return 0;
 }
 
-const COVERAGE_USAGE = "usage: follow-me coverage <lcov> [--test <id> [--at <path:line>]]";
+const COVERAGE_USAGE =
+  "usage: follow-me coverage <lcov> [--test <id> [--at <path:line>]] [--reset]\n       follow-me coverage --reset";
 
 /**
  * Records the lcov of a test run the agent made at the tip in the session's coverage.json and
@@ -1567,6 +1571,13 @@ async function coverage(cwd: string, args: Args): Promise<number> {
   const [file, extra] = args.positionals;
   const id = args.values.get("test");
   const atArg = args.values.get("at");
+  const reset = args.flags.has("reset");
+  if (file === undefined && reset && id === undefined && atArg === undefined) {
+    const session = await openFresh(cwd, args);
+    session.clearCoverage();
+    say("coverage cleared; the next run starts fresh");
+    return 0;
+  }
   if (file === undefined || extra !== undefined) throw new UsageError(COVERAGE_USAGE);
   if (atArg !== undefined && id === undefined) {
     throw new UsageError(`--at needs --test\n${COVERAGE_USAGE}`);
@@ -1598,10 +1609,15 @@ async function coverage(cwd: string, args: Args): Promise<number> {
   if (id !== undefined) {
     const at = atArg === undefined ? undefined : parseLocArg(atArg, place);
     if (typeof at === "string") throw new UsageError(at);
-    test = { id, ...(at === undefined ? {} : { at }) };
+    const preview = at === undefined ? undefined : await testPreview(session, at);
+    test = {
+      id,
+      ...(at === undefined ? {} : { at }),
+      ...(preview === undefined ? {} : { preview }),
+    };
   }
   const takenAt = new Date().toISOString();
-  const recorded = recordRun(session.coverage(), run, {
+  const recorded = recordRun(reset ? null : session.coverage(), run, {
     tip,
     takenAt,
     ...(test === undefined ? {} : { test }),
@@ -1616,6 +1632,19 @@ async function coverage(cwd: string, args: Args): Promise<number> {
     `coverage for ${plural(recorded.files.size, "file")} at ${short(tip)}; ${covered} of ${executable} changed lines covered`,
   );
   return 0;
+}
+
+/**
+ * Up to PREVIEW_LINES tip lines from where a test starts, when the branch leaves its file alone:
+ * the page shows the branch's own files from the plan, and the others need this to peek.
+ */
+async function testPreview(session: Session, at: Loc): Promise<readonly string[] | undefined> {
+  const changed = new Set([...session.diff.units.values()].map((u) => u.path));
+  if (changed.has(at.path)) return undefined;
+  const bytes = (await blobsAt(session.root, session.anchor.tip, [at.path])).get(at.path) ?? "";
+  return splitLines(bytes)
+    .slice(at.start - 1, at.start - 1 + PREVIEW_LINES)
+    .map((line) => Buffer.from(line.replace(/\r?\n$/, ""), "latin1").toString("utf8"));
 }
 
 /** The old name of report. */
@@ -2291,7 +2320,10 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
       case "show":
         return await showRef(cwd, parseArgs(rest, { values: ["branch"] }));
       case "coverage":
-        return await coverage(cwd, parseArgs(rest, { values: ["test", "at", "branch"] }));
+        return await coverage(
+          cwd,
+          parseArgs(rest, { values: ["test", "at", "branch"], flags: ["reset"] }),
+        );
       case "report":
         return await report(
           cwd,

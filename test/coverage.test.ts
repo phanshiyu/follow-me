@@ -349,7 +349,7 @@ test("follow-me coverage records the run at the tip and counts the changed lines
   );
   assert.equal(
     run(repo.dir, "coverage", one, "--at", "src/lib.js:3").err,
-    "follow-me: --at needs --test\nusage: follow-me coverage <lcov> [--test <id> [--at <path:line>]]\n",
+    "follow-me: --at needs --test\nusage: follow-me coverage <lcov> [--test <id> [--at <path:line>]] [--reset]\n       follow-me coverage --reset\n",
   );
 
   // With a run on record, launching the review does not ask for one.
@@ -464,4 +464,55 @@ test("on an open review the run reaches the page, outlives a re-plan and goes st
   // A stale file gives no counts and no verdicts.
   assert.deepEqual(await covered(), [[id, undefined]]);
   assert.equal((await markdown()).includes("coverage:"), false);
+});
+
+test("--reset starts per-test runs fresh, and a test outside the branch carries a preview", (t) => {
+  const run = cliIn(t);
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  // A test file both sides share, so the branch does not change it.
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: repo.dir, encoding: "utf8" });
+  git("checkout", "-q", "main");
+  const body = Array.from({ length: 12 }, (_, i) => `line ${i + 1} ✓`);
+  mkdirSync(join(repo.dir, "test"), { recursive: true });
+  writeFileSync(join(repo.dir, "test", "add.test.js"), `${body.join("\n")}\n`);
+  git("add", "-A");
+  git("commit", "-q", "-m", "tests");
+  git("checkout", "-q", "feature");
+  git("merge", "-q", "--no-edit", "main");
+
+  const aggregate = lcov(repo.dir, "coverage/all.info", "SF:src/lib.js", "DA:3,5", "end_of_record");
+  assert.equal(run(repo.dir, "coverage", aggregate).code, 0);
+  const one = lcov(repo.dir, "coverage/one.info", "SF:src/lib.js", "DA:4,1", "end_of_record");
+  const outside = run(repo.dir, "coverage", one, "--test", "adds", "--at", "test/add.test.js:3");
+  assert.equal(outside.code, 0, outside.err);
+  const inside = run(repo.dir, "coverage", one, "--test", "guards", "--at", "src/lib.js:3");
+  assert.equal(inside.code, 0, inside.err);
+  const kept = readCoverage(repo.dir);
+  assert.ok(typeof kept === "object" && kept !== null && "files" in kept && "tests" in kept);
+  assert.deepEqual(kept.files, { "src/lib.js": { lines: { 3: 5, 4: 1 } } });
+  assert.deepEqual(kept.tests, {
+    adds: {
+      at: { path: "test/add.test.js", start: 3, end: 3 },
+      preview: body.slice(2, 10),
+      lines: { "src/lib.js": [4] },
+    },
+    guards: { at: { path: "src/lib.js", start: 3, end: 3 }, lines: { "src/lib.js": [4] } },
+  });
+
+  // Without --reset the per-test runs fold into the last aggregate; with it they start over.
+  assert.deepEqual(run(repo.dir, "coverage", "--reset"), {
+    code: 0,
+    out: "coverage cleared; the next run starts fresh\n",
+    err: "",
+  });
+  assert.equal(run(repo.dir, "coverage", one, "--test", "adds").code, 0);
+  const fresh = readCoverage(repo.dir);
+  assert.ok(typeof fresh === "object" && fresh !== null && "files" in fresh && "tests" in fresh);
+  assert.deepEqual(fresh.files, { "src/lib.js": { lines: { 4: 1 } } });
+  assert.deepEqual(Object.keys(fresh.tests ?? {}), ["adds"]);
+  assert.equal(run(repo.dir, "coverage", aggregate, "--test", "all", "--reset").code, 0);
+  const restarted = readCoverage(repo.dir);
+  assert.ok(typeof restarted === "object" && restarted !== null && "tests" in restarted);
+  assert.deepEqual(Object.keys(restarted.tests ?? {}), ["all"]);
 });
