@@ -285,6 +285,51 @@ session has no `coverage.json`. The report uses only files that are not stale: t
 "coverage: M of K changed lines" under each file heading, and `report --json` gives each flag and kept
 concern over added rows `covered`, true when every executable added row it points at ran.
 
+## Offers and state maps
+
+An offer is the agent saying "I can draw this for you". It is neither a concern nor a question, and
+it is written in the plan, where the agent has just read the code: `offers: [{ kind, label }]` on a
+commit or a unit ref, with kind one of `state-machine`, `sequence`, `diagram`.
+
+- **Ids.** Validation gives each offer `o_` plus 8 hex of sha256 over its unit (empty for a commit
+  offer) and its label, so a re-plan that moves the same offer to another commit keeps its id. Two
+  offers with the same id are a `bad-offer`. `ProjectedCommit.offers` lists the commit's own first,
+  then those of its unit refs with `unit` set. A plan without offers serializes as before and keeps
+  its hash.
+- **Limits.** `check` refuses more than one offer in a commit (its unit refs' included) and more than
+  three in the plan, as `too-many-offers` with the commit, or with `commit: null` for the plan.
+- **Accepting.** The page posts a reviewer question with `offer: <id>` through `api/comments`, so
+  `watch`, the entry and the report see an ordinary question. The server refuses it with a 400 when
+  the id is not in the open plan, or another comment of the same review (this version or a carried
+  one) already accepted it, or it was dismissed; a `PUT` cannot change a comment's offer. Deleting
+  the accepting comment opens the offer again.
+- **Dismissing.** `POST api/offers/<id>/dismiss` (no body) adds it to `dismissedOffers`, emits
+  `{ type: "offer-dismissed", offer }`, and is saved in the draft and the review; again is a no-op,
+  an accepted offer is a 400 and an unknown one a 404. A swap carries `dismissedOffers` whole, and
+  `api/state` sends it, so a later version of the same review never shows either kind as a chip:
+  accepted ones are found by `offer` on `comments` and `carried`. A dismissal asks nothing of the
+  agent, so it is not news.
+- **The agent's line.** For an accepting comment the digest prints only
+  `Reviewer accepted offer o_… on <path:start-end> (commit N): <label>. Reply with follow-me reply <cid> --diagram <file> [--map <file>].`
+  (`on commit N` for a commit offer), with the place and label read from the plan the comment was
+  made on and the range the hunk's tip lines. While an accepted offer has no agent reply, the entry's
+  `next:` names the oldest one. A reply may be only a diagram: `--body` is optional with
+  `--diagram`, and the server takes an empty body only then.
+- **State maps.** `Reply.map = { states: { <name>: Loc[] }, transitions?: [{ from, to, event?, at: Loc[] }] }`
+  in tip lines ties a stateDiagram to code, so the page can make states clickable and derive their
+  coverage from lcov; the agent never states coverage. Every state has at least one place; `at` of a
+  transition may be empty. The server (`parseNewReply`) checks the shape, that a map comes with a
+  diagram, that transitions name states of the map, and with a `stateDiagram` that every state name
+  appears in it as a word. `follow-me reply --map` also checks against the tip: every path is a file
+  there and every range ends within it, listing every bad entry (`map.states.Idle[1]: …`) at once.
+  Paths are typed as UTF-8 and stored as git's bytes, like coverage paths. The map lives on the reply,
+  so swaps carry it as they carry replies, and `follow-me show <c_…>` prints it one line per state
+  and transition.
+- **Coverage follow-ups.** `follow-me coverage --reset` alone removes coverage.json, and with an lcov
+  starts that run from nothing, so a series of `--test` runs does not fold into an old aggregate. A
+  test whose `--at` file the branch does not change gets `preview`, up to 8 tip lines from `start`,
+  decoded as UTF-8, so the page can peek without a definition lookup.
+
 ## Interactive loop
 
 A review is a conversation, so the agent talks to the review server, not to files. The server

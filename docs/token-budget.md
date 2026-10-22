@@ -54,6 +54,7 @@ final build are in the last table.
 | f. commit sections | 20066 | 5017 | 250683 | 62671 | skill 11016 to 11255 (+239, read once) for the `section` lines; measured from `8e5ef70`, whose totals are 19827 and 250444 because the final report grew after e2 |
 | g. `follow-me show <name>` | 20161 | 5040 | 250778 | 62695 | skill 11255 to 11350 (+95); a definition costs one call that prints its place, its commit and 8 lines, instead of a search and a file read of the tip |
 | h. coverage while reading | 20630 | 5158 | 251247 | 62812 | skill 11350 to 11647 (+297) for the "Coverage" section; launch 409 to 515 (+106) for one `next:` line, printed only while the session has no coverage.json; the agent's `follow-me coverage` call is one line (66 bytes); the report adds one line per file only when a run still fits it. Measured from `80b31b1` with the coverage step added to the script, whose totals are 20227 and 250844 |
+| i. offers and state maps | 21669 | 5417 | 252286 | 63072 | skill 11647 to 12686 (+1039, read once) for the "Offers" section, most of it the `--map` JSON shape the agent cannot guess; no other step moves, because the measured session has no offer: an accepted offer costs one line in the digest (about 170 bytes) and a `next:` naming it until the agent replies. Measured from `e72dc39`, whose totals equal row h |
 
 ## Before and after, per step
 
