@@ -446,7 +446,7 @@ test("follow-me coverage records the run at the tip and counts the changed lines
   );
   assert.equal(
     run(repo.dir, "coverage", one, "--at", "src/lib.js:3").err,
-    "follow-me: --at needs --test\nusage: follow-me coverage <lcov> [--test <id> [--at <path:line>]] [--reset]\n       follow-me coverage --reset\n",
+    "follow-me: --at needs --test\nusage: follow-me coverage <lcov> [--test <id> [--at <path:line>]] [--reset]\n       follow-me coverage --reset\n--at is the path:line where the test is declared\n",
   );
 
   // With a run on record, launching the review does not ask for one.
@@ -579,7 +579,7 @@ test("a state map asks for one run per test, lcov under .follow-me, until a per-
   const url = /^follow-me review: (\S+)$/m.exec(opened.out)?.[1];
   assert.ok(url, opened.out);
   const dir = ".follow-me/feature/lcov";
-  const perTest = `the state machine needs one coverage run per test: follow-me coverage --reset, then for each test run it alone with lcov to ${dir}/<n>.info and follow-me coverage ${dir}/<n>.info --test "<test name>" --at <path:line>; then run follow-me again`;
+  const perTest = `the state machine needs one coverage run per test: follow-me coverage --reset, then for each test run it alone with lcov to ${dir}/<n>.info and follow-me coverage ${dir}/<n>.info --test "<test name>" --at <path:line where it is declared>; then run follow-me again`;
 
   const asked = await fetch(new URL("api/comments", url), {
     method: "POST",

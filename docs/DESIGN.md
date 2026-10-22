@@ -272,7 +272,8 @@ reader can tell which outcome each test took at each decision; `functions` are t
   is refused with "coverage must be taken on the tip; these files differ: …" when any covered path
   differs between the working tree (or index) and the tip, by `git diff --name-only <tip>`.
 - **Runs.** A plain run replaces the whole file; its `TN:` blocks, when named, become `tests`. A
-  `--test` run adds one test (its lines with a hit, `at` from `--at`) and folds its hits into `files`
+  `--test` run adds one test (its lines with a hit, `at` from `--at`, the line where the test is
+  declared) and folds its hits into `files`
   by the larger count, so a per-test run never inflates an aggregate one and repeating it changes
   nothing. A `--test` run against another tip starts over.
 - **Changed lines.** The summary line counts the branch's added rows that the run calls executable,
@@ -295,7 +296,7 @@ directory sits inside the session, which `.follow-me/.gitignore` hides and which
 so no run leaves a file in the repo and `clean` needs no rule for it. A state map needs per-test runs
 for its badges and its "Not driven" list, so while a reply of the hosted review carries a map and no
 run has per-test detail, `reply --map`, an aggregate `coverage` and every listening `next:` name the
-per-test shape: `coverage --reset`, then one `coverage <dir>/<n>.info --test "<name>" --at <path:line>`
+per-test shape: `coverage --reset`, then one `coverage <dir>/<n>.info --test "<name>" --at <path:line where it is declared>`
 per test run alone. The report uses only files that are not stale: the markdown adds
 "coverage: M of K changed lines" under each file heading, and `report --json` gives each flag and kept
 concern over added rows `covered`, true when every executable added row it points at ran.

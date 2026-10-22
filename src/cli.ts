@@ -168,7 +168,8 @@ Other commands:
                                             the items to post to a merge request
   coverage <lcov> [--test <id> [--at <path:line>]] [--reset]
                                             record a test run taken at the tip for the page;
-                                            --reset alone clears it before per-test runs
+                                            --at is where the test is declared; --reset alone
+                                            clears it before per-test runs
 
 help --all lists every command.`;
 
@@ -239,7 +240,8 @@ Interactive loop (while the review page is open):
                                             record the lcov of a test run at the branch tip;
                                             refuses when a covered file in the working tree
                                             differs from the tip. A plain run replaces the last;
-                                            --test runs add one test each, --at is where it is.
+                                            --test runs add one test each, --at is the line
+                                            where that test is declared.
                                             --reset starts fresh; alone it clears the last run
   apply, while the page is open, swaps it to the new plan version in place, same URL.
 
@@ -1375,7 +1377,7 @@ function coverageStep(session: Session, cwd: string): string {
 /** The per-test runs a state map needs for its badges and its "Not driven" list. */
 function perTestStep(session: Session, cwd: string): string {
   const dir = lcovDir(session, cwd);
-  return `the state machine needs one coverage run per test: follow-me coverage --reset, then for each test run it alone with lcov to ${dir}/<n>.info and follow-me coverage ${dir}/<n>.info --test "<test name>" --at <path:line>`;
+  return `the state machine needs one coverage run per test: follow-me coverage --reset, then for each test run it alone with lcov to ${dir}/<n>.info and follow-me coverage ${dir}/<n>.info --test "<test name>" --at <path:line where it is declared>`;
 }
 
 /** Whether a reply of the hosted review carries a state map while no run has per-test detail. */
@@ -1658,7 +1660,7 @@ async function report(cwd: string, args: Args, walkOnly = false): Promise<number
 }
 
 const COVERAGE_USAGE =
-  "usage: follow-me coverage <lcov> [--test <id> [--at <path:line>]] [--reset]\n       follow-me coverage --reset";
+  "usage: follow-me coverage <lcov> [--test <id> [--at <path:line>]] [--reset]\n       follow-me coverage --reset\n--at is the path:line where the test is declared";
 
 /**
  * Records the lcov of a test run the agent made at the tip in the session's coverage.json and

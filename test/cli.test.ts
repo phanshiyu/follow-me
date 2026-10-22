@@ -436,6 +436,7 @@ test("every command prints its own usage for --help and -h, and does nothing els
     coverage.out,
     /^usage: follow-me coverage <lcov> \[--test <id> .*\n {2}record the lcov/,
   );
+  assert.match(coverage.out, /--at is the line\n {2}where that test is declared/);
   assert.equal(
     run(outside, "server", "stop", "-h").out.split("\n")[0],
     "usage: follow-me server status",
