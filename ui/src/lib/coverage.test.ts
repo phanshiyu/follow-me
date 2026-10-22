@@ -117,18 +117,26 @@ test("x goes to the first row below the reading line and X to the last above, ro
   expect(stepUncovered([], 1)).toBeNull();
 });
 
-test("the tests that ran a line, by id, or null when the run kept no per-test detail", () => {
+test("the tests that ran a line, by id with their preview, or null without per-test detail", () => {
   const tests = aCoverage({
     tests: JSON.parse(
       JSON.stringify({
         "b::second": { lines: { "src/lib.js": [4, 6] } },
-        "a::first": { at: { path: "test/a.js", start: 1, end: 4 }, lines: { "src/lib.js": [6] } },
+        "a::first": {
+          at: { path: "test/a.js", start: 1, end: 4 },
+          preview: ["test('first', () => {"],
+          lines: { "src/lib.js": [6] },
+        },
       }),
     ),
   }).tests;
   expect(testsOf(tests, "src/lib.js", 6)).toEqual([
-    { id: "a::first", at: { path: "test/a.js", start: 1, end: 4 } },
-    { id: "b::second", at: null },
+    {
+      id: "a::first",
+      at: { path: "test/a.js", start: 1, end: 4 },
+      preview: ["test('first', () => {"],
+    },
+    { id: "b::second", at: null, preview: null },
   ]);
   expect(testsOf(tests, "src/lib.js", 5)).toEqual([]);
   expect(testsOf(undefined, "src/lib.js", 6)).toBeNull();

@@ -24,7 +24,12 @@ export type Coverage = {
   readonly tests?: Readonly<
     Record<
       string,
-      { readonly at?: Loc; readonly lines: Readonly<Record<string, readonly number[]>> }
+      {
+        readonly at?: Loc;
+        /** Tip lines from at.start, sent when the branch does not change the test's file. */
+        readonly preview?: readonly string[];
+        readonly lines: Readonly<Record<string, readonly number[]>>;
+      }
     >
   >;
   readonly stale: readonly string[];
@@ -199,11 +204,17 @@ export function testsOf(
   tests: Coverage["tests"],
   path: string,
   line: number,
-): { readonly id: string; readonly at: Loc | null }[] | null {
+):
+  | {
+      readonly id: string;
+      readonly at: Loc | null;
+      readonly preview: readonly string[] | null;
+    }[]
+  | null {
   if (tests === undefined) return null;
   return Object.entries(tests)
     .filter(([, test]) => test.lines[path]?.includes(line) ?? false)
-    .map(([id, test]) => ({ id, at: test.at ?? null }))
+    .map(([id, test]) => ({ id, at: test.at ?? null, preview: test.preview ?? null }))
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
@@ -231,8 +242,12 @@ export function locate(
   return null;
 }
 
-/** A place for the jump or the peek, from where `locate` found it on the page; it has no preview. */
-export function candidateAt(at: Loc, shown: ReturnType<typeof locate>): Candidate {
+/** A place for the jump or the peek, from where `locate` found it on the page. */
+export function candidateAt(
+  at: Loc,
+  shown: ReturnType<typeof locate>,
+  preview: readonly string[] = [],
+): Candidate {
   return {
     path: at.path,
     newLine: at.start,
@@ -240,7 +255,7 @@ export function candidateAt(at: Loc, shown: ReturnType<typeof locate>): Candidat
     unit: shown?.unit ?? null,
     row: shown?.row ?? null,
     commit: shown?.commit ?? null,
-    preview: [],
+    preview,
   };
 }
 

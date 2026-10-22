@@ -236,10 +236,13 @@ export function MarkDetails({
   const tests = testsOf(coverage.tests, path, line);
   const shownAt = (at: Loc | null) =>
     at === null ? null : locate(at, state.commits, units, owners, numbers);
-  const open = async (id: string, at: Loc | null) => {
+  const open = async (id: string, at: Loc | null, preview: readonly string[] | null) => {
     onClose();
     const shown = shownAt(at);
     if (at !== null && shown !== null) return goTo(candidateAt(at, shown), id, commit, near, TEST);
+    // The server sends a test's own lines when the branch leaves its file alone.
+    if (at !== null && preview !== null)
+      return goTo(candidateAt(at, null, preview), id, commit, near, TEST);
     const named = testNameOf(id);
     const file = at?.path ?? named.path;
     if (named.name !== null && file !== null) {
@@ -283,7 +286,7 @@ export function MarkDetails({
                     <button
                       type="button"
                       className="w-full rounded px-1 py-0.5 text-left outline-none hover:bg-muted focus-visible:bg-muted"
-                      onClick={() => void open(test.id, test.at)}
+                      onClick={() => void open(test.id, test.at, test.preview)}
                     >
                       <span className="block font-mono text-xs [overflow-wrap:anywhere]">
                         {test.id}

@@ -281,6 +281,35 @@ test("with per-test detail, a test in the branch links in with Back and one outs
   await expect.element(peek.getByText("test", { exact: true })).toBeVisible();
 });
 
+test("a test outside the branch that the server previews peeks without a lookup", async () => {
+  const { server } = await renderReview(aState(), (server) =>
+    server.on("GET", "/api/coverage", () =>
+      aCoverage({
+        tests: JSON.parse(
+          JSON.stringify({
+            "test/guard_test.go::TestAssertNumber": {
+              at: { path: "test/guard_test.go", start: 10, end: 14 },
+              preview: ["func TestAssertNumber(t *testing.T) {", "\tassertNumber(1) // ✓"],
+              lines: { "src/lib.js": [4] },
+            },
+          }),
+        ),
+      }),
+    ),
+  );
+  await clickMark(2, /^Added 4/, 4);
+  await details("src/lib.js", 4)
+    .getByRole("button", {
+      name: /TestAssertNumber test\/guard_test\.go:10 · outside this branch$/,
+    })
+    .click();
+  const peek = page.getByRole("dialog", {
+    name: "Test of test/guard_test.go::TestAssertNumber at test/guard_test.go:10",
+  });
+  await expect.element(peek.getByText("// ✓")).toBeVisible();
+  expect(server.calls.some((c) => c.path.startsWith("/api/definition"))).toBe(false);
+});
+
 test("a file changed since the run shows hatched marks and says so, and the header counts it", async () => {
   await renderReview(aState(), (server) =>
     server.on("GET", "/api/coverage", () => aCoverage({ stale: ["src/lib.js"] })),
