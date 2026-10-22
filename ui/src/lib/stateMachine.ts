@@ -78,8 +78,11 @@ export type MachineRow = {
   readonly at: readonly Loc[];
 };
 
-/** Every state in the map's order, then every transition. */
-export function rowsOfMap(map: StateMap): MachineRow[] {
+/**
+ * Every state in the map's order, then every transition. With `edges`, the transitions no test
+ * takes come first, so the gaps head the moves.
+ */
+export function rowsOfMap(map: StateMap, edges?: readonly EdgeMark[]): MachineRow[] {
   const states = Object.entries(map.states).map(
     ([name, at]): MachineRow => ({ key: `s:${name}`, kind: "state", name, event: null, at }),
   );
@@ -92,7 +95,9 @@ export function rowsOfMap(map: StateMap): MachineRow[] {
       at: t.at,
     }),
   );
-  return [...states, ...moves];
+  const gap = (i: number) => (edges?.[i]?.kind === "uncovered" ? 0 : 1);
+  const order = moves.map((_, i) => i).sort((a, b) => gap(a) - gap(b));
+  return [...states, ...order.flatMap((i) => moves[i] ?? [])];
 }
 
 /** "src/upload.tsx:30-41", or ":30" for one line. */
@@ -145,5 +150,96 @@ export function stateNodes(
       nodes.find((n) => n.id.startsWith(`${svgId}-state-`) && n.text.trim() === name);
     if (node !== undefined) found.set(name, node.id);
   }
+  return found;
+}
+
+export type EdgeMarkKind = "covered" | "uncovered" | "unknown";
+
+/**
+ * What the run says about one transition. With per-test runs, its tests are those that ran every
+ * executable line of its `at`, and it is covered when there is one. With an aggregate run only,
+ * it is covered when every such line ran, and names no tests.
+ */
+export type EdgeMark = {
+  readonly kind: EdgeMarkKind;
+  /** Executable mapped lines, and how many of them the run reached. */
+  readonly run: number;
+  readonly total: number;
+  readonly tests: readonly string[];
+};
+
+const UNKNOWN_EDGE: EdgeMark = { kind: "unknown", run: 0, total: 0, tests: [] };
+
+/** Whether the run kept one entry per test, which edge tests and sequences need. */
+export function hasPerTest(coverage: Coverage | null): boolean {
+  return coverage !== null && Object.keys(coverage.tests ?? {}).length > 0;
+}
+
+/** A transition's mark. Unknown without a run, an empty `at`, nothing executable, or a stale file. */
+export function markOfEdge(coverage: Coverage | null, at: readonly Loc[]): EdgeMark {
+  if (coverage === null || at.some((loc) => coverage.stale.includes(loc.path))) return UNKNOWN_EDGE;
+  const lines: { readonly path: string; readonly line: number }[] = [];
+  let run = 0;
+  for (const loc of at) {
+    for (let line = loc.start; line <= loc.end; line += 1) {
+      const mark = markOf(coverage, loc.path, line);
+      if (mark === null) continue;
+      lines.push({ path: loc.path, line });
+      if (mark.kind !== "uncovered") run += 1;
+    }
+  }
+  const total = lines.length;
+  if (total === 0) return UNKNOWN_EDGE;
+  if (!hasPerTest(coverage)) {
+    return { kind: run === total ? "covered" : "uncovered", run, total, tests: [] };
+  }
+  const tests = Object.entries(coverage.tests ?? {})
+    .filter(([, test]) => lines.every(({ path, line }) => test.lines[path]?.includes(line)))
+    .map(([id]) => id)
+    .sort((a, b) => a.localeCompare(b));
+  return { kind: tests.length > 0 ? "covered" : "uncovered", run, total, tests };
+}
+
+/** "taken by 2 tests", "no test takes it", or "covered" without per-test runs. */
+export function describeEdgeMark(mark: EdgeMark, perTest: boolean): string {
+  if (mark.kind === "unknown") return "coverage unknown";
+  if (!perTest) return mark.kind === "covered" ? "covered" : "not covered";
+  if (mark.kind === "uncovered") return "no test takes it";
+  return `taken by ${mark.tests.length === 1 ? "1 test" : `${mark.tests.length} tests`}`;
+}
+
+/** An edge Mermaid drew: its SVG id, the states nearest its two ends, and its label text. */
+export type DrawnEdge = {
+  readonly id: string;
+  readonly from: string | null;
+  readonly to: string | null;
+  readonly label: string;
+};
+
+/**
+ * The drawn edge of each transition, by its index in the map. An edge matches on its two states;
+ * when several join the same pair, the one labelled with the event wins. A transition whose ends
+ * could not be placed falls back to the one edge carrying its event as label. Each edge is used
+ * once, and a transition that matches nothing is left out: the table still reaches it.
+ */
+export function edgesOfMap(
+  transitions: readonly { readonly from: string; readonly to: string; readonly event?: string }[],
+  drawn: readonly DrawnEdge[],
+): Map<number, string> {
+  const used = new Set<string>();
+  const found = new Map<number, string>();
+  transitions.forEach((t, i) => {
+    const event = t.event?.trim() ?? "";
+    const pair = drawn.filter((e) => !used.has(e.id) && e.from === t.from && e.to === t.to);
+    const labelled = drawn.filter((e) => event !== "" && e.label.trim() === event);
+    const only = labelled.length === 1 ? labelled[0] : undefined;
+    const edge =
+      pair.find((e) => e.label.trim() === event) ??
+      pair[0] ??
+      (only !== undefined && !used.has(only.id) ? only : undefined);
+    if (edge === undefined) return;
+    used.add(edge.id);
+    found.set(i, edge.id);
+  });
   return found;
 }

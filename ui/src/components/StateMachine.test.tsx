@@ -28,9 +28,23 @@ const MAP: StateMap = JSON.parse(
       Rejected: [loc("src/lib.js", 5)],
       Done: [loc("types/other.ts", 1, 2)],
     },
-    transitions: [{ from: "Idle", to: "Checking", event: "add", at: [loc("src/lib.js", 3)] }],
+    transitions: [
+      { from: "Idle", to: "Checking", event: "add", at: [loc("src/lib.js", 3)] },
+      { from: "Checking", to: "Done", event: "number", at: [loc("src/lib.js", 4)] },
+      { from: "Checking", to: "Rejected", event: "string", at: [loc("src/lib.js", 5)] },
+    ],
   }),
 );
+
+/**
+ * One run per test: two tests take add (line 3), one takes number (line 4), and none takes string
+ * (line 5). No single test takes add and then number.
+ */
+const PER_TEST = {
+  "adds two numbers": { lines: { "src/lib.js": [1, 3] } },
+  "checks its input": { lines: { "src/lib.js": [3] } },
+  "finishes a sum": { lines: { "src/lib.js": [4] } },
+};
 
 /** Commit 2 offered a state machine; the reviewer accepted and the agent answered with a map. */
 function answered(): State {
@@ -54,9 +68,12 @@ function answered(): State {
   });
 }
 
-async function withMachine(coverage = true) {
+async function withMachine(coverage: "aggregate" | "per-test" | "none" = "aggregate") {
   const rendered = await renderReview(answered(), (server) => {
-    if (coverage) server.on("GET", "/api/coverage", () => aCoverage());
+    if (coverage === "none") return;
+    server.on("GET", "/api/coverage", () =>
+      aCoverage(coverage === "per-test" ? { tests: PER_TEST } : {}),
+    );
   });
   await expect
     .poll(() => card().element().querySelector("[data-pick]"), { timeout: 45_000 })
@@ -71,6 +88,12 @@ const diagram = () =>
     .getByRole("button", { name: /^Enlarge/ })
     .element().parentElement;
 const state = (name: string) => card().getByRole("button", { name: new RegExp(`^${name}, `) });
+const edge = (from: string, to: string) =>
+  card().getByRole("button", { name: new RegExp(`^${from} → ${to}, `) });
+const edgePath = (from: string, to: string) => {
+  const pick = edge(from, to).element();
+  return pick.previousElementSibling;
+};
 const table = () =>
   card().getByRole("table", { name: "States and moves of The agent's state machine" });
 const rowOf = (name: string) => table().getByRole("row").filter({ hasText: name }).first();
@@ -117,7 +140,7 @@ test("each mapped state carries its coverage as an outline, a badge and words", 
 }, 60_000);
 
 test("without a test run every state is plain and the legend says so", async () => {
-  await withMachine(false);
+  await withMachine("none");
   await expect.element(state("Idle")).toHaveAccessibleName("Idle, coverage unknown");
   expect(card().element().querySelectorAll(".sm-outline")).toHaveLength(0);
   await expect.element(card().getByText(/no test run yet/)).toBeVisible();
@@ -209,4 +232,79 @@ test("hiding coverage takes the marks off the diagram", async () => {
   await page.getByRole("button", { name: "Coverage", exact: true }).click();
   await expect.element(state("Idle")).toHaveAccessibleName("Idle, coverage unknown");
   expect(card().element().querySelectorAll(".sm-outline")).toHaveLength(0);
+  await expect.element(edge("Checking", "Rejected")).toHaveAccessibleName(/coverage unknown$/);
+  expect(edgePath("Checking", "Rejected")?.getAttribute("style")).not.toContain("--cov-");
+}, 60_000);
+
+const badgeOf = (from: string, to: string) =>
+  edge(from, to).element().querySelector("text.sm-added")?.textContent;
+
+test("with one run per test, each edge is green with its test count or red and dashed", async () => {
+  await withMachine("per-test");
+  await expect
+    .element(edge("Idle", "Checking"))
+    .toHaveAccessibleName("Idle → Checking, taken by 2 tests");
+  await expect
+    .element(edge("Checking", "Done"))
+    .toHaveAccessibleName("Checking → Done, taken by 1 test");
+  await expect
+    .element(edge("Checking", "Rejected"))
+    .toHaveAccessibleName("Checking → Rejected, no test takes it");
+  expect([
+    badgeOf("Idle", "Checking"),
+    badgeOf("Checking", "Done"),
+    badgeOf("Checking", "Rejected"),
+  ]).toEqual(["2", "1", "✕"]);
+  const style = (from: string, to: string) => edgePath(from, to)?.getAttribute("style") ?? "";
+  expect(style("Idle", "Checking")).toContain("stroke: var(--cov-covered)");
+  expect(style("Checking", "Rejected")).toContain("stroke: var(--cov-uncovered)");
+  expect(style("Checking", "Rejected")).toContain("stroke-dasharray: 6 4");
+  expect(edge("Idle", "Checking").element().querySelector("title")?.textContent).toBe(
+    "Idle → Checking: taken by 2 tests\nTaken by: adds two numbers, checks its input",
+  );
+
+  // The table puts the untested move first and names the tests of each.
+  const moves = table()
+    .getByRole("row")
+    .elements()
+    .map((r): [string, string] => [
+      r.querySelector("button")?.textContent ?? "",
+      r.textContent ?? "",
+    ])
+    .filter(([name]) => name.includes("→"));
+  expect(moves.map(([name]) => name)).toEqual([
+    "Checking → Rejected",
+    "Idle → Checking",
+    "Checking → Done",
+  ]);
+  expect(moves[0]?.[1]).toContain("✕not covered0/1no test");
+  expect(moves[1]?.[1]).toContain("adds two numberschecks its input");
+  expect(moves[2]?.[1]).toContain("finishes a sum");
+}, 60_000);
+
+test("clicking or pressing Enter on an edge jumps to the line that performs it", async () => {
+  await withMachine("per-test");
+  const before = readDiagram();
+  const badge = edge("Checking", "Rejected").element().querySelector("[data-edge-badge]");
+  if (badge === null) throw new Error("no badge on the edge");
+  await userEvent.click(badge);
+  await expect.element(lib(2).getByRole("option", { name: /^Added 5: / })).toHaveClass(/row-flash/);
+  await back().click();
+  await expect.poll(() => window.scrollY).toBe(before);
+
+  edge("Idle", "Checking").element().focus();
+  await userEvent.keyboard("{Enter}");
+  await expect
+    .element(lib(1).getByRole("option", { name: /^Context 3: export function add/ }))
+    .toBeInViewport();
+  await expect.element(back()).toBeVisible();
+}, 60_000);
+
+test("an aggregate run marks edges from their lines, without test names", async () => {
+  await withMachine();
+  await expect.element(edge("Idle", "Checking")).toHaveAccessibleName("Idle → Checking, covered");
+  await expect
+    .element(edge("Checking", "Rejected"))
+    .toHaveAccessibleName("Checking → Rejected, not covered");
+  expect([badgeOf("Idle", "Checking"), badgeOf("Checking", "Rejected")]).toEqual(["✓", "✕"]);
 }, 60_000);

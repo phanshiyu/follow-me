@@ -328,6 +328,12 @@ commit or a unit ref, with kind one of `state-machine`, `sequence`, `diagram`.
   Paths are typed as UTF-8 and stored as git's bytes, like coverage paths. The map lives on the reply,
   so swaps carry it as they carry replies, and `follow-me show <c_…>` prints it one line per state
   and transition.
+- **Transition coverage.** The page marks each transition from the run over its `at`: with per-test
+  runs a test takes it when that test ran every executable line there, and the edge is green with
+  the count of such tests or red and dashed with ✕ when none does; with an aggregate run only, green
+  when every line ran, else red, with no test names; grey (Mermaid's own) with no lines, no run, or
+  a stale file. Edges are found in Mermaid's SVG by the states nearest their two ends, then by label;
+  the transition table, with its Tests column, stays the way to every transition.
 - **Coverage follow-ups.** `follow-me coverage --reset` alone removes coverage.json, and with an lcov
   starts that run from nothing, so a series of `--test` runs does not fold into an old aggregate. A
   test whose `--at` file the branch does not change gets `preview`, up to 8 tip lines from `start`,

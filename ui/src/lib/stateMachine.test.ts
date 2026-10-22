@@ -4,7 +4,10 @@ import type { Loc } from "./coverage.ts";
 import { lineNumbers, ownership } from "./rows.ts";
 import {
   candidatesOf,
+  describeEdgeMark,
   describeStateMark,
+  edgesOfMap,
+  markOfEdge,
   markOfPlaces,
   placeLabel,
   rowsOfMap,
@@ -101,6 +104,77 @@ test("Mermaid's node for a state is found by its id, or by its label", () => {
     ["Idle", "d-1-state-Idle-1"],
     ["Retry wait", "d-1-state-RetryWait-5"],
     ["RetryWait", "d-1-state-RetryWait-5"],
+  ]);
+});
+
+test("an edge is taken by the tests that ran every one of its lines", () => {
+  const run = aCoverage({
+    tests: {
+      both: { lines: { "src/lib.js": [1, 3, 4] } },
+      half: { lines: { "src/lib.js": [3] } },
+    },
+  });
+  expect(markOfEdge(run, [lib(3, 4)])).toEqual({
+    kind: "covered",
+    run: 2,
+    total: 2,
+    tests: ["both"],
+  });
+  // Line 2 is not executable, so it asks nothing of a test.
+  expect(markOfEdge(run, [lib(2, 3)]).tests).toEqual(["both", "half"]);
+  expect(markOfEdge(run, [lib(5)])).toMatchObject({ kind: "uncovered", tests: [] });
+  expect(markOfEdge(run, [lib(6)])).toMatchObject({ kind: "uncovered", run: 1, total: 1 });
+  expect(describeEdgeMark(markOfEdge(run, [lib(3)]), true)).toBe("taken by 2 tests");
+  expect(describeEdgeMark(markOfEdge(run, [lib(5)]), true)).toBe("no test takes it");
+});
+
+test("without per-test runs an edge is covered when its lines ran; with no lines it is unknown", () => {
+  const run = aCoverage();
+  expect(markOfEdge(run, [lib(3, 4)])).toEqual({ kind: "covered", run: 2, total: 2, tests: [] });
+  expect(markOfEdge(run, [lib(4, 5)]).kind).toBe("uncovered");
+  expect(markOfEdge(run, []).kind).toBe("unknown");
+  expect(markOfEdge(null, [lib(3)]).kind).toBe("unknown");
+  expect(markOfEdge(aCoverage({ stale: ["src/lib.js"] }), [lib(3)]).kind).toBe("unknown");
+  expect(describeEdgeMark(markOfEdge(run, [lib(3)]), false)).toBe("covered");
+});
+
+test("moves no test takes head the table's moves", () => {
+  const map: StateMap = JSON.parse(
+    JSON.stringify({
+      states: { A: [lib(1)], B: [lib(3)] },
+      transitions: [
+        { from: "A", to: "B", at: [lib(3)] },
+        { from: "B", to: "A", at: [lib(5)] },
+      ],
+    }),
+  );
+  const marks = map.transitions?.map((t) => markOfEdge(aCoverage(), t.at));
+  expect(rowsOfMap(map, marks).map((r) => r.key)).toEqual(["s:A", "s:B", "t:1", "t:0"]);
+});
+
+test("a transition finds its drawn edge by its states, then by its label", () => {
+  const drawn = [
+    { id: "e0", from: null, to: "Idle", label: "" },
+    { id: "e1", from: "Idle", to: "Busy", label: "go" },
+    { id: "e2", from: "Busy", to: "Idle", label: "done" },
+    { id: "e3", from: "Busy", to: "Idle", label: "fail" },
+    { id: "e4", from: null, to: null, label: "retry" },
+  ];
+  const found = edgesOfMap(
+    [
+      { from: "Busy", to: "Idle", event: "fail" },
+      { from: "Busy", to: "Idle", event: "done" },
+      { from: "Idle", to: "Busy" },
+      { from: "Failed", to: "Busy", event: "retry" },
+      { from: "Idle", to: "Gone" },
+    ],
+    drawn,
+  );
+  expect([...found]).toEqual([
+    [0, "e3"],
+    [1, "e2"],
+    [2, "e1"],
+    [3, "e4"],
   ]);
 });
 

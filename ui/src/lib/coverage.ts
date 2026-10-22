@@ -18,6 +18,11 @@ export type Coverage = {
       {
         readonly lines: Readonly<Record<string, number>>;
         readonly branches?: Readonly<Record<string, readonly [number, number]>>;
+        readonly functions?: readonly {
+          readonly name: string;
+          readonly start: number;
+          readonly end?: number;
+        }[];
       }
     >
   >;
@@ -29,6 +34,8 @@ export type Coverage = {
         /** Tip lines from at.start, sent when the branch does not change the test's file. */
         readonly preview?: readonly string[];
         readonly lines: Readonly<Record<string, readonly number[]>>;
+        /** Per file and branch line, this test's count for each branch, in lcov's order. */
+        readonly branches?: Readonly<Record<string, Readonly<Record<string, readonly number[]>>>>;
       }
     >
   >;
