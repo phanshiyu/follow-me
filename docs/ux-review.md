@@ -817,3 +817,131 @@ Build order, cheapest valuable first:
 6. State-machine maps with clickable states, the transition table and coverage marks.
 
 Stop after step 3 and watch real reviews before building steps 4 to 6.
+
+## 11. Path coverage and replies that point at code
+
+This section was written against `b9ad1f1` (v0.8.0). Coverage there is per line and per branch from lcov, the state machine view marks states from the lines they map to, and a reply is markdown with an optional diagram and a state map. The constraints of section 10 still hold: follow-me never runs tests and never calls a model, and coverage is evidence only when it comes from a real run.
+
+Recommendation up front: build transition coverage first, because the state map already ties edges to code and the reviewer already looks at it. Build replies that point at code in parallel, because they need no new data from the test run. Build the per-hunk paths panel last.
+
+### 11.1 What a path is, given what lcov can say
+
+- The agent runs the tests one at a time with coverage and passes each run with the existing `follow-me coverage <lcov> --test <id> [--at <path:line>]`, or passes one lcov with `TN:` blocks. No new flag is needed.
+- What changes is what follow-me keeps per test. Today `tests.<id>` keeps the lines it hit. It also keeps the `BRDA` outcomes with their counts, and the `FN` records so decisions can be grouped by function: `tests.<id>.branches: { <path>: { <line>: number[] } }`, one count per branch id.
+- One test's run through one function is a path: the outcome it took at each decision of that function, or "not reached". Decisions are the `BRDA` lines inside the `FN` range.
+- lcov gives a set of outcomes per test, not an ordered trace. Two consequences, both stated in the UI rather than hidden:
+  - A test that takes both outcomes of one decision (two calls, or a loop) shows "both" in that cell, and it does not close a gap whose pairing depends on that decision. The panel says "pairing unknown".
+  - Loops use the counts: the outcome that enters the body is shown as 0, 1 or many times. A loop never contributes more than those three cells.
+- Gaps are not the cross product of outcomes, which grows as 2^n and is mostly impossible combinations. A gap is a one-flip neighbour of a tested path: the same outcomes up to some decision, then the outcome no test took after that prefix. That lists at most one gap per decision per tested path, and nearly all of them are reachable.
+- Outcome labels come from the source line, not from branch ids: the decision is named by its trimmed code (`items.length === 0`), with yes and no for two-way branches, and "case 2 of 4" for switches. Branch 0 is taken as "yes" for `if`, ternaries and `&&`; verify this against istanbul and c8 output on the fixture before relying on it.
+
+### 11.2 Transition coverage on the state machine view (first)
+
+A transition is covered by a test when that test hit every executable line in its `at`. The skill tells the agent to map each transition to the line that performs it (the assignment or dispatch), not to the condition that guards it. A transition with an empty `at` is unknown.
+
+On the diagram:
+
+- Covered edges: solid green, with a small count badge at the label ("2" tests). Uncovered edges: red, dashed, with a ✕ badge. Unknown edges keep the plain Mermaid style. Edges are matched in the SVG by their label text where they can be; the transition table stays the source of truth (10.3).
+- State marks stay as in 10.3. A state now counts as covered only when it is both reached and left by some tested transition, or is final.
+- Hovering or focusing an edge lists its tests. Clicking it jumps to its `at` rows with the Back chip, as states already do.
+
+The transition table gains a **Tests** column: up to two test names as chips, then "+3". Uncovered rows sort first.
+
+Never-driven sequences, under the legend, as a list titled "Not driven by any one test":
+
+- Candidates are simple paths from the initial state to each final state, up to 5 transitions, with each cycle taken at most once.
+- A sequence is driven when one test covers every transition in it. With per-test sets this means "covers every step", not "in this order". For a state machine that is close enough, and the list's tooltip says so.
+- Only sequences whose every edge is covered by some test are listed. A sequence with an uncovered edge is already shown by that red edge, and listing it again is noise. This is the interesting case anyway: each step has a test, but no test goes through them together.
+- At most three are shown, shortest first, then "+N more". Each row reads `Idle → Loading → Failed · each step tested, never in one test`, with **Show** (outlines the path on the diagram in a red dashed overlay while hovered or focused) and **Flag as missing test** (opens the Flag box under the diagram with kind `missing-test` and the sequence as its body).
+
+### 11.3 Paths per hunk
+
+Where it lives:
+
+- Not in the gutter. The gutter keeps its one 3px bar, and a decision row that has a gap keeps the amber half-bar it already gets from `BRDA`. Path data would need a second mark there, and it would be noise next to every `if`.
+- The hunk header gets a chip on the right, only when the enclosing function has gaps: "Paths 3 tested · 2 untested". It is muted when nothing is untested, and absent with no per-test data.
+- Clicking the chip, or `p` with focus in the hunk, opens a **Paths** panel docked under the hunk, inside its card. It is closed by default, so top-down reading is not interrupted. Its open state is remembered per hunk.
+- The commit chip adds "· 2 paths untested" after "18/24 covered", and the index dot already turns amber.
+
+The panel:
+
+- One column per decision in the function, headed by its line number and trimmed code. Decisions on rows this commit changes are in bold. With more than five decisions, the ones outside the hunk collapse into "+4 decisions outside this hunk", and paths are deduplicated over the remaining columns.
+- Tested paths first: one row each, with cells ✓ yes, ✕ no, · not reached, both, or 0/1/many for a loop, then the tests that took it (two chips, then "+N"). A test chip links like the coverage popover's test links do.
+- Then a divider, "Untested", and the gaps: the same cells, with the flipped cell outlined in red, and two actions, **Go to line** (focuses the decision row where the gap diverges and flashes it) and **Flag as missing test** (preset box under that row).
+- Hovering a row tints the decision rows of the hunk it passes through and greys the rows it skips, so the path can be read in the code itself.
+
+### 11.4 Keyboard
+
+- `x` / Shift+X keep their meaning, extended: the next or previous gap of any kind, in document order. A gap is an uncovered added row or an untested path. On a path gap, the hunk's Paths panel opens with that row focused and the divergence row flashes. A path gap whose divergence row is itself an uncovered row counts once.
+- `p` opens or closes the Paths panel of the hunk in focus. In the panel ↑ and ↓ move between rows, Enter is Go to line, and `f` is Flag as missing test.
+- `g` still hides every coverage mark, and with it the paths chips, panels, edge marks and the sequence list.
+
+### 11.5 When the data is per line only
+
+- No per-test runs (an aggregate lcov): there are no Paths chips and no sequence list. Edges are covered when their `at` lines ran, with no test names, the same rule as states. Partly covered decision rows keep the amber bar, and their popover keeps "2 of 4 branches taken". One muted line sits under the legend and in that popover: "Paths and sequences need one coverage run per test." with an **Ask the agent** link that posts that request as a question, so the ask goes through the normal thread loop.
+- Per-test lines without `BRDA` (some Go and Python setups): edges get tests, sequences work, and the Paths panel says "This run has no branch data" instead of opening.
+- Stale files (10.1) show no paths and no edge marks for those files, only the hatched marks.
+
+### 11.6 Replies that point at code
+
+How a reply refers to code. The agent writes refs as inline code spans, in the grammar `follow-me show` already reads, extended to ranges: `` `src/checkout.ts:42-48` `` for tip lines, `` `src/checkout.ts:42-48@5` `` for the lines as commit 5 writes them, and `@base` for base lines. Only a code span that is entirely a ref counts. Prose such as "at 10:30" and code spans like `` `items.length` `` never become refs.
+
+- The page numbers refs in order of first appearance, 1, 2, 3, and renders each as a chip: a small filled number badge, then `checkout.ts:42-48`, then "commit 5" in muted text when the ref sits in a commit other than the reply's own. A repeated ref reuses its number.
+- A reply with two or more refs is a walkthrough. No flag marks it. If a list item holds a ref, its text becomes that step's caption.
+- The reply card keeps its look, with one addition: a muted line under the agent label, "3 places · press Enter to step through".
+
+What the code does:
+
+- When a reply card is hovered or focused, every row of every ref gets a light violet tint, the agent's colour, distinct from the yellow pick and the green and red diff. The first row of each range gets a number badge in the gutter, in the space of the hover `+`, and a 2px violet bar runs down the range. This lasts only while the card is hovered or focused, so the code is never left painted.
+- Hovering one chip makes its range stronger and fades the others.
+- A ref that is off screen shows ↑ or ↓ on its chip. Hovering it opens the existing peek, showing the lines with the same tint and badge, so the reader can glance at it without leaving.
+- No connector lines. They break on scroll across a long document and cross other code.
+
+Click to jump:
+
+- Clicking a chip pushes one departure and scrolls the range to 30% from the top with a flash, as the definition jump does. The Back chip reads "Back to the reply", and Alt+← returns.
+- Starting a walkthrough (Enter on the card, or clicking any chip) shows a step bar pinned to the bottom of the code column: "Agent's walkthrough · 2 of 4 · checkout.ts:42-48 · ‹ › · Esc", with the step's caption. The current step's range keeps the strong tint while the bar is up, and the others keep the light one.
+- `.` goes to the next step and `,` to the previous one. Esc ends the walkthrough and clears the tints. Alt+← returns to the reply, wherever the walkthrough had got to. The walkthrough pushes one departure, not one per step, so Back is a single hop.
+
+Where the code sits:
+
+- In a Viewed (collapsed) commit: the commit opens while the step is shown and collapses again when the walkthrough ends, as `x` does.
+- In a fold row ("4 lines arrive in commit 5"): a tip ref resolves to the commit that writes the line, the same rule definitions use, so it lands in commit 5, not on the fold. The chip says "commit 5".
+- In a later commit: it jumps there. Reading ahead is fine for an answer, and the chip's "commit 5" says where it goes before the click.
+- Outside every hunk (code the branch does not change): the chip opens the peek instead of jumping.
+- An `@base` ref highlights removed rows when they are shown, and otherwise opens the peek with the base lines.
+
+Over time. The server resolves refs when the reply is posted and stores, beside the body, `Reply.refs?: { n, path, start, end, at: number | "base" | null, quote: string[] }[]`, quoting at most eight lines as comments do. A new plan version re-resolves tip refs, which stay valid because the tip did not move. An `@n` ref whose lines moved re-resolves through the tip lines when it can, else its chip turns grey and shows the quote. When the tip moves, the chip says "from b164dd3" and the peek shows the quote.
+
+The CLI. There are no new flags. `follow-me reply` and `follow-me explain` parse refs out of `--body` and refuse a ref that does not resolve, listing every bad one at once ("src/checkout.ts:120 is past the end of the file at the tip (88 lines)"), like `--map`. `follow-me show` accepts `path:start-end[@n|@base]`, so the agent can check a ref before it sends it. The skill adds one paragraph:
+
+> When an answer depends on specific code, point at it: write `path:start-end` (tip lines) or `path:start-end@<commit>` as inline code, and the page turns it into a numbered chip that highlights and jumps. For an explanation in steps, write a numbered list with one ref per item. Check a range with `follow-me show` first.
+
+State maps stay as they are. Clicking a state uses the same tint and badge (the badge holds the state's initial), so there is one way of pointing at code.
+
+### 11.7 Rejected alternatives
+
+- Full cross product of outcomes as gaps: it grows as 2^n, and most combinations are impossible.
+- Requiring true execution traces from the agent (a new `--trace` format): it would mean instrumenting each runtime. lcov per test is enough to start; add traces only if "pairing unknown" proves common.
+- Path marks in the gutter: a second mark beside every `if` makes coverage the loudest thing on the page.
+- A separate Paths view or tab: it breaks top-down reading, and gaps belong next to their hunk.
+- Paths panel open by default: it doubles the height of every hunk with a decision.
+- Listing never-driven sequences that contain an uncovered edge: the red edge already says it.
+- A new `--ref` flag or a JSON refs file for replies: refs inside the prose keep the explanation and the pointer together, and the agent already writes `path:line`.
+- Bare `path:line` in prose as refs: false positives such as times and URLs.
+- Connector lines from the reply to the code: they break on scroll across commits.
+- Persistent highlights after the reply loses focus: the code ends up painted by old answers.
+- Arrow keys for steps: they already move between rows, and Alt+← is Back.
+
+### 11.8 Build order
+
+1. Keep per-test `BRDA` counts and `FN` in coverage.json (S). Skill text for one run per test and for mapping transitions to the performing line (S).
+2. Transition coverage: edge marks, the Tests column and the hover list (M).
+3. Refs in `reply` and `explain`: parsing, validation, `Reply.refs` with quotes, and ranges in `show` (S to M).
+4. Ref chips, the hover tint and badges, click to jump with Back, and Viewed and later-commit handling (M).
+5. The "Not driven by any one test" list with Show and Flag (S to M).
+6. Walkthrough stepping: the step bar, `.` and `,`, and captions (S).
+7. The Paths chip and panel, the `p` key, and `x` across path gaps (M to L).
+8. The per-line-only fallbacks and Ask the agent link (S).
+
+Stop after step 5 and watch real reviews before building the Paths panel. Transition coverage may answer most of the "which paths are untested" question on its own.
