@@ -10,7 +10,7 @@ import { GoToProvider, useDefinitions } from "./Definition.tsx";
 import { focusIndex, Index } from "./Index.tsx";
 import { KeySheet } from "./KeySheet.tsx";
 import { Notices, PageOptions, UnreadMenu } from "./Notices.tsx";
-import { RefsProvider } from "./Refs.tsx";
+import { RefsProvider, WalkthroughBar } from "./Refs.tsx";
 import { StackPicker } from "./StackPicker.tsx";
 import { SubmitDialog } from "./SubmitDialog.tsx";
 
@@ -210,6 +210,7 @@ function Page() {
                 {state.commits.map((commit) => (
                   <CommitSection key={commitKey(commit)} commit={commit} />
                 ))}
+                <WalkthroughBar />
               </div>
             </main>
           </div>

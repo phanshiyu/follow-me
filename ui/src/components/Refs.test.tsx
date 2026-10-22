@@ -95,9 +95,20 @@ test("a chip jumps into a later Viewed commit, and Back returns to the reply in 
 });
 
 test("code outside the branch's changes opens its quote in the peek", async () => {
-  await renderReview(answered());
-  await chip(3).click();
-  const peek = page.getByRole("dialog", { name: "Ref 3 at types/guard.d.ts:3" });
+  const outside = REFS[2];
+  if (outside === undefined) throw new Error("three refs");
+  await renderReview(
+    aGuardedState({
+      comments: [
+        aComment({
+          replies: [aReply({ body: "See `types/guard.d.ts:3`.", refs: [{ ...outside, n: 1 }] })],
+        }),
+      ],
+    }),
+  );
+  await chip(1).click();
+  const peek = page.getByRole("dialog", { name: "Ref 1 at types/guard.d.ts:3" });
+
   await expect.element(peek).toMatchTextContent(/outside this branch.s changes/);
   await expect.element(peek).toMatchTextContent(/asserts x is number;/);
   await expect.element(page.getByRole("button", { name: /^Back to/ })).not.toBeInTheDocument();
@@ -155,4 +166,79 @@ test("hovering a chip whose code is off screen glances at it without leaving the
   await expect
     .element(page.getByRole("dialog", { name: "Ref 1 at src/lib.js:4-5" }))
     .not.toBeInTheDocument();
+});
+
+const bar = () => page.getByRole("toolbar", { name: "Agent's walkthrough" });
+
+test("Enter on a reply with several refs steps through them with . and , and Esc ends it", async () => {
+  await renderReview(answered());
+  await goToCommit(/^2 · Guard add/);
+  await expect.element(page.getByText("3 places · press Enter to step through")).toBeVisible();
+  document.querySelector<HTMLElement>('[data-refs="r_aaaaaa"]')?.focus();
+  await userEvent.keyboard("{Enter}");
+  await expect.element(bar()).toMatchTextContent(/1 of 3.*lib\.js:4-5.*guards a and b\./);
+  await expect.poll(() => tint(2, HUNK, 3)).toBe("strong");
+  expect(tint(6, GUARD, 0)).toBe("light");
+
+  await userEvent.keyboard(".");
+  await expect
+    .element(bar())
+    .toMatchTextContent(/2 of 3.*guard\.js:1-3.*commit 6.*throws for anything but a number\./);
+  await expect.poll(() => tint(6, GUARD, 0)).toBe("strong");
+  expect(tint(2, HUNK, 3)).toBe("light");
+  await expect.element(page.elementLocator(row(6, GUARD, 0) ?? document.body)).toBeInViewport();
+
+  // The third step's code is not on the page, so its quote opens above the bar.
+  await userEvent.keyboard(".");
+  const peek = page.getByRole("dialog", { name: "Ref 3 at types/guard.d.ts:3" });
+  await expect.element(peek).toMatchTextContent(/asserts x is number;/);
+  await expect.element(bar()).toMatchTextContent(/3 of 3.*declares it for callers\./);
+  await userEvent.keyboard(".");
+  await expect.element(bar()).toMatchTextContent(/3 of 3/);
+  await userEvent.keyboard(",");
+  await expect.element(peek).not.toBeInTheDocument();
+  await expect.element(bar()).toMatchTextContent(/2 of 3/);
+
+  await userEvent.keyboard("{Escape}");
+  await expect.element(bar()).not.toBeInTheDocument();
+  await expect.poll(() => tint(6, GUARD, 0)).toBeNull();
+  // One departure for the whole walkthrough.
+  await expect.element(page.getByRole("button", { name: "Back to the reply" })).toBeVisible();
+});
+
+test("a chip starts the walkthrough at its step, opening a Viewed commit, and Back ends it at the reply", async () => {
+  await renderReview(answered());
+  await page.getByRole("checkbox", { name: "Viewed commit 6" }).click();
+  await goToCommit(/^2 · Guard add/);
+  const before = chip(2).element().getBoundingClientRect().top;
+  await chip(2).click();
+  await expect.element(bar()).toMatchTextContent(/2 of 3/);
+  await expect.poll(() => tint(6, GUARD, 2)).toBe("strong");
+
+  await page.getByRole("button", { name: "Previous step" }).click();
+  await expect.element(bar()).toMatchTextContent(/1 of 3/);
+
+  await userEvent.keyboard("{Alt>}{ArrowLeft}{/Alt}");
+  await expect.element(bar()).not.toBeInTheDocument();
+  await expect
+    .element(page.getByRole("button", { name: "Back to the reply" }))
+    .not.toBeInTheDocument();
+  await expect
+    .poll(() => Math.abs(chip(2).element().getBoundingClientRect().top - before))
+    .toBeLessThan(2);
+});
+
+test("a reply with one ref is no walkthrough", async () => {
+  await renderReview(
+    aGuardedState({
+      comments: [
+        aComment({ replies: [aReply({ body: "See `src/lib.js:4-5`.", refs: [aRef()] })] }),
+      ],
+    }),
+  );
+  await goToCommit(/^2 · Guard add/);
+  await expect.element(page.getByText(/to step through/)).not.toBeInTheDocument();
+  await chip(1).click();
+  await expect.element(page.getByRole("button", { name: "Back to the reply" })).toBeVisible();
+  await expect.element(bar()).not.toBeInTheDocument();
 });

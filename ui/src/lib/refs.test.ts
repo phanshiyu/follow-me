@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import { aCommit, aHunk, aRef, aState, HUNK } from "../test/factories.ts";
+import { captionsOf } from "./markdown.ts";
 import {
   landing,
   type PlacedRef,
@@ -91,4 +92,21 @@ test("chips name the file and lines; code spans find their ref by place", () => 
   expect(refNumberOf("src/lib.js:7@base", refs)).toBe(2);
   expect(refNumberOf("src/lib.js:7", refs)).toBeNull();
   expect(refNumberOf("items.length", refs)).toBeNull();
+});
+
+test("each step's caption is the list item that first holds its ref", () => {
+  const refs = [aRef(), aRef({ n: 2, start: 1, end: 2 }), aRef({ n: 3, start: 7, end: 7 })];
+  const text = [
+    "It runs in three steps, starting at `src/lib.js:4-5`:",
+    "",
+    "1. `src/lib.js:1-2` imports the **guard**, then `assertNumber` throws.",
+    "2. `src/lib.js:4-5` checks a: before b.",
+    "3. Last, `src/lib.js:7` closes it.",
+  ].join("\n");
+  expect(captionsOf(text, (code) => refNumberOf(code, refs))).toEqual(
+    new Map([
+      [2, "imports the guard, then assertNumber throws."],
+      [3, "Last, closes it."],
+    ]),
+  );
 });

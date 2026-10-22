@@ -3,14 +3,19 @@ import {
   type ReactNode,
   useCallback,
   useContext,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 import { flushSync } from "react-dom";
+import { Button } from "@/components/ui/button";
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
+import { isMac } from "../lib/definition.ts";
+import { HISTORY_LIMIT } from "../lib/history.ts";
 import { flash } from "../lib/jump.ts";
+import { captionsOf } from "../lib/markdown.ts";
 import {
   landing,
   type PlacedRef,
@@ -26,6 +31,8 @@ import { HEADER_PX, usePage } from "../page.tsx";
 import { useDerived, useReview } from "../store.tsx";
 import { Peek, useDepart } from "./Definition.tsx";
 import { Markdown } from "./Markdown.tsx";
+
+const MAC = isMac(navigator.platform);
 
 /** The hunk row a target names, when its commit and file are open on the page. */
 function rowElement(target: RefTarget): HTMLElement | null {
@@ -90,11 +97,25 @@ type Painted = {
   readonly strong: number | null;
 };
 
+/** A reply's refs stepped through in order; captions are the list items that hold them. */
+export type Walk = {
+  readonly key: string;
+  readonly placed: readonly PlacedRef[];
+  readonly captions: ReadonlyMap<number, string>;
+  /** The commit the thread sits in, or null for the whole branch. */
+  readonly own: number | null;
+  readonly step: number;
+  /** How many departures Back had once the walkthrough left the reply; fewer means Back was used. */
+  readonly depth: number;
+};
+
 type RefsApi = {
   /** Paints a reply's refs while it is hovered or focused; null clears them if `key` painted. */
   paint(key: string, placed: readonly PlacedRef[] | null, strong?: number | null): void;
   /** Jumps to a ref the page shows, with Back to the reply; false when there is nowhere to go. */
   go(placed: PlacedRef, from: number): boolean;
+  /** Leaves the reply, with one Back to it, and shows its ref at `step`. */
+  start(walk: Omit<Walk, "depth">, from: number): void;
 };
 
 const RefsContext = createContext<RefsApi | null>(null);
@@ -103,6 +124,27 @@ function useRefsApi(): RefsApi {
   const api = useContext(RefsContext);
   if (api === null) throw new Error("useRefsApi outside RefsProvider");
   return api;
+}
+
+type Walking = {
+  readonly walk: Walk | null;
+  /** Moves by one step, staying on the first or the last. */
+  move(by: 1 | -1): void;
+  end(): void;
+};
+
+const WalkContext = createContext<Walking | null>(null);
+
+/** Keys typed into a field, or with a modifier, belong to the field or the browser. */
+function typing(event: KeyboardEvent): boolean {
+  const target = event.target;
+  return (
+    event.metaKey ||
+    event.ctrlKey ||
+    event.altKey ||
+    (target instanceof HTMLElement &&
+      (target.isContentEditable || target.closest("input, textarea, select") !== null))
+  );
 }
 
 /** Where a ref's code is put on show: scrolled to 30% from the top and flashed. */
@@ -125,19 +167,31 @@ function useShow(): (placed: PlacedRef) => boolean {
   );
 }
 
-/** Holds which reply's refs are painted on the code, and the jump with Back to the reply. */
+/**
+ * Holds which reply's refs are painted on the code, the jump with Back to the reply, and the
+ * walkthrough: `.` and `,` step, Esc ends it, and Back to the reply ends it too.
+ */
 export function RefsProvider({ children }: { children: ReactNode }) {
   const [painted, setPainted] = useState<Painted | null>(null);
-  const { depart } = useDepart();
+  const [walk, setWalk] = useState<Walk | null>(null);
+  const { depart, departures } = useDepart();
   const show = useShow();
 
+  // A hovered reply shows its own refs; otherwise a walkthrough keeps its current step strong.
   useLayoutEffect(() => {
-    if (painted === null) return;
-    const { strong } = painted;
-    return paint(painted.placed, (n) =>
-      strong === null ? "light" : n === strong ? "strong" : "faint",
-    );
-  }, [painted]);
+    // The reply being stepped through keeps its walkthrough tint while it is hovered.
+    if (painted !== null && !(painted.key === walk?.key && painted.strong === null)) {
+      const { strong } = painted;
+      return paint(painted.placed, (n) =>
+        strong === null ? "light" : n === strong ? "strong" : "faint",
+      );
+    }
+    if (walk === null) return;
+    const current = walk.placed[walk.step]?.ref.n;
+    return paint(walk.placed, (n) => (n === current ? "strong" : "light"));
+  }, [painted, walk]);
+
+  if (walk !== null && departures < walk.depth) setWalk(null);
 
   const api = useMemo<RefsApi>(
     () => ({
@@ -150,10 +204,133 @@ export function RefsProvider({ children }: { children: ReactNode }) {
         depart(from, "the reply");
         return show(placed);
       },
+      start: (next, from) => {
+        depart(from, "the reply");
+        setPainted(null);
+        setWalk({ ...next, depth: Math.min(departures + 1, HISTORY_LIMIT) });
+        const at = next.placed[next.step];
+        if (at !== undefined) show(at);
+      },
     }),
-    [depart, show],
+    [depart, departures, show],
   );
-  return <RefsContext value={api}>{children}</RefsContext>;
+
+  const walking = useMemo<Walking>(
+    () => ({
+      walk,
+      move: (by) => {
+        if (walk === null) return;
+        const step = Math.max(0, Math.min(walk.placed.length - 1, walk.step + by));
+        if (step === walk.step) return;
+        setWalk({ ...walk, step });
+        const at = walk.placed[step];
+        if (at !== undefined) show(at);
+      },
+      end: () => setWalk(null),
+    }),
+    [walk, show],
+  );
+
+  const { move, end } = walking;
+  const active = walk !== null;
+  useEffect(() => {
+    if (!active) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (typing(event)) return;
+      if (event.key === ".") move(1);
+      else if (event.key === ",") move(-1);
+      else if (event.key === "Escape") end();
+      else return;
+      event.preventDefault();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [active, move, end]);
+
+  return (
+    <RefsContext value={api}>
+      <WalkContext value={walking}>{children}</WalkContext>
+    </RefsContext>
+  );
+}
+
+/**
+ * The walkthrough's bar, pinned to the bottom of the code column: which step of how many, where
+ * it is, its caption, and the keys. A step the page cannot show opens its quote above the bar.
+ */
+export function WalkthroughBar() {
+  const walking = useContext(WalkContext);
+  const bar = useRef<HTMLDivElement>(null);
+  const walk = walking?.walk ?? null;
+  const placed = walk?.placed[walk.step];
+  if (walking === null || walk === null || placed === undefined) return null;
+  const { ref } = placed;
+  const where = refWhere(placed, walk.own);
+  const caption = walk.captions.get(ref.n) ?? null;
+  return (
+    <Popover open={placed.kind !== "on"}>
+      <PopoverAnchor asChild>
+        <div
+          ref={bar}
+          role="toolbar"
+          aria-label="Agent's walkthrough"
+          className="ref-bar sticky bottom-4 z-30 mx-auto mt-6 flex max-w-[1000px] items-center gap-2.5 rounded-[10px] border bg-background px-3 py-2 font-sans text-[13px] shadow-lg"
+        >
+          <span className="shrink-0 font-semibold text-[var(--ref-ink)]">Agent's walkthrough</span>
+          <span className="ref-badge">{ref.n}</span>
+          <span className="shrink-0 tabular-nums">
+            {walk.step + 1} of {walk.placed.length}
+          </span>
+          <span className="shrink-0 font-mono text-xs" title={refPlace(ref)}>
+            {refLabel(ref)} {where === null ? null : <span className="ref-where">{where}</span>}
+          </span>
+          <span className="min-w-0 flex-1 truncate text-muted-foreground" title={caption ?? ""}>
+            {caption}
+          </span>
+          <Button
+            variant="outline"
+            size="xs"
+            aria-label="Previous step"
+            disabled={walk.step === 0}
+            onClick={() => walking.move(-1)}
+          >
+            ‹ <kbd>,</kbd>
+          </Button>
+          <Button
+            variant="outline"
+            size="xs"
+            aria-label="Next step"
+            disabled={walk.step === walk.placed.length - 1}
+            onClick={() => walking.move(1)}
+          >
+            <kbd>.</kbd> ›
+          </Button>
+          <span className="hidden shrink-0 text-muted-foreground text-xs xl:inline">
+            <kbd>{MAC ? "⌥←" : "Alt+←"}</kbd> back to the reply
+          </span>
+          <Button variant="ghost" size="xs" aria-label="End the walkthrough" onClick={walking.end}>
+            Esc
+          </Button>
+        </div>
+      </PopoverAnchor>
+      {placed.kind === "on" ? null : (
+        <PopoverContent
+          side="top"
+          align="start"
+          className="w-[min(600px,90vw)] gap-0 p-0"
+          aria-label={`Ref ${ref.n} at ${refPlace(ref)}`}
+          onOpenAutoFocus={(event) => event.preventDefault()}
+          onCloseAutoFocus={(event) => event.preventDefault()}
+          onInteractOutside={(event) => {
+            if (event.target instanceof Node && bar.current?.contains(event.target))
+              event.preventDefault();
+          }}
+        >
+          <RefPeek placed={placed} />
+        </PopoverContent>
+      )}
+    </Popover>
+  );
 }
 
 /** The quote of a ref as a peek candidate: the lines as the agent wrote them. */
@@ -300,20 +477,29 @@ export function RefBody({
   const placed = usePlaced(refs);
   const [arrows, setArrows] = useState<ReadonlyMap<number, "↑" | "↓" | null>>(new Map());
   const numberOf = useCallback((code: string) => refNumberOf(code, refs), [refs]);
+  const captions = useMemo(() => captionsOf(text, numberOf), [text, numberOf]);
+  const walkable = placed.length >= 2;
+  const from = own ?? current;
+  const startAt = (step: number) => api.start({ key: id, placed, captions, own, step }, from);
   const on = () => {
     api.paint(id, placed);
     setArrows(new Map(placed.map((p) => [p.ref.n, offscreen(p)])));
   };
   const off = () => api.paint(id, null);
   const chip = (n: number) => {
-    const at = placed.find((p) => p.ref.n === n);
-    if (at === undefined) return null;
+    const at = placed.findIndex((p) => p.ref.n === n);
+    const here = placed[at];
+    if (here === undefined) return null;
     return (
       <RefChip
-        placed={at}
+        placed={here}
         own={own}
         arrow={arrows.get(n) ?? null}
-        onGo={(p) => api.go(p, own ?? current)}
+        onGo={(p) => {
+          if (!walkable) return api.go(p, from);
+          startAt(at);
+          return true;
+        }}
         onHot={(hot) => api.paint(id, placed, hot)}
       />
     );
@@ -322,14 +508,26 @@ export function RefBody({
     // biome-ignore lint/a11y/noStaticElementInteractions: hover and focus only paint the code
     <div
       data-refs={id}
-      className="rounded-sm"
+      className="rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-[var(--ref-violet)]"
+      tabIndex={walkable ? 0 : undefined}
+      aria-describedby={walkable ? `${id}-steps` : undefined}
       onPointerEnter={on}
       onPointerLeave={off}
       onFocus={on}
       onBlur={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget)) off();
       }}
+      onKeyDown={(event) => {
+        if (!walkable || event.key !== "Enter" || event.target !== event.currentTarget) return;
+        event.preventDefault();
+        startAt(0);
+      }}
     >
+      {walkable ? (
+        <p id={`${id}-steps`} className="mb-1 text-muted-foreground text-xs">
+          {placed.length} places · press <kbd>Enter</kbd> to step through
+        </p>
+      ) : null}
       <Markdown text={text} numberOf={numberOf} chip={chip} />
     </div>
   );
