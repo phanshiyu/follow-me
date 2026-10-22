@@ -144,3 +144,8 @@ test("the fixture's prompt and the skill tell the agent to put the guard calls b
   );
   assert.ok(!rules.includes("Scaffolding and types come before"));
 });
+
+test("the skill asks for one coverage run per test and maps a transition to the line that performs it", () => {
+  assert.ok(section("Coverage").includes("run the tests one at a time with coverage"));
+  assert.ok(section("Offers").includes("Map a transition to the line that performs it"));
+});
