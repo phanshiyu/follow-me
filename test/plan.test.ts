@@ -571,10 +571,13 @@ test("a unit carries one concern per commit, on lines its commit takes, and line
       { message: "b", units: [`${lib}:2-6`, ...rest] },
     ]),
   );
-  assert.deepEqual(
-    issuesOf(elsewhere).map((i) => i.kind),
-    ["bad-concern"],
-  );
+  assert.deepEqual(issuesOf(elsewhere), [
+    {
+      kind: "bad-concern",
+      commit: 0,
+      reason: `${lib}: concern lines 5 are not change lines this commit takes; \`lines\` are the hunk's [n] as prompt.md shows them, on a slice too, and this commit takes ${lib}:0-1`,
+    },
+  ]);
 
   const onCommit = parsePlanFile(
     planWith([{ message: "a", concerns: [note("x", [0])], units: everything(diff) }]),

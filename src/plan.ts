@@ -677,13 +677,13 @@ function placeConcerns(
           });
           continue;
         }
-        const outside =
-          taken?.kind === "lines" ? lines.filter((n) => !taken.changes.includes(n)) : [];
-        if (outside.length > 0) {
+        const takes = taken?.kind === "lines" ? taken : null;
+        const outside = takes === null ? [] : lines.filter((n) => !takes.changes.includes(n));
+        if (takes !== null && outside.length > 0) {
           issues.push({
             kind: "bad-concern",
             commit: k,
-            reason: `${ref.unit}: concern lines ${outside.join(", ")} are not change lines this commit takes`,
+            reason: `${ref.unit}: concern lines ${outside.join(", ")} are not change lines this commit takes; \`lines\` are the hunk's [n] as prompt.md shows them, on a slice too, and this commit takes ${formatUnitRef({ unit: ref.unit, select: takes })}`,
           });
         } else add(c, ref.unit);
       }

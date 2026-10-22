@@ -74,7 +74,7 @@ const MOVED = [
   "At most one concern per unit in each commit.",
   "Concerns are in your voice as a reviewer, while the note stays the author's.",
   'A concern is `{ "severity": "blocker" | "major" | "minor", "kind": "bug" | "missing-test" | "naming" | "risk", "text": "...", "lines": [0, 1] }`.',
-  "`lines` holds change indices of that unit and is allowed only on a unit ref.",
+  "`lines` holds the hunk's [n], on a slice too, and is allowed only on a unit ref.",
   'Write `"concerns": [ ... ]` on a commit, or on a unit written as an object: `{ "unit": "h_x:0-3", "concerns": [ ... ] }`.',
   "Never write an id; follow-me derives one.",
   "Commits are numbered from 1",
