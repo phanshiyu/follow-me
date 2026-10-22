@@ -1,6 +1,6 @@
 {
   "name": "@shiyuphan/follow-me",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Split a branch's final changes into fine, ordered commits that read like the author's thought process, review them hunk by hunk, and hand the review back to a coding agent.",
   "license": "MIT",
   "type": "module",
