@@ -450,6 +450,8 @@ test("a walk report merges the reviewer and the agent, orders by line and ends w
       "",
       "This branch is someone else's, so leave its code alone. When the user asks, post this review to the merge request as porting.md beside the skill says.",
       "",
+      "Your concerns the reviewer did not keep, left out of this report: k_4e5f6a7b (dismissed).",
+      "",
     ].join("\n"),
   );
 });
@@ -467,17 +469,29 @@ test("a split report keeps plan feedback for the planner and adds code issues an
   );
   assert.ok(text.includes("## Questions\n\n### c_whydro · src/a.ts · line 1"));
   assert.ok(
-    text.endsWith("Fix the code issues on the original branch, then run `follow-me` again.\n"),
+    text.endsWith(
+      "Fix the code issues on the original branch, then run `follow-me` again.\n\nYour concerns the reviewer did not keep, left out of this report: k_4e5f6a7b (dismissed).\n",
+    ),
   );
 });
 
-test("a review with no comments and no kept concerns says so", () => {
+test("a review with no comments and no kept concerns says so, and names the concerns it left out", () => {
   const { review, commits } = reportFixture();
   const empty: Review = { ...review, comments: [], concerns: [] };
   assert.equal(
     renderReport(empty, commits, fixtureDiff().units, REPORT),
-    "# Code review: feature (2 commits, no issues)\n\nThe reviewer raised no issues.\n",
+    "# Code review: feature (2 commits, no issues)\n\nThe reviewer raised no issues.\n\nYour concerns the reviewer did not keep, left out of this report: k_0a1b2c3d, k_4e5f6a7b (undecided).\n",
   );
+  // A kept concern the reviewer left out of the hand-off was kept; Excluded lists it instead.
+  const ids = (review.concerns ?? []).map((d) => d.concern);
+  const excluded: Review = {
+    ...review,
+    comments: [],
+    concerns: ids.map((concern) => ({ concern, decision: "kept" })),
+    excluded: { comments: [], concerns: ids.slice(0, 1) },
+  };
+
+  assert.doesNotMatch(renderReport(excluded, commits, fixtureDiff().units, REPORT), /did not keep/);
 });
 
 test("questions are listed apart from change requests, with their lines and replies", () => {

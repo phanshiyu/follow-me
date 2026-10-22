@@ -410,8 +410,10 @@ files stay the durable record written as it goes (`reviews/vN.draft.json`) and a
 - **Report.** `renderReport` in `prompt.ts` is the one renderer: reviewer comments and the agent's kept
   concerns by file in diff order and by line, severity in each heading, the hunk quoted as that commit
   writes it, both voices, replies under their comment, questions and their answers last. Undecided and
-  dismissed concerns are left out, and so are items the reviewer excluded, which close the report under
-  a short "Excluded" list. `follow-me report` (`feedback` is its old name), `GET api/report` and the
+  dismissed concerns are left out by design (the reviewer keeps a concern on the page, and Submit lists
+  the undecided ones with Keep all and Dismiss all), and one closing line names them by id, so the agent
+  knows which of its concerns did not reach the report. Items the reviewer excluded close the report
+  under a short "Excluded" list. `follow-me report` (`feedback` is its old name), `GET api/report` and the
   `vN.md` written on end all call it. For a review that swapped versions it renders the whole
   session on the open version's diff (see "One review across versions").
 - **Concerns and questions.** A plan may carry `concerns` on commits and unit refs; validation derives

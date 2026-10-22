@@ -1231,8 +1231,9 @@ export function renderReport(
 ): string {
   const session = folded(full, commits, units, opts);
   const { ctx } = session;
+  const unkept = renderUnkept(session.review, ctx.commits);
   const excluded = session.review.excluded;
-  if (excluded === undefined) return renderIncluded(session.review, ctx, opts);
+  if (excluded === undefined) return `${renderIncluded(session.review, ctx, opts)}${unkept}`;
   const noComments = new Set<string>(excluded.comments);
   const noConcerns = new Set<string>(excluded.concerns);
   const review: Review = {
@@ -1241,8 +1242,25 @@ export function renderReport(
     concerns: (session.review.concerns ?? []).filter((d) => !noConcerns.has(d.concern)),
   };
   const tail = renderExcluded(collectItems(session.review, ctx, opts.responses));
-  const main = renderIncluded(review, ctx, opts);
+  const main = `${renderIncluded(review, ctx, opts)}${unkept}`;
   return tail.length === 0 ? main : `${main}${main.endsWith("\n") ? "" : "\n"}${tail.join("\n")}`;
+}
+
+/**
+ * The agent's concerns the reviewer did not keep, by id, so the agent knows what the report left
+ * out: undecided ones (the page lists them at Submit) and dismissed ones. Empty when none.
+ */
+function renderUnkept(review: Review, commits: readonly ReportCommit[]): string {
+  const decisions = new Map((review.concerns ?? []).map((d) => [d.concern, d.decision]));
+  const all = commits.flatMap((c) => c.concerns ?? []);
+  const undecided = all.filter((k) => !decisions.has(k.id)).map((k) => k.id);
+  const dismissed = all.filter((k) => decisions.get(k.id) === "dismissed").map((k) => k.id);
+  const parts = [
+    ...(undecided.length === 0 ? [] : [`${undecided.join(", ")} (undecided)`]),
+    ...(dismissed.length === 0 ? [] : [`${dismissed.join(", ")} (dismissed)`]),
+  ];
+  if (parts.length === 0) return "";
+  return `\nYour concerns the reviewer did not keep, left out of this report: ${parts.join("; ")}.\n`;
 }
 
 function renderIncluded(review: Review, ctx: Context, opts: ReportOptions): string {
