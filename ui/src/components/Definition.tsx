@@ -1,8 +1,10 @@
 import { ArrowLeftIcon } from "lucide-react";
 import {
+  createContext,
   type KeyboardEvent,
   type ReactNode,
   useCallback,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -120,20 +122,44 @@ function useLookup() {
   return { lookup, cached };
 }
 
+/** What a peek is of: "Definition" and the candidate's kind, or "Test" and "test". */
+type Subject = { readonly title: string; readonly kind: string };
+
 /** A popover beside a clicked name; `from` is the commit whose code was clicked. */
 type Shown = { readonly name: string; readonly from: number } & (
   | { readonly kind: "choose"; readonly candidates: readonly Candidate[] }
-  | { readonly kind: "peek"; readonly candidate: Candidate }
+  | { readonly kind: "peek"; readonly candidate: Candidate; readonly subject?: Subject }
 );
 
-type Measurable = { getBoundingClientRect(): DOMRect };
+export type Measurable = { getBoundingClientRect(): DOMRect };
+
+/**
+ * Goes to a place the way Cmd-click does: a jump with the Back chip when the page shows it, a
+ * peek beside `near` when it does not.
+ */
+export type GoTo = (
+  candidate: Candidate,
+  name: string,
+  from: number,
+  near: Measurable,
+  subject?: Subject,
+) => void;
+
+const GoToContext = createContext<GoTo | null>(null);
+export const GoToProvider = GoToContext.Provider;
+
+export function useGoTo(): GoTo {
+  const goTo = useContext(GoToContext);
+  if (goTo === null) throw new Error("useGoTo outside GoToProvider");
+  return goTo;
+}
 
 /**
  * Go to definition. Holding Cmd (Ctrl off macOS) underlines a name in the code once the server
  * knows where it is defined; Cmd-click jumps there, lists the places, or peeks at code the branch
  * does not change. Back, Alt+Left or the header chip, returns to where the jump started.
  */
-export function useDefinitions(): { back: ReactNode; layer: ReactNode } {
+export function useDefinitions(): { back: ReactNode; layer: ReactNode; goTo: GoTo } {
   const { state } = useReview();
   const { units } = useDerived();
   const { reveal } = usePage();
@@ -176,6 +202,16 @@ export function useDefinitions(): { back: ReactNode; layer: ReactNode } {
       setShown(null);
       if (isOnPage(candidate)) jump(candidate, from);
       else setShown({ kind: "peek", name, from, candidate });
+    },
+    [jump],
+  );
+
+  const goTo = useCallback<GoTo>(
+    (candidate, name, from, near, subject) => {
+      anchor.current = near;
+      setShown(null);
+      if (isOnPage(candidate)) jump(candidate, from);
+      else setShown({ kind: "peek", name, from, candidate, ...(subject ? { subject } : {}) });
     },
     [jump],
   );
@@ -305,7 +341,7 @@ export function useDefinitions(): { back: ReactNode; layer: ReactNode } {
           aria-label={
             shown.kind === "choose"
               ? `Definitions of ${shown.name}`
-              : `Definition of ${shown.name} at ${labelOf(shown.candidate, state.commits).place}`
+              : `${shown.subject?.title ?? "Definition"} of ${shown.name} at ${labelOf(shown.candidate, state.commits).place}`
           }
         >
           {shown.kind === "choose" ? (
@@ -315,14 +351,14 @@ export function useDefinitions(): { back: ReactNode; layer: ReactNode } {
               onPick={(candidate) => open(candidate, shown.name, shown.from)}
             />
           ) : (
-            <Peek candidate={shown.candidate} />
+            <Peek candidate={shown.candidate} kind={shown.subject?.kind ?? shown.candidate.kind} />
           )}
         </PopoverContent>
       )}
     </Popover>
   );
 
-  return { back, layer };
+  return { back, layer, goTo };
 }
 
 function onListKeys(event: KeyboardEvent<HTMLElement>): void {
@@ -374,7 +410,7 @@ function Choices({
 }
 
 /** The definition's own lines, highlighted, for code this page does not show. */
-function Peek({ candidate }: { candidate: Candidate }) {
+function Peek({ candidate, kind }: { candidate: Candidate; kind: string }) {
   const { state } = useReview();
   const label = labelOf(candidate, state.commits);
   const body = useMemo(
@@ -386,10 +422,15 @@ function Peek({ candidate }: { candidate: Candidate }) {
     <div>
       <div className="flex items-baseline gap-2 border-b px-3 py-1.5 text-xs">
         <span className="font-medium font-mono">{label.place}</span>
-        <span className="text-muted-foreground">{candidate.kind}</span>
+        <span className="text-muted-foreground">{kind}</span>
         <span className="ml-auto text-muted-foreground">{label.where}</span>
       </div>
-      <pre className="max-h-72 overflow-auto py-1.5 font-mono text-[12.5px] leading-5">
+      {candidate.preview.length === 0 ? (
+        <p className="px-3 py-2 text-muted-foreground text-xs">
+          The server sent no lines for this place.
+        </p>
+      ) : null}
+      <pre className="max-h-72 overflow-auto py-1.5 font-mono text-[12.5px] leading-5 empty:hidden">
         {candidate.preview.map((text, i) => (
           // Preview lines have no identity beyond their position.
           // biome-ignore lint/suspicious/noArrayIndexKey: see above

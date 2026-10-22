@@ -3,15 +3,17 @@ import {
   type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
+  type RefObject,
   useEffect,
   useRef,
   useState,
 } from "react";
+import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import { api } from "../lib/api.ts";
 import { hunkHeader } from "../lib/commit.ts";
 import { type BoxKind, composeComment, type Draft } from "../lib/compose.ts";
-import { describeMark } from "../lib/coverage.ts";
+import { describeMark, missingTestDraft } from "../lib/coverage.ts";
 import type { Span } from "../lib/highlight.ts";
 import { describeRows, type LineNumber, ownersOf, rowsOf, scopeOf } from "../lib/rows.ts";
 import {
@@ -32,6 +34,7 @@ import { useDerived, usePlacements, useReview } from "../store.tsx";
 import { ConcernCard } from "./Cards.tsx";
 import { CarriedCard } from "./Carried.tsx";
 import { type BoxAction, CommentBox } from "./CommentBox.tsx";
+import { MarkDetails } from "./Coverage.tsx";
 import { ThreadCard } from "./Thread.tsx";
 
 function Code({ line, spans }: { line: HunkLine; spans: Span[] | undefined }) {
@@ -92,7 +95,7 @@ export function Hunk({
   const { state, run } = useReview();
   const { owners, numbers } = useDerived();
   const placements = usePlacements();
-  const { pick: pagePick, setPick, box, setBox } = usePage();
+  const { pick: pagePick, setPick, box, boxBody, setBox } = usePage();
   const spans = useSpans(hunk);
   const coverage = useCoverage();
   const covered = coverage?.marks.get(hunk.id);
@@ -106,6 +109,17 @@ export function Hunk({
   const [drag, setDrag] = useState<{ from: number; to: number } | null>(null);
   const [focus, setFocus] = useState<number | null>(null);
   const container = useRef<HTMLDivElement>(null);
+  /** The row whose coverage mark was clicked, and the mark it hangs from. */
+  const [details, setDetails] = useState<number | null>(null);
+  const markAt = useRef<HTMLElement | null>(null);
+  const openDetails = (row: number) => {
+    const mark = container.current?.querySelector<HTMLElement>(
+      `[data-row="${row}"] [data-coverage] button`,
+    );
+    if (mark === null || mark === undefined) return;
+    markAt.current = mark;
+    setDetails((open) => (open === row ? null : row));
+  };
 
   const shownSet = new Set(visible);
   const threads = new Map<number, ReactNode[]>();
@@ -196,6 +210,8 @@ export function Hunk({
     } else if (event.key === " ") {
       const next = pickRow(visible, pick, row, event.shiftKey);
       choose(next?.lines ?? [], next?.from ?? row);
+    } else if (event.key === "Enter" && covered?.has(row)) {
+      openDetails(row);
     } else return;
     event.preventDefault();
   };
@@ -283,12 +299,18 @@ export function Hunk({
                 )}
               >
                 {coverage === null ? null : (
-                  <span
-                    aria-hidden
-                    data-coverage={mark?.kind}
-                    className="relative w-2 shrink-0 select-none"
-                  >
-                    {mark === undefined ? null : <span className="cov-bar" />}
+                  <span data-coverage={mark?.kind} className="relative w-2 shrink-0 select-none">
+                    {mark === undefined ? null : (
+                      <button
+                        type="button"
+                        tabIndex={-1}
+                        aria-label={`Coverage of line ${n?.new}`}
+                        className="absolute inset-0 cursor-pointer"
+                        onClick={() => openDetails(row.line)}
+                      >
+                        <span className="cov-bar" />
+                      </button>
+                    )}
                   </span>
                 )}
                 <span
@@ -346,9 +368,10 @@ export function Hunk({
               {threads.get(row.line)}
               {row.line === last && box !== null && pick !== null ? (
                 <CommentBox
-                  key={box}
+                  key={`${box}|${boxBody}`}
                   className="my-2 ml-24 max-w-[760px]"
                   kind={box}
+                  initialBody={boxBody ?? ""}
                   label={`${box === "ask" ? "Ask about" : "Flag"} ${describeRows(hunk.body, at, pick.lines)}`}
                   onCancel={() => setPick(null)}
                   actions={boxActions(post)}
@@ -359,6 +382,78 @@ export function Hunk({
         })}
       </div>
       {loose.length > 0 ? <div className="border-t px-1 pb-1">{loose}</div> : null}
+      <CoverageDetails
+        row={details}
+        hunk={hunk}
+        commit={commit.index}
+        at={at}
+        markAt={markAt}
+        onClose={() => setDetails(null)}
+        onFlag={(row, line) => {
+          setDetails(null);
+          setPick({ commit: commit.index, unit: hunk.id, from: row, lines: [row] });
+          setBox("flag", missingTestDraft(hunk.path, line));
+        }}
+      />
     </div>
+  );
+}
+
+/** The popover a coverage mark opens, one per hunk, hung from the clicked mark. */
+function CoverageDetails({
+  row,
+  hunk,
+  commit,
+  at,
+  markAt,
+  onClose,
+  onFlag,
+}: {
+  row: number | null;
+  hunk: TextHunk;
+  commit: number;
+  at: readonly LineNumber[];
+  markAt: RefObject<HTMLElement | null>;
+  onClose: () => void;
+  onFlag: (row: number, line: number) => void;
+}) {
+  const mark = useCoverage()
+    ?.marks.get(hunk.id)
+    ?.get(row ?? -1);
+  const line = at[row ?? -1]?.new ?? null;
+  const shown = row !== null && mark !== undefined && line !== null;
+  return (
+    <Popover open={shown} onOpenChange={(on) => (on ? undefined : onClose())}>
+      <PopoverAnchor virtualRef={markAt} />
+      {shown ? (
+        <PopoverContent
+          align="start"
+          side="bottom"
+          className="w-80"
+          aria-label={`Coverage of ${hunk.path}:${line}`}
+          // The mark itself toggles the popover, so pressing it is not a press outside.
+          onInteractOutside={(event) => {
+            if (event.target instanceof Node && markAt.current?.contains(event.target))
+              event.preventDefault();
+          }}
+          // Back to the row, unless what the popover did put focus somewhere else.
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            if (document.activeElement === document.body)
+              markAt.current?.closest<HTMLElement>("[data-row]")?.focus({ preventScroll: true });
+          }}
+        >
+          <MarkDetails
+            mark={mark}
+            path={hunk.path}
+            line={line}
+            commit={commit}
+            near={markAt.current ?? document.body}
+            onClose={onClose}
+            onFlag={() => onFlag(row, line)}
+          />
+        </PopoverContent>
+      ) : null}
+    </Popover>
   );
 }

@@ -2,10 +2,14 @@ import { expect, test } from "vitest";
 import { aCommit, aCoverage, aHunk, aState } from "../test/factories.ts";
 import {
   describeMark,
+  locate,
   markOf,
   pageCoverage,
   percentOf,
   stepUncovered,
+  takenLabel,
+  testNameOf,
+  testsOf,
   toneOf,
 } from "./coverage.ts";
 import { lineNumbers, ownership } from "./rows.ts";
@@ -107,4 +111,54 @@ test("x goes to the first row below the reading line and X to the last above, ro
   expect(stepUncovered(["above", "above"], 1)).toBe(0);
   expect(stepUncovered(["at", "below"], -1)).toBe(1);
   expect(stepUncovered([], 1)).toBeNull();
+});
+
+test("the tests that ran a line, by id, or null when the run kept no per-test detail", () => {
+  const tests = aCoverage({
+    tests: JSON.parse(
+      JSON.stringify({
+        "b::second": { lines: { "src/lib.js": [4, 6] } },
+        "a::first": { at: { path: "test/a.js", start: 1, end: 4 }, lines: { "src/lib.js": [6] } },
+      }),
+    ),
+  }).tests;
+  expect(testsOf(tests, "src/lib.js", 6)).toEqual([
+    { id: "a::first", at: { path: "test/a.js", start: 1, end: 4 } },
+    { id: "b::second", at: null },
+  ]);
+  expect(testsOf(tests, "src/lib.js", 5)).toEqual([]);
+  expect(testsOf(undefined, "src/lib.js", 6)).toBeNull();
+});
+
+test("a test id names its file and, when the server can look it up, its function", () => {
+  expect(testNameOf("tests/test_x.py::TestA::test_b")).toEqual({
+    path: "tests/test_x.py",
+    name: "test_b",
+  });
+  expect(testNameOf("TestParse")).toEqual({ path: null, name: "TestParse" });
+  expect(testNameOf("test/lib.test.js::add rejects strings")).toEqual({
+    path: "test/lib.test.js",
+    name: null,
+  });
+});
+
+test("a test's first line is found on the page, in the commit that adds it or first shows it", () => {
+  const state = aState();
+  const units = new Map<UnitId, Unit>(state.units.map((u) => [u.id, u]));
+  const find = (start: number, end = start) =>
+    locate(
+      JSON.parse(JSON.stringify({ path: "src/lib.js", start, end })),
+      state.commits,
+      units,
+      ownership(state.commits),
+      lineNumbers(state.units),
+    );
+  expect(find(4)).toEqual({ unit: aHunk().id, row: 3, commit: 1 });
+  expect(find(3)).toEqual({ unit: aHunk().id, row: 2, commit: 0 });
+  expect(find(40, 50)).toBeNull();
+});
+
+test("the time a run was taken reads in the reader's zone, to the minute", () => {
+  expect(takenLabel(new Date(2026, 9, 22, 14, 5).toISOString())).toBe("2026-10-22 14:05");
+  expect(takenLabel("not a date")).toBe("not a date");
 });

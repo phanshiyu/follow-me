@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
@@ -27,6 +27,7 @@ export function CommentBox({
   onCancel,
   kinds = true,
   className,
+  initialBody = "",
 }: {
   kind: BoxKind;
   label: string;
@@ -35,8 +36,11 @@ export function CommentBox({
   onCancel: () => void;
   kinds?: boolean;
   className?: string;
+  /** A first line the reviewer goes on from; the caret starts after it. */
+  initialBody?: string;
 }) {
-  const [body, setBody] = useState("");
+  const [body, setBody] = useState(initialBody);
+  const caretPlaced = useRef(false);
   const [kind, setKind] = useState(initialKind);
   const [severity, setSeverity] = useState<Severity | null>(null);
   const [busy, setBusy] = useState(false);
@@ -81,6 +85,12 @@ export function CommentBox({
         autoFocus
         aria-label={label}
         value={body}
+        onFocus={(event) => {
+          if (caretPlaced.current) return;
+          caretPlaced.current = true;
+          const end = event.currentTarget.value.length;
+          event.currentTarget.setSelectionRange(end, end);
+        }}
         placeholder={
           placeholder ?? (kind === "ask" ? "What would you like to know?" : "What should change?")
         }

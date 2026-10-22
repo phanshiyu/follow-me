@@ -2,18 +2,27 @@ import { useCallback } from "react";
 import { flushSync } from "react-dom";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { api } from "../lib/api.ts";
 import {
+  type Loc,
+  locate,
+  type Mark,
   type MarkKind,
   type Place,
   percentOf,
   stepUncovered,
   type Tally,
   type Target,
+  takenLabel,
+  testNameOf,
+  testsOf,
   toneOf,
 } from "../lib/coverage.ts";
 import { flash } from "../lib/jump.ts";
+import type { Candidate } from "../lib/wire.ts";
 import { useCoverage, usePage } from "../page.tsx";
-import { useCoverageData } from "../store.tsx";
+import { useCoverageData, useDerived, useReview } from "../store.tsx";
+import { type Measurable, useGoTo } from "./Definition.tsx";
 
 export const TONE: Readonly<Record<MarkKind, string>> = {
   covered: "bg-emerald-500/10 text-emerald-800 dark:text-emerald-300",
@@ -139,5 +148,135 @@ export function useUncoveredSteps(): (dir: 1 | -1) => void {
       flash(row, "row-flash");
     },
     [coverage, reveal],
+  );
+}
+
+const TEST = { title: "Test", kind: "test" } as const;
+
+/** A place for the jump or the peek; a test has no preview of its own. */
+function placeAt(at: Loc, shown: { unit: Candidate["unit"]; row: number; commit: number } | null) {
+  return {
+    path: at.path,
+    newLine: at.start,
+    kind: "other",
+    unit: shown?.unit ?? null,
+    row: shown?.row ?? null,
+    commit: shown?.commit ?? null,
+    preview: [],
+  } satisfies Candidate;
+}
+
+const hitTimes = (n: number) => (n === 1 ? "Hit once" : `Hit ${n} times`);
+
+/**
+ * What the run did on one line, from a click on its mark. A test that sits in the branch links
+ * into the document with Back; one outside it opens a peek, through the server's definition lookup
+ * when its id names a function.
+ */
+export function MarkDetails({
+  mark,
+  path,
+  line,
+  commit,
+  near,
+  onFlag,
+  onClose,
+}: {
+  mark: Mark;
+  path: string;
+  line: number;
+  commit: number;
+  near: Measurable;
+  onFlag: () => void;
+  onClose: () => void;
+}) {
+  const coverage = useCoverage();
+  const { state } = useReview();
+  const { units, owners, numbers } = useDerived();
+  const goTo = useGoTo();
+  if (coverage === null) return null;
+  if (mark.kind === "uncovered") {
+    return (
+      <div className="space-y-2">
+        <p>
+          Not run by the suite at <code className="font-mono">{coverage.tip.slice(0, 7)}</code> (
+          {takenLabel(coverage.takenAt)})
+        </p>
+        <Button size="sm" variant="outline" onClick={onFlag}>
+          Flag as missing test
+        </Button>
+      </div>
+    );
+  }
+  const tests = testsOf(coverage.tests, path, line);
+  const shownAt = (at: Loc | null) =>
+    at === null ? null : locate(at, state.commits, units, owners, numbers);
+  const open = async (id: string, at: Loc | null) => {
+    onClose();
+    const shown = shownAt(at);
+    if (at !== null && shown !== null) return goTo(placeAt(at, shown), id, commit, near, TEST);
+    const named = testNameOf(id);
+    const file = at?.path ?? named.path;
+    if (named.name !== null && file !== null) {
+      const answer = await api.definition(named.name, file).catch(() => ({ candidates: [] }));
+      const found = answer.candidates.find((c) => c.path === file);
+      if (found !== undefined) return goTo(found, named.name, commit, near, TEST);
+    }
+    if (at !== null) goTo(placeAt(at, null), id, commit, near, TEST);
+  };
+  return (
+    <div className="space-y-2">
+      <div>
+        <p>{hitTimes(mark.hits)}</p>
+        {mark.branches === null ? null : (
+          <p className="text-muted-foreground">
+            {mark.branches[0]} of {mark.branches[1]} branches taken
+          </p>
+        )}
+      </div>
+      {tests === null ? (
+        <p className="text-muted-foreground text-xs">No per-test detail in this run</p>
+      ) : tests.length === 0 ? (
+        <p className="text-muted-foreground text-xs">No test in this run's detail ran this line</p>
+      ) : (
+        <div>
+          <p className="mb-1 font-medium text-xs">
+            Run by {tests.length === 1 ? "1 test" : `${tests.length} tests`}
+          </p>
+          <ul className="-mx-1 max-h-56 overflow-y-auto">
+            {tests.map((test) => {
+              const shown = shownAt(test.at);
+              const linked = test.at !== null || testNameOf(test.id).name !== null;
+              const where =
+                test.at === null
+                  ? null
+                  : `${test.at.path}:${test.at.start} · ${shown === null ? "outside this branch" : `in commit ${shown.commit + 1}`}`;
+              return (
+                <li key={test.id}>
+                  {linked ? (
+                    <button
+                      type="button"
+                      className="w-full rounded px-1 py-0.5 text-left outline-none hover:bg-muted focus-visible:bg-muted"
+                      onClick={() => void open(test.id, test.at)}
+                    >
+                      <span className="block font-mono text-xs [overflow-wrap:anywhere]">
+                        {test.id}
+                      </span>
+                      {where === null ? null : (
+                        <span className="block text-muted-foreground text-xs">{where}</span>
+                      )}
+                    </button>
+                  ) : (
+                    <span className="block px-1 py-0.5 font-mono text-xs [overflow-wrap:anywhere]">
+                      {test.id}
+                    </span>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+    </div>
   );
 }

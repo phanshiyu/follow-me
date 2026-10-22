@@ -172,7 +172,7 @@ export function aCandidate(
  * assertNumber(a) ran with one of its two branches, assertNumber(b) never ran.
  */
 export function aCoverage(overrides: Partial<Coverage> = {}): Coverage {
-  return {
+  return branded({
     tip: "b164dd3".padEnd(40, "0"),
     takenAt: "2026-10-22T06:05:00.000Z",
     files: {
@@ -183,5 +183,5 @@ export function aCoverage(overrides: Partial<Coverage> = {}): Coverage {
     },
     stale: [],
     ...overrides,
-  };
+  });
 }

@@ -31,6 +31,7 @@ export type {
   PreviousVersion,
   ProjectedCommit,
   Reply,
+  RepoPath,
   ServerEvent,
   Severity,
   TextHunk,

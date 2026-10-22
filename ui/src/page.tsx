@@ -35,7 +35,9 @@ type Page = {
   setPick(pick: PagePick | null): void;
   /** The comment box under the pick, open with the kind its button chose. */
   readonly box: BoxKind | null;
-  setBox(box: BoxKind | null): void;
+  /** What the box starts with, when an action wrote it a first line. */
+  readonly boxBody: string | null;
+  setBox(box: BoxKind | null, body?: string): void;
   /** Native notifications for the agent's answers while the tab is in the background. */
   readonly notify: boolean;
   /** Turning it on asks the browser for permission, once, here and nowhere else. */
@@ -133,7 +135,12 @@ export function PageProvider({ children }: { children: ReactNode }) {
   const [viewed, setViewedSet] = useState(() => loadSet("viewed"));
   const [local, setLocal] = useState(() => loadSet("resolved"));
   const [pick, setPickState] = useState<PagePick | null>(null);
-  const [box, setBox] = useState<BoxKind | null>(null);
+  const [box, setBoxState] = useState<{ kind: BoxKind; body: string | null } | null>(null);
+  const setBox = useCallback(
+    (kind: BoxKind | null, body?: string) =>
+      setBoxState(kind === null ? null : { kind, body: body ?? null }),
+    [],
+  );
   const [notify, setNotifyState] = useState(
     () =>
       loadSet("prefs").has("notify") &&
@@ -166,7 +173,7 @@ export function PageProvider({ children }: { children: ReactNode }) {
   );
   const setPick = useCallback((next: PagePick | null) => {
     setPickState(next);
-    if (next === null) setBox(null);
+    if (next === null) setBoxState(null);
   }, []);
   const setLocallyResolved = useCallback((id: string, on: boolean) => {
     setLocal((before) => {
@@ -205,7 +212,8 @@ export function PageProvider({ children }: { children: ReactNode }) {
       setLocallyResolved,
       pick,
       setPick,
-      box: pick === null ? null : box,
+      box: pick === null ? null : (box?.kind ?? null),
+      boxBody: pick === null ? null : (box?.body ?? null),
       setBox,
       notify,
       setNotify,
@@ -228,6 +236,7 @@ export function PageProvider({ children }: { children: ReactNode }) {
     pick,
     setPick,
     box,
+    setBox,
     notify,
     setNotify,
     indexOpen,

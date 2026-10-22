@@ -3,10 +3,10 @@
 
 import { filesOf } from "./commit.ts";
 import { type LineNumber, ownersOf, rowsOf } from "./rows.ts";
-import type { ProjectedCommit, Unit, UnitId } from "./wire.ts";
+import type { ProjectedCommit, RepoPath, Unit, UnitId } from "./wire.ts";
 
 /** Tip lines of one file, both ends included. */
-export type Loc = { readonly path: string; readonly start: number; readonly end: number };
+export type Loc = { readonly path: RepoPath; readonly start: number; readonly end: number };
 
 /** GET api/coverage. Line numbers are tip lines; `stale` lists paths changed since `tip`. */
 export type Coverage = {
@@ -111,6 +111,7 @@ export type PageCoverage = {
   readonly branch: Tally;
   readonly uncovered: readonly Target[];
   readonly stale: ReadonlySet<string>;
+  readonly tests: Coverage["tests"];
 };
 
 export const fileKey = (commit: number, path: string) => `${commit}|${path}`;
@@ -169,6 +170,7 @@ export function pageCoverage(
     branch,
     uncovered,
     stale: new Set(coverage.stale),
+    tests: coverage.tests,
   };
 }
 
@@ -187,4 +189,72 @@ export function stepUncovered(places: readonly Place[], dir: 1 | -1): number | n
   }
   const previous = places.lastIndexOf("above");
   return previous === -1 ? places.length - 1 : previous;
+}
+
+/** The tests that ran a tip line, by id, or null when the run kept no per-test detail. */
+export function testsOf(
+  tests: Coverage["tests"],
+  path: string,
+  line: number,
+): { readonly id: string; readonly at: Loc | null }[] | null {
+  if (tests === undefined) return null;
+  return Object.entries(tests)
+    .filter(([, test]) => test.lines[path]?.includes(line) ?? false)
+    .map(([id, test]) => ({ id, at: test.at ?? null }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/**
+ * Where a test's first line shows on the page: the hunk row with that tip number and the commit
+ * that shows it, its own commit for an added line, else the first commit with the hunk.
+ */
+export function locate(
+  at: Loc,
+  commits: readonly ProjectedCommit[],
+  units: ReadonlyMap<UnitId, Unit>,
+  owners: ReadonlyMap<UnitId, ReadonlyMap<number, number>>,
+  numbers: ReadonlyMap<UnitId, readonly LineNumber[]>,
+): { readonly unit: UnitId; readonly row: number; readonly commit: number } | null {
+  for (const unit of units.values()) {
+    if (unit.kind !== "hunk" || unit.path !== at.path) continue;
+    const rows = numbers.get(unit.id) ?? [];
+    const row = rows.findIndex((n) => n.new !== null && n.new >= at.start && n.new <= at.end);
+    const line = unit.body[row];
+    if (line === undefined) continue;
+    const own = line.op === " " ? undefined : ownersOf(unit, owners)[line.change];
+    const commit = own ?? commits.find((c) => c.refs.some((r) => r.unit === unit.id))?.index;
+    if (commit !== undefined) return { unit: unit.id, row, commit };
+  }
+  return null;
+}
+
+/** "2026-10-22 14:05" in the reader's time zone. */
+export function takenLabel(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const two = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`;
+}
+
+/** The body a Flag as missing test box starts with. */
+export function missingTestDraft(path: string, line: number): string {
+  return `Missing test: no test runs ${path}:${line}.`;
+}
+
+const IDENTIFIER = /^[A-Za-z_$][\w$]*$/;
+
+/**
+ * What a test id says about where the test lives: "tests/test_x.py::TestA::test_b" names the file
+ * and test_b, "TestParse" only a name, "add rejects strings" neither the server can look up.
+ */
+export function testNameOf(id: string): {
+  readonly path: string | null;
+  readonly name: string | null;
+} {
+  const parts = id.split("::");
+  const last = parts.at(-1) ?? id;
+  return {
+    path: parts.length > 1 ? (parts[0] ?? null) : null,
+    name: IDENTIFIER.test(last) ? last : null,
+  };
 }

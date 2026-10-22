@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import { page, userEvent } from "vitest/browser";
 import type { TextHunk } from "../lib/wire.ts";
-import { aCoverage, aHunk, aLongState, aState } from "../test/factories.ts";
+import { aCandidate, aCoverage, aHunk, aLongState, aState } from "../test/factories.ts";
 import { indexEntry } from "../test/pages.ts";
 import { renderReview } from "../test/render.tsx";
 
@@ -143,4 +143,140 @@ test("x and X step through the added lines the run missed, opening a Viewed comm
   await landedOn(seven);
   await userEvent.keyboard("X");
   await landedOn(four);
+});
+
+const details = (path: string, line: number) =>
+  page.getByRole("dialog", { name: `Coverage of ${path}:${line}` });
+
+async function clickMark(n: number, name: RegExp, line: number) {
+  await row(n, name)
+    .getByRole("button", { name: `Coverage of line ${line}` })
+    .click();
+}
+
+test("a mark opens what the run did there, and says when it kept no per-test detail", async () => {
+  await withCoverage();
+  await clickMark(2, /^Context 6/, 6);
+  await expect.element(details("src/lib.js", 6).getByText("Hit 14 times")).toBeVisible();
+  await expect
+    .element(details("src/lib.js", 6).getByText("No per-test detail in this run"))
+    .toBeVisible();
+  await userEvent.keyboard("{Escape}");
+  await expect.element(details("src/lib.js", 6)).not.toBeInTheDocument();
+
+  await clickMark(2, /^Added 4/, 4);
+  await expect.element(details("src/lib.js", 4).getByText("1 of 2 branches taken")).toBeVisible();
+  await clickMark(2, /^Added 4/, 4);
+  await expect.element(details("src/lib.js", 4)).not.toBeInTheDocument();
+});
+
+test("Enter on a focused row opens its mark's popover", async () => {
+  await withCoverage();
+  const added = row(2, /^Added 4/).element();
+  if (!(added instanceof HTMLElement)) throw new Error("a row is an element");
+  added.focus();
+  await userEvent.keyboard("{Enter}");
+  await expect.element(details("src/lib.js", 4).getByText("Hit 14 times")).toBeVisible();
+});
+
+test("an uncovered line says which run missed it and flags it as a missing test", async () => {
+  const { server } = await withCoverage();
+  server.on("POST", "/api/comments", () => ({ id: "c_bbbbbb" }));
+  await clickMark(2, /^Added 5/, 5);
+  await expect
+    .element(
+      details("src/lib.js", 5).getByText(
+        /^Not run by the suite at b164dd3 \(2026-10-2\d \d\d:\d5\)$/,
+      ),
+    )
+    .toBeVisible();
+  await details("src/lib.js", 5).getByRole("button", { name: "Flag as missing test" }).click();
+
+  const box = page.getByRole("textbox", { name: "Flag line 5" });
+  await expect.element(box).toHaveFocus();
+  await expect.element(box).toHaveValue("Missing test: no test runs src/lib.js:5.");
+  await userEvent.keyboard(" Cover a string b.");
+  await userEvent.keyboard("{Meta>}{Enter}{/Meta}");
+  await expect
+    .poll(() => server.calls.find((c) => c.method === "POST")?.body)
+    .toMatchObject({
+      anchor: { kind: "hunk", commit: 1, offsets: [4] },
+      body: "Missing test: no test runs src/lib.js:5. Cover a string b.",
+    });
+});
+
+/** Eight commits; commit 4 adds test/lib.test.js, whose second line opens a test of add. */
+function withTests() {
+  const spec = aFile("h_0000000000b4", "test/lib.test.js");
+  const base = aLongState();
+  const state = aLongState({
+    units: [...base.units, spec],
+    commits: base.commits.map((c) =>
+      c.index === 3
+        ? { ...c, refs: [{ unit: spec.id, select: { kind: "lines", changes: [0, 1, 2] } }] }
+        : c,
+    ),
+  });
+  const tests = {
+    "test/lib.test.js::add guards its arguments": {
+      at: { path: "test/lib.test.js", start: 2, end: 3 },
+      lines: { "src/lib.js": [3, 4, 6] },
+    },
+    "test/guard_test.go::TestAssertNumber": {
+      at: { path: "test/guard_test.go", start: 10, end: 14 },
+      lines: { "src/lib.js": [4] },
+    },
+    "add accepts numbers": { lines: { "src/lib.js": [4] } },
+  };
+  return renderReview(state, (server) => {
+    server.on("GET", "/api/coverage", () =>
+      aCoverage({ tests: JSON.parse(JSON.stringify(tests)) }),
+    );
+    server.on("GET", /^\/api\/definition\?name=TestAssertNumber&/, () => ({
+      candidates: [
+        aCandidate({
+          path: "test/guard_test.go",
+          newLine: 10,
+          preview: ["func TestAssertNumber(t *testing.T) {"],
+        }),
+      ],
+    }));
+  });
+}
+
+test("with per-test detail, a test in the branch links in with Back and one outside peeks", async () => {
+  await withTests();
+  await clickMark(2, /^Added 4/, 4);
+  const popover = details("src/lib.js", 4);
+  await expect.element(popover.getByText("Run by 3 tests")).toBeVisible();
+  await expect
+    .element(popover.getByRole("button", { name: /^add accepts numbers/ }))
+    .not.toBeInTheDocument();
+  await expect.element(popover.getByText("add accepts numbers")).toBeVisible();
+
+  await popover
+    .getByRole("button", {
+      name: /^test\/lib\.test\.js::add guards its arguments test\/lib\.test\.js:2 · in commit 4$/,
+    })
+    .click();
+  const landed = page
+    .getByRole("listbox", { name: "Rows of test/lib.test.js" })
+    .getByRole("option", { name: /^Added 2/ });
+  await expect.element(landed).toBeInViewport();
+  await expect.element(landed).toHaveClass(/row-flash/);
+  const back = page.getByRole("button", { name: "Back to commit 2" });
+  await back.click();
+  await expect.element(back).not.toBeInTheDocument();
+
+  await clickMark(2, /^Added 4/, 4);
+  await details("src/lib.js", 4)
+    .getByRole("button", {
+      name: /TestAssertNumber test\/guard_test\.go:10 · outside this branch$/,
+    })
+    .click();
+  const peek = page.getByRole("dialog", {
+    name: "Test of TestAssertNumber at test/guard_test.go:10",
+  });
+  await expect.element(peek.getByText("func", { exact: true })).toBeVisible();
+  await expect.element(peek.getByText("test", { exact: true })).toBeVisible();
 });
