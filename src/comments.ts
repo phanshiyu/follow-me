@@ -1,3 +1,4 @@
+import { parseLoc } from "./coverage.ts";
 import { isRepoPath, isSha, isUnitId } from "./diff.ts";
 import {
   diagramProblem,
@@ -21,6 +22,7 @@ import type {
   ConcernId,
   EarlierReplies,
   Excluded,
+  Loc,
   Placement,
   PlanVersion,
   Reply,
@@ -29,6 +31,8 @@ import type {
   Review,
   ReviewDraft,
   ServerEvent,
+  StateMap,
+  StateTransition,
 } from "./types.ts";
 
 /**
@@ -77,20 +81,128 @@ function parseAnchor(v: unknown): Anchor | string {
   return { kind: "hunk", unit: v.unit, commit, changes, offsets };
 }
 
+function parseLocs(v: unknown, at: string, needed: boolean): Loc[] | string {
+  const what = `${at}: expected a list of { path, start, end }${needed ? " with at least one place" : ""}`;
+  if (!isArray(v) || (needed && v.length === 0)) return what;
+  const out: Loc[] = [];
+  for (const [i, raw] of v.entries()) {
+    const loc = parseLoc(raw);
+    if (loc === null) return `${at}[${i}]: expected { path, start, end } with 1 <= start <= end`;
+    out.push(loc);
+  }
+  return out;
+}
+
+const TRANSITION_ENDS: readonly ("from" | "to")[] = ["from", "to"];
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Boundary parse of a reply's state map. Every state has at least one place, every transition
+ * names states of the map, and with a stateDiagram every state name appears in it. The reason
+ * names the bad entry, as map.states.<name>[i] or map.transitions[i].<field>.
+ */
+export function parseStateMap(v: unknown, diagram: string | undefined): StateMap | string {
+  if (!isFields<"states" | "transitions">(v)) return "map: expected { states, transitions }";
+  if (!isFields(v.states) || Object.keys(v.states).length === 0) {
+    return "map.states: expected an object of state name to places";
+  }
+  const states: [string, Loc[]][] = [];
+  for (const [name, raw] of Object.entries(v.states)) {
+    if (name.trim() === "") return "map.states: a state has an empty name";
+    const locs = parseLocs(raw, `map.states.${name}`, true);
+    if (typeof locs === "string") return locs;
+    states.push([name, locs]);
+  }
+  const named = new Set(states.map(([name]) => name));
+  const transitions: StateTransition[] = [];
+  const rawTransitions = v.transitions ?? [];
+  if (!isArray(rawTransitions)) return "map.transitions: expected a list";
+  for (const [i, raw] of rawTransitions.entries()) {
+    const at = `map.transitions[${i}]`;
+    if (!isFields<"from" | "to" | "event" | "at">(raw))
+      return `${at}: expected { from, to, event, at }`;
+    for (const end of TRANSITION_ENDS) {
+      const state = raw[end];
+      if (typeof state !== "string" || !named.has(state)) {
+        return `${at}.${end}: ${JSON.stringify(state)} is not a state in map.states`;
+      }
+    }
+    const { from, to, event } = raw;
+    if (typeof from !== "string" || typeof to !== "string") return `${at}: expected from and to`;
+    if (event !== undefined && typeof event !== "string") return `${at}.event: expected a string`;
+    const locs = parseLocs(raw.at, `${at}.at`, false);
+    if (typeof locs === "string") return locs;
+    transitions.push({ from, to, ...(event === undefined ? {} : { event }), at: locs });
+  }
+  const first =
+    (diagram ?? "")
+      .split("\n")
+      .find((line) => line.trim() !== "")
+      ?.trim() ?? "";
+  if (first.startsWith("stateDiagram")) {
+    for (const name of named) {
+      if (!new RegExp(`(^|[^\\w])${escapeRegExp(name)}([^\\w]|$)`, "m").test(diagram ?? "")) {
+        return `map.states.${name}: not a state of the stateDiagram`;
+      }
+    }
+  }
+  return {
+    states: Object.fromEntries(states),
+    ...(transitions.length === 0 ? {} : { transitions }),
+  };
+}
+
+/**
+ * Where a map points past the tip: a path the tip has no file at, or lines beyond its end. lines
+ * holds the line count of every tip file the map names that exists; show prints a path.
+ */
+export function mapOffTip(
+  map: StateMap,
+  lines: ReadonlyMap<string, number>,
+  show: (path: string) => string = (path) => path,
+): string[] {
+  const check = (loc: Loc, at: string): string[] => {
+    const count = lines.get(loc.path);
+    if (count === undefined) return [`${at}: ${show(loc.path)} is not a file at the tip`];
+    if (loc.end > count) {
+      return [
+        `${at}: lines ${loc.start}-${loc.end} are past the end of ${show(loc.path)}, which has ${count} lines at the tip`,
+      ];
+    }
+    return [];
+  };
+  return [
+    ...Object.entries(map.states).flatMap(([name, locs]) =>
+      locs.flatMap((loc, i) => check(loc, `map.states.${name}[${i}]`)),
+    ),
+    ...(map.transitions ?? []).flatMap((t, i) =>
+      t.at.flatMap((loc, j) => check(loc, `map.transitions[${i}].at[${j}]`)),
+    ),
+  ];
+}
+
 /** A stored reply. Replies a client posts go through parseNewReply, which mints id and time. */
 export function parseReply(v: unknown): Reply | string {
-  if (!isFields<"id" | "author" | "body" | "diagram" | "createdAt">(v)) return "not an object";
+  if (!isFields<"id" | "author" | "body" | "diagram" | "map" | "createdAt">(v)) {
+    return "not an object";
+  }
   if (!isReplyId(v.id)) return "id is not a reply id";
   if (v.author !== "agent" && v.author !== "reviewer") return 'author is not "agent" or "reviewer"';
   if (typeof v.body !== "string" || typeof v.createdAt !== "string") {
     return "body and createdAt must be strings";
   }
   if (v.diagram !== undefined && typeof v.diagram !== "string") return "diagram is not a string";
+  const map = v.map === undefined ? undefined : parseStateMap(v.map, v.diagram);
+  if (typeof map === "string") return map;
   return {
     id: v.id,
     author: v.author,
     body: v.body,
     ...(v.diagram === undefined ? {} : { diagram: v.diagram }),
+    ...(map === undefined ? {} : { map }),
     createdAt: v.createdAt,
   };
 }
@@ -99,6 +211,7 @@ export type NewReply = {
   readonly author: ReplyAuthor;
   readonly body: string;
   readonly diagram?: string;
+  readonly map?: StateMap;
 };
 
 /**
@@ -106,17 +219,25 @@ export type NewReply = {
  * empty only when the diagram is the answer.
  */
 export function parseNewReply(v: unknown): NewReply | string {
-  if (!isFields<"author" | "body" | "diagram">(v)) return "the reply is not an object";
+  if (!isFields<"author" | "body" | "diagram" | "map">(v)) return "the reply is not an object";
   if (v.author !== "agent" && v.author !== "reviewer") return 'author is not "agent" or "reviewer"';
   if (typeof v.body !== "string") return "body is not a string";
   if (v.diagram === undefined) {
+    if (v.map !== undefined) return "map needs the diagram it ties to code";
     if (v.body.trim() === "") return "body is empty; a reply needs words or a diagram";
     return { author: v.author, body: v.body };
   }
   if (typeof v.diagram !== "string") return "diagram is not a string";
   const problem = diagramProblem(v.diagram);
   if (problem !== null) return `diagram: ${problem}`;
-  return { author: v.author, body: v.body, diagram: v.diagram };
+  const map = v.map === undefined ? undefined : parseStateMap(v.map, v.diagram);
+  if (typeof map === "string") return map;
+  return {
+    author: v.author,
+    body: v.body,
+    diagram: v.diagram,
+    ...(map === undefined ? {} : { map }),
+  };
 }
 
 function isString(v: unknown): v is string {

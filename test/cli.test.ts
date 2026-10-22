@@ -2094,3 +2094,67 @@ test("an accepted offer reaches watch and the entry as one line, and next: names
   );
   await fetch(new URL("api/end", url), { method: "POST" });
 });
+
+test("reply --map ties states to tip lines, names every bad entry, and show prints it", async (t) => {
+  const { run, repo, url } = await reviewing(t);
+  const { id } = JSON.parse(await (await postJson(url, "api/comments", PLAN_COMMENT)).text());
+  const tipLines = git(repo.dir, "show", `${repo.branch}:src/lib.js`).split("\n").length;
+  const diagram = join(repo.dir, "machine.mmd");
+  writeFileSync(diagram, "stateDiagram-v2\n  [*] --> Checking\n  Checking --> Adding: numbers\n");
+  const write = (map: unknown) => {
+    const file = join(repo.dir, "map.json");
+    writeFileSync(file, JSON.stringify(map));
+    return run(repo.dir, "reply", id, "--diagram", diagram, "--map", file);
+  };
+  const place = (start: number, end = start, path = "src/lib.js") => ({ path, start, end });
+
+  const bad = write({
+    states: { Checking: [place(1, 3), place(2, 3, "src/nope.js")], Adding: [place(tipLines + 5)] },
+  });
+  assert.equal(bad.code, 1);
+  assert.equal(
+    bad.err,
+    [
+      `follow-me: ${join(repo.dir, "map.json")}:`,
+      "  map.states.Checking[1]: src/nope.js is not a file at the tip",
+      `  map.states.Adding[0]: lines ${tipLines + 5}-${tipLines + 5} are past the end of src/lib.js, which has ${tipLines} lines at the tip`,
+      "",
+    ].join("\n"),
+  );
+  const unknown = write({
+    states: { Checking: [place(1)], Adding: [place(2)] },
+    transitions: [{ from: "Checking", to: "Done", at: [] }],
+  });
+  assert.match(unknown.err, /map\.transitions\[0\]\.to: "Done" is not a state in map\.states\n$/);
+  const undrawn = write({ states: { Checking: [place(1)], Sleeping: [place(2)] } });
+  assert.match(undrawn.err, /map\.states\.Sleeping: not a state of the stateDiagram\n$/);
+  assert.match(
+    run(repo.dir, "reply", id, "--map", "x.json", "--body", "x").err,
+    /--map needs --diagram/,
+  );
+
+  const good = write({
+    states: { Checking: [place(1, 3), place(5)], Adding: [place(6, 7)] },
+    transitions: [{ from: "Checking", to: "Adding", event: "numbers", at: [place(4)] }],
+  });
+  assert.equal(good.code, 0, good.err);
+  const state = JSON.parse(await (await fetch(new URL("api/state", url))).text());
+  assert.deepEqual(state.comments[0].replies[0].map.transitions, [
+    { from: "Checking", to: "Adding", event: "numbers", at: [place(4)] },
+  ]);
+  assert.equal(state.comments[0].replies[0].body, "");
+  const shown = run(repo.dir, "show", id);
+  assert.ok(
+    shown.out.endsWith(
+      [
+        "agent replied (with a diagram and a state map)",
+        "  state Checking: src/lib.js:1-3, :5",
+        "  state Adding: src/lib.js:6-7",
+        "  Checking -> Adding on numbers: src/lib.js:4",
+        "",
+      ].join("\n"),
+    ),
+    shown.out,
+  );
+  await fetch(new URL("api/end", url), { method: "POST" });
+});

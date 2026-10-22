@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { mapOffTip, parseStateMap } from "./comments.ts";
 import {
   changedLines,
   LcovError,
@@ -15,9 +16,10 @@ import {
   totalOf,
 } from "./coverage.ts";
 import { definitionIndex, isIdentifier } from "./definition.ts";
-import { DiffParseError, formatUnitRef, isUnitId } from "./diff.ts";
+import { DiffParseError, formatUnitRef, isRepoPath, isUnitId, splitLines } from "./diff.ts";
 import {
   BranchRefusedError,
+  blobsAt,
   branchHead,
   GitError,
   isOwnWork,
@@ -111,6 +113,7 @@ import type {
   Comment,
   Diff,
   HostedSummary,
+  Loc,
   PlanIssue,
   PlanVersion,
   PlanWarning,
@@ -119,6 +122,7 @@ import type {
   Review,
   ReviewMode,
   ServerEvent,
+  StateMap,
   Unit,
   UnitId,
 } from "./types.ts";
@@ -141,9 +145,10 @@ prints what they flagged or asked. It is interactive: do what its "next:" line s
 again until it prints the report.
 
 Other commands:
-  reply <commentId> --body <text> [--diagram <file>]
+  reply <commentId> --body <text> [--diagram <file> [--map <file>]]
                                             answer under a comment on the page; the diagram is
-                                            Mermaid source
+                                            Mermaid source, the map JSON tying its states to
+                                            tip lines
   explain [--commit <n>] [--unit <id>] [--lines <a-b>] --body <text> [--diagram <file>]
                                             start a thread on the page without being asked
   show <h_…|c_…|k_…|path:line[@n|@base]|name>
@@ -197,9 +202,10 @@ Interactive loop (while the review page is open):
                                             reports the end of the review. Your own replies are
                                             left out. --follow streams every event until the
                                             review ends instead of stopping at the first
-  reply <commentId> --body <text> [--diagram <file>]
+  reply <commentId> --body <text> [--diagram <file> [--map <file>]]
                                             answer under a comment on the page; the diagram is
-                                            Mermaid source
+                                            Mermaid source, the map JSON tying its states to
+                                            tip lines
   explain [--commit <n>] [--unit <id>] [--lines <a-b>] --body <text> [--diagram <file>]
                                             start a thread on the page without being asked;
                                             --lines are change lines of the unit, commits count
@@ -1709,21 +1715,83 @@ async function reply(cwd: string, args: Args): Promise<number> {
   // A diagram can be the whole answer, as when it answers an accepted offer.
   const body = args.values.get("body") ?? (diagram === undefined ? undefined : "");
   if (commentId === undefined || extra !== undefined || body === undefined) {
+    throw new UsageError(REPLY_USAGE);
+  }
+  const mapFile = args.values.get("map");
+  if (mapFile !== undefined && diagram === undefined) {
     throw new UsageError(
-      "usage: follow-me reply <commentId> --body <text> [--diagram <file>]\n       follow-me reply <commentId> --diagram <file> [--body <text>]",
+      `--map needs --diagram, the state diagram it ties to code\n${REPLY_USAGE}`,
     );
   }
   const session = await openSession(cwd, sessionOpts(args));
+  const map = mapFile === undefined ? undefined : await readMap(session, mapFile, diagram);
   const open = await openOnServer(session, null);
   if (open === null) return notOpen(session);
   const id = await postReply(open.port, open.summary, commentId, {
     author: "agent",
     body,
     ...(diagram === undefined ? {} : { diagram }),
+    ...(map === undefined ? {} : { map }),
   });
   say(`replied ${id} to ${commentId}`);
   next(`run follow-me again; ${STILL_WORKING}`);
   return 0;
+}
+
+const REPLY_USAGE = `usage: follow-me reply <commentId> --body <text> [--diagram <file> [--map <file>]]
+       follow-me reply <commentId> --diagram <file> [--map <file>] [--body <text>]`;
+
+/** A map path as git names it: the JSON's UTF-8 text as the bytes git prints, read as latin1. */
+function repoPathOf(typed: string): RepoPath {
+  const path = Buffer.from(typed, "utf8").toString("latin1");
+  if (!isRepoPath(path)) throw new UsageError(`${typed} is not a repo path`);
+  return path;
+}
+
+/**
+ * --map's JSON, checked against the tip: every place is a file there and within its lines. Every
+ * bad entry is named at once, so one fix round is enough.
+ */
+async function readMap(
+  session: Session,
+  file: string,
+  diagram: string | undefined,
+): Promise<StateMap> {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(file, "utf8"));
+  } catch (error) {
+    throw new UsageError(
+      `cannot read ${file} as JSON: ${error instanceof Error ? error.message : error}`,
+    );
+  }
+  const typed = parseStateMap(raw, diagram);
+  if (typeof typed === "string") throw new UsageError(`${file}: ${typed}`);
+  const at = (loc: Loc): Loc => ({ ...loc, path: repoPathOf(loc.path) });
+  const map: StateMap = {
+    states: Object.fromEntries(
+      Object.entries(typed.states).map(([name, locs]) => [name, locs.map(at)]),
+    ),
+    ...(typed.transitions === undefined
+      ? {}
+      : { transitions: typed.transitions.map((t) => ({ ...t, at: t.at.map(at) })) }),
+  };
+  const { root, anchor } = session;
+  const named = [
+    ...Object.values(map.states).flat(),
+    ...(map.transitions ?? []).flatMap((t) => t.at),
+  ].map((loc) => loc.path);
+  const tip = await pathsAt(root, anchor.tip);
+  const present = [...new Set(named)].filter((p) => tip.has(p));
+  const lines = new Map(
+    [...(await blobsAt(root, anchor.tip, present))].map(([p, bytes]) => [
+      p,
+      splitLines(bytes).length,
+    ]),
+  );
+  const problems = mapOffTip(map, lines, (p) => Buffer.from(p, "latin1").toString("utf8"));
+  if (problems.length > 0) throw new UsageError(`${file}:\n  ${problems.join("\n  ")}`);
+  return map;
 }
 
 /** The Mermaid source in --diagram's file, or undefined without the flag. */
@@ -2215,7 +2283,7 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
         return await watch(cwd, parseArgs(rest, spec));
       }
       case "reply":
-        return await reply(cwd, parseArgs(rest, { values: ["body", "diagram", "branch"] }));
+        return await reply(cwd, parseArgs(rest, { values: ["body", "diagram", "map", "branch"] }));
       case "explain": {
         const spec = { values: ["commit", "unit", "lines", "body", "diagram", "branch"] };
         return await explain(cwd, parseArgs(rest, spec));

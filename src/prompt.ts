@@ -9,6 +9,7 @@ import type {
   CommentResponse,
   Diff,
   FileCoverage,
+  Loc,
   OfferId,
   PlacedConcern,
   PlanFile,
@@ -20,6 +21,7 @@ import type {
   ServerEvent,
   SessionComment,
   Severity,
+  StateMap,
   TextHunk,
   Unit,
   UnitId,
@@ -1385,10 +1387,38 @@ export function renderShownComment(c: Comment, ctx: Context, version: PlanVersio
   lines.push(...quoted.map((r) => `    ${r}`));
   lines.push(...said(c.author === "agent" ? "agent" : "reviewer", c.body));
   for (const reply of c.replies ?? []) {
-    const diagram = reply.diagram === undefined ? "" : " (with a diagram)";
-    lines.push(...said(`${reply.author} replied${diagram}`, reply.body));
+    const extras = [
+      reply.diagram === undefined ? null : "a diagram",
+      reply.map === undefined ? null : "a state map",
+    ];
+    const parts = extras.filter((x) => x !== null);
+    const head = `${reply.author} replied${parts.length === 0 ? "" : ` (with ${parts.join(" and ")})`}`;
+    lines.push(...(reply.body.trim() === "" ? [head] : said(head, reply.body)));
+    if (reply.map !== undefined) lines.push(...renderMap(reply.map).map((l) => `  ${l}`));
   }
   return `${lines.join("\n")}\n`;
+}
+
+/** "src/a.ts:12-20" or "src/a.ts:12", a following place in the same file as ":30-41". */
+function formatLocs(locs: readonly Loc[]): string {
+  return locs
+    .map((loc, i) => {
+      const lines = loc.start === loc.end ? `${loc.start}` : `${loc.start}-${loc.end}`;
+      return i > 0 && locs[i - 1]?.path === loc.path ? `:${lines}` : `${utf8(loc.path)}:${lines}`;
+    })
+    .join(", ");
+}
+
+/** A state map, one line per state and per transition. */
+function renderMap(map: StateMap): string[] {
+  return [
+    ...Object.entries(map.states).map(([name, locs]) => `state ${name}: ${formatLocs(locs)}`),
+    ...(map.transitions ?? []).map((t) => {
+      const event = t.event === undefined ? "" : ` on ${t.event}`;
+      const at = t.at.length === 0 ? "" : `: ${formatLocs(t.at)}`;
+      return `${t.from} -> ${t.to}${event}${at}`;
+    }),
+  ];
 }
 
 /** A concern of the plan with the lines it is pinned to, as its commit writes them. */

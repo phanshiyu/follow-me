@@ -1383,3 +1383,34 @@ test("after a swap an accepted or dismissed offer is never offered again", async
   const draft = JSON.parse(await readFile(join(run.reviews, "v4.draft.json"), "utf8"));
   assert.deepEqual(draft.dismissedOffers, [COMMIT_OFFER]);
 });
+
+test("a reply's state map is stored with it and carried across a swap", async (t) => {
+  const run = await startVersioned(t);
+  const { id } = await jsonOf(await post(run.url, "api/comments", newComment("draw it")));
+  const map = {
+    states: { Parsing: [{ path: "src/a.ts", start: 1, end: 2 }] },
+    transitions: [{ from: "Parsing", to: "Parsing", at: [] }],
+  };
+  const diagram = "stateDiagram-v2\n  Parsing --> Parsing\n";
+  const lonely = await post(run.url, `api/comments/${id}/replies`, {
+    author: "agent",
+    body: "x",
+    map,
+  });
+  assert.deepEqual(await jsonOf(lonely), {
+    error: "malformed reply: map needs the diagram it ties to code",
+  });
+  const posted = await post(run.url, `api/comments/${id}/replies`, {
+    author: "agent",
+    body: "",
+    diagram,
+    map,
+  });
+  assert.equal(posted.status, 201);
+  await post(run.url, "api/version", { version: 4, hash: "hash-of-v4" });
+  const state = await jsonOf(await fetch(new URL("api/state", run.url)));
+  const carried = state.carried.find((c: { comment: { id: string } }) => c.comment.id === id);
+  assert.deepEqual(carried?.comment.replies[0].map, map);
+  const old = JSON.parse(await readFile(join(run.reviews, "v3.json"), "utf8"));
+  assert.deepEqual(old.comments[0].replies[0].map, map);
+});

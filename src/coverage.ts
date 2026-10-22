@@ -366,7 +366,8 @@ function entries(v: unknown): [string, unknown][] | null {
   return isFields(v) ? Object.entries(v) : null;
 }
 
-function parseLoc(v: unknown): Loc | null {
+/** A { path, start, end } with 1 <= start <= end, or null. */
+export function parseLoc(v: unknown): Loc | null {
   if (!isFields<"path" | "start" | "end">(v)) return null;
   const { path, start, end } = v;
   if (typeof path !== "string" || !isRepoPath(path) || !isLine(start) || !isLine(end)) return null;

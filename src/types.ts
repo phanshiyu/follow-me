@@ -307,7 +307,26 @@ export type Reply = {
   readonly author: ReplyAuthor;
   readonly body: string;
   readonly diagram?: string;
+  /** Ties the states of a stateDiagram-v2 in `diagram` to code at the tip. */
+  readonly map?: StateMap;
   readonly createdAt: string;
+};
+
+/**
+ * Where each state of a state diagram, and each transition the agent could place, lives in the
+ * tip's code. The page derives coverage over these lines; the agent never states it.
+ */
+export type StateMap = {
+  readonly states: { readonly [name: string]: readonly Loc[] };
+  readonly transitions?: readonly StateTransition[];
+};
+
+/** from and to name states of the map; event is the trigger as the diagram labels it. */
+export type StateTransition = {
+  readonly from: string;
+  readonly to: string;
+  readonly event?: string;
+  readonly at: readonly Loc[];
 };
 
 /**
