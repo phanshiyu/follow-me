@@ -22,6 +22,7 @@ function eightCommits() {
 
 test("the stack lists every commit with its full title and jumps to the one picked", async () => {
   await renderReview(eightCommits());
+  await page.getByRole("button", { name: "Hide index" }).click();
   const picker = page.getByRole("button", { name: "Commit 1 of 8 · Add the number guard import" });
   await expect.element(picker).toBeVisible();
 
@@ -37,6 +38,7 @@ test("the stack lists every commit with its full title and jumps to the one pick
 
 test("s opens the stack, and a viewed commit shows its tick there", async () => {
   await renderReview(eightCommits());
+  await userEvent.keyboard("[[");
   await page.getByRole("checkbox", { name: "Viewed commit 2" }).click();
   await expect.element(page.getByRole("heading", { name: "Guard add" })).toBeVisible();
   await expect.element(page.getByText("src/lib.js").nth(1)).not.toBeInTheDocument();

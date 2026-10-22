@@ -22,6 +22,7 @@ export type {
   Comment,
   CommentId,
   CommentResponse,
+  CommitSection as Section,
   ConcernDecision,
   ConcernId,
   HunkLine,

@@ -5,6 +5,7 @@ import { HEADER_PX, PageProvider, scrollToCommit, usePage } from "../page.tsx";
 import { useReview } from "../store.tsx";
 import { AskBranch, BranchSummary } from "./Branch.tsx";
 import { CommitSection } from "./CommitSection.tsx";
+import { focusIndex, Index } from "./Index.tsx";
 import { KeySheet } from "./KeySheet.tsx";
 import { Notices, PageOptions, UnreadMenu } from "./Notices.tsx";
 import { StackPicker } from "./StackPicker.tsx";
@@ -29,7 +30,8 @@ function nextUnresolved(): void {
 
 function usePageKeys(openStack: () => void, openSheet: () => void, openSubmit: () => void) {
   const { state } = useReview();
-  const { current, isViewed, setViewed, pick, setPick, setBox } = usePage();
+  const { current, isViewed, setViewed, pick, setPick, setBox, indexOpen, setIndexOpen } =
+    usePage();
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Enter" && event.shiftKey && (event.metaKey || event.ctrlKey)) {
@@ -62,7 +64,11 @@ function usePageKeys(openStack: () => void, openSheet: () => void, openSubmit: (
           if (here !== undefined) setViewed(here, !isViewed(here));
           break;
         case "s":
-          openStack();
+          if (indexOpen) focusIndex();
+          else openStack();
+          break;
+        case "[":
+          setIndexOpen(!indexOpen);
           break;
         case "f":
         case "a":
@@ -93,11 +99,14 @@ function usePageKeys(openStack: () => void, openSheet: () => void, openSubmit: (
     pick,
     setPick,
     setBox,
+    indexOpen,
+    setIndexOpen,
   ]);
 }
 
 function Page() {
   const { state, error, ended, arrived, dismissArrived, reconnecting } = useReview();
+  const { indexOpen } = usePage();
   const [stackOpen, setStackOpen] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [submitOpen, setSubmitOpen] = useState(false);
@@ -109,7 +118,7 @@ function Page() {
   return (
     <div className="min-h-screen">
       <header className="sticky top-0 z-30 h-11 border-b bg-background/95 backdrop-blur">
-        <div className="mx-auto grid h-full max-w-[1232px] grid-cols-[1fr_auto_1fr] items-center gap-2 px-6 text-sm">
+        <div className="grid h-full grid-cols-[1fr_auto_1fr] items-center gap-2 px-4 text-sm">
           <div className="min-w-0 truncate">
             <strong>follow-me</strong>
             <span className="text-muted-foreground">
@@ -117,7 +126,9 @@ function Page() {
               · {state.anchor.branch} → {state.anchor.baseRef} · plan v{state.version}
             </span>
           </div>
-          <StackPicker open={stackOpen} onOpenChange={setStackOpen} />
+          <div className="flex min-w-0 items-center gap-2">
+            {indexOpen ? null : <StackPicker open={stackOpen} onOpenChange={setStackOpen} />}
+          </div>
           <div className="flex items-center justify-end gap-2">
             <UnreadMenu />
             <AskBranch />
@@ -152,12 +163,17 @@ function Page() {
           </div>
         )}
       </header>
-      <main className="mx-auto max-w-[1232px] px-6">
-        <BranchSummary />
-        {state.commits.map((commit) => (
-          <CommitSection key={commitKey(commit)} commit={commit} />
-        ))}
-      </main>
+      <div className="flex">
+        <Index />
+        <main className="min-w-0 flex-1">
+          <div className="mx-auto max-w-[1232px] px-6">
+            <BranchSummary />
+            {state.commits.map((commit) => (
+              <CommitSection key={commitKey(commit)} commit={commit} />
+            ))}
+          </div>
+        </main>
+      </div>
       <Notices />
       <KeySheet open={sheetOpen} onOpenChange={setSheetOpen} />
       <SubmitDialog open={submitOpen} onOpenChange={setSubmitOpen} />

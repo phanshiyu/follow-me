@@ -6,6 +6,7 @@ import type {
   ProjectedCommit,
   Reply,
   ReportItem,
+  Section,
   State,
   TextHunk,
   WireComment,
@@ -39,7 +40,10 @@ export function aHunk(overrides: Partial<Omit<TextHunk, "kind">> = {}): TextHunk
   });
 }
 
-export function aCommit(index: number, overrides: Partial<ProjectedCommit> = {}): ProjectedCommit {
+export function aCommit(
+  index: number,
+  overrides: Partial<ProjectedCommit> & { section?: Section } = {},
+): ProjectedCommit {
   return branded({
     index,
     message: `Commit ${index + 1}\n\nWhy commit ${index + 1} exists.`,

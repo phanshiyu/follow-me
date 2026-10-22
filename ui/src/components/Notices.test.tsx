@@ -3,6 +3,7 @@ import { page, userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
 import { saveSet } from "../lib/storage.ts";
 import { aComment, aLongState, aReply } from "../test/factories.ts";
+import { goToCommit } from "../test/pages.ts";
 import { renderReview } from "../test/render.tsx";
 import { Toast } from "./Toast.tsx";
 
@@ -16,9 +17,7 @@ const agentReply = {
 /** The page scrolled to the last commit, so the thread under commit 2 is out of sight. */
 async function awayFromThread() {
   const rendered = await renderReview(aLongState({ comments: [aComment()] }));
-  await page.getByRole("button", { name: /Commit 1 of 8/ }).click();
-  await page.getByRole("menuitem", { name: /Step 8/ }).click();
-  await expect.element(page.getByRole("button", { name: /Commit 8 of 8/ })).toBeVisible();
+  await goToCommit(/^8 · Step 8/);
   return rendered;
 }
 

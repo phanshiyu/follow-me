@@ -9,6 +9,7 @@ import {
 } from "react";
 import { commitKey } from "./lib/commit.ts";
 import type { BoxKind } from "./lib/compose.ts";
+import { indexOpenAtStart } from "./lib/outline.ts";
 import type { Pick } from "./lib/selection.ts";
 import { loadSet, saveSet } from "./lib/storage.ts";
 import type { ProjectedCommit, UnitId } from "./lib/wire.ts";
@@ -37,6 +38,9 @@ type Page = {
   readonly notify: boolean;
   /** Turning it on asks the browser for permission, once, here and nowhere else. */
   setNotify(on: boolean): Promise<void>;
+  /** The index column beside the document; collapsed, it is a rail of numbers. */
+  readonly indexOpen: boolean;
+  setIndexOpen(open: boolean): void;
 };
 
 const PageContext = createContext<Page | null>(null);
@@ -104,6 +108,13 @@ export function PageProvider({ children }: { children: ReactNode }) {
     setNotifyState(granted);
     saveSet("prefs", new Set(granted ? ["notify"] : []));
   }, []);
+  const [indexOpen, setIndexOpenState] = useState(() =>
+    indexOpenAtStart(loadSet("index"), window.innerWidth),
+  );
+  const setIndexOpen = useCallback((open: boolean) => {
+    setIndexOpenState(open);
+    saveSet("index", new Set([open ? "open" : "closed"]));
+  }, []);
   const setPick = useCallback((next: PagePick | null) => {
     setPickState(next);
     if (next === null) setBox(null);
@@ -149,6 +160,8 @@ export function PageProvider({ children }: { children: ReactNode }) {
       setBox,
       notify,
       setNotify,
+      indexOpen,
+      setIndexOpen,
     };
   }, [
     current,
@@ -163,6 +176,8 @@ export function PageProvider({ children }: { children: ReactNode }) {
     box,
     notify,
     setNotify,
+    indexOpen,
+    setIndexOpen,
   ]);
 
   return <PageContext value={page}>{children}</PageContext>;

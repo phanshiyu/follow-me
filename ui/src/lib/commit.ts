@@ -1,6 +1,6 @@
 // What a commit section shows: title, body, the agent's note, and its units grouped by file. Pure.
 
-import type { ProjectedCommit, Unit, UnitId, UnitRef } from "./wire.ts";
+import type { ProjectedCommit, Section, Unit, UnitId, UnitRef } from "./wire.ts";
 
 export function titleOf(message: string): string {
   return message.split("\n")[0] ?? "";
@@ -58,4 +58,21 @@ export function hunkHeader(
   const news = numbers.flatMap((n) => (n.new === null ? [] : [n.new]));
   const span = (ns: number[]) => `${ns[0] ?? 0},${ns.length}`;
   return `@@ -${span(olds)} +${span(news)} @@`;
+}
+
+const SECTIONS: Readonly<Record<Section, string>> = {
+  story: "The story",
+  steps: "The steps",
+  details: "The details",
+  wiring: "Wiring",
+};
+
+/** The commit's section; a plan written before sections has none. */
+export function sectionOf(commit: ProjectedCommit): Section | null {
+  return commit.section ?? null;
+}
+
+/** "The story", "The steps", "The details", "Wiring". */
+export function sectionLabel(section: Section): string {
+  return SECTIONS[section];
 }

@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
 import { page, userEvent } from "vitest/browser";
 import { aComment, aCommit, aHunk, aReply, aState, HUNK } from "../test/factories.ts";
+import { goToCommit } from "../test/pages.ts";
 import { renderReview } from "../test/render.tsx";
 
 /** Plan v3: eight commits so the page scrolls, the v2 flag on the guard rows, its code changed. */
@@ -52,9 +53,7 @@ function v3() {
 
 test("a new plan version shows its banner, keeps the commit in place and carries the thread live", async () => {
   const { server } = await renderReview(aState({ commits: v3().commits }));
-  await page.getByRole("button", { name: /Commit 1 of 8/ }).click();
-  await page.getByRole("menuitem", { name: /Step 6/ }).click();
-  await expect.element(page.getByRole("button", { name: /Commit 6 of 8/ })).toBeVisible();
+  await goToCommit(/^6 · Step 6/);
   const top = () => document.getElementById("commit-6")?.getBoundingClientRect().top ?? 0;
   const before = top();
 
