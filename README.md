@@ -79,7 +79,7 @@ The red blob in the party hat is your branch tip. Nothing follow-me does moves i
 *Coverage while reading. Your agent runs the tests with coverage and passes the lcov to `follow-me coverage`; follow-me never runs anything. Bars show covered, partly covered and uncovered lines, `x` jumps to the next uncovered line, and clicking a bar lists the tests that ran it.*
 
 ![A state machine reply: each state is marked by whether a test reached it, and clicking a state jumps to its code](assets/screenshots/state-machine.png)
-*Your agent offers what it can draw, like "a state machine for this guard", as chips under the commit. Tap one and it answers with the diagram, each state marked by whether a test reached it. Click a state to jump to its code.*
+*Your agent offers what it can draw, like "a state machine for this guard", as chips under the commit. Tap one and it answers with the diagram, each state marked by whether a test reached it and each transition by how many tests take it. When the tests run one at a time, a list under it names the sequences each step of which has a test but no one test drives. Click a state or a transition to jump to its code.*
 
 ![A diagram opened in the lightbox at full size](assets/screenshots/diagram.png)
 *Diagrams sit full width under the commit or reply they explain, and open full size on click.*
