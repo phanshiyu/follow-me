@@ -307,4 +307,55 @@ test("an aggregate run marks edges from their lines, without test names", async 
     .element(edge("Checking", "Rejected"))
     .toHaveAccessibleName("Checking → Rejected, not covered");
   expect([badgeOf("Idle", "Checking"), badgeOf("Checking", "Rejected")]).toEqual(["✓", "✕"]);
+  await expect.element(notDriven()).not.toBeInTheDocument();
+}, 60_000);
+
+const notDriven = () => card().getByRole("region", { name: /^Not driven by any one test/ });
+const outlinedEdges = () => diagram()?.querySelectorAll(".sm-sequence").length;
+
+test("a sequence each step of which has a test, but no one test takes whole, is listed", async () => {
+  await withMachine("per-test");
+  await expect.element(notDriven()).toHaveAccessibleName("Not driven by any one test · 1");
+  const row = notDriven().getByRole("listitem");
+  // Idle → Checking → Rejected has an untested step, which its red edge already shows.
+  await expect.element(row).toHaveAccessibleName("Idle → Checking → Done");
+  expect(row.element().textContent).toContain("each step tested, never in one test");
+
+  const show = row.getByRole("button", { name: "Show Idle → Checking → Done" });
+  expect(outlinedEdges()).toBe(0);
+  await show.hover();
+  await expect.poll(outlinedEdges).toBe(2);
+  await row.getByRole("button", { name: /^Flag / }).hover();
+  await expect.poll(outlinedEdges).toBe(0);
+  await show.click();
+  await expect.element(show).toHaveAttribute("aria-pressed", "true");
+  await row.getByRole("button", { name: /^Flag / }).hover();
+  await expect.poll(outlinedEdges).toBe(2);
+  await show.click();
+  await expect.element(show).toHaveAttribute("aria-pressed", "false");
+}, 60_000);
+
+test("Flag as missing test posts a flag on the commit with the sequence as its body", async () => {
+  const { server } = await withMachine("per-test");
+  server.on("POST", "/api/comments", () => ({ id: "c_flag01" }));
+  await notDriven()
+    .getByRole("button", { name: "Flag Idle → Checking → Done as missing test" })
+    .click();
+  const box = notDriven().getByRole("textbox", { name: "Flag Idle → Checking → Done" });
+  await expect.element(box).toHaveFocus();
+  await expect
+    .element(box)
+    .toHaveValue(
+      "Missing test: no single test drives Idle → Checking → Done; each step has its own test.",
+    );
+  await userEvent.keyboard(" Add one that sums.");
+  await notDriven().getByRole("button", { name: "Send flag" }).click();
+  await expect
+    .poll(() => server.calls.find((c) => c.method === "POST" && c.path === "/api/comments")?.body)
+    .toEqual({
+      anchor: { kind: "message", commit: 1 },
+      context: { commitMessage: "Guard add\n\nadd now rejects strings.", path: null },
+      body: "Missing test: no single test drives Idle → Checking → Done; each step has its own test. Add one that sums.",
+    });
+  await expect.element(box).not.toBeInTheDocument();
 }, 60_000);

@@ -334,6 +334,12 @@ commit or a unit ref, with kind one of `state-machine`, `sequence`, `diagram`.
   when every line ran, else red, with no test names; grey (Mermaid's own) with no lines, no run, or
   a stale file. Edges are found in Mermaid's SVG by the states nearest their two ends, then by label;
   the transition table, with its Tests column, stays the way to every transition.
+- **Not driven by any one test.** With per-test runs, the page lists sequences from the initial
+  state (`[*] -->`, else the map's first state) to a final one (`--> [*]`, or a state nothing
+  leaves), up to five transitions with none repeated, each step of which some test takes but no one
+  test takes whole; sequences with an untested step are left out. Three show, shortest first, then
+  "+N more". Show outlines one on the diagram; Flag as missing test opens a flag box on the commit,
+  posted through `api/comments` like any flag.
 - **Coverage follow-ups.** `follow-me coverage --reset` alone removes coverage.json, and with an lcov
   starts that run from nothing, so a series of `--test` runs does not fold into an old aggregate. A
   test whose `--at` file the branch does not change gets `preview`, up to 8 tip lines from `start`,

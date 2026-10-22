@@ -6,9 +6,12 @@ import {
   candidatesOf,
   describeEdgeMark,
   describeStateMark,
+  type EdgeMark,
   edgesOfMap,
+  endsOf,
   markOfEdge,
   markOfPlaces,
+  notDriven,
   placeLabel,
   rowsOfMap,
   stateNodes,
@@ -176,6 +179,42 @@ test("a transition finds its drawn edge by its states, then by its label", () =>
     [2, "e1"],
     [3, "e4"],
   ]);
+});
+
+test("the diagram's [*] arrows give the initial and final states", () => {
+  const source = "stateDiagram-v2\n  [*] --> Idle\n  Idle --> Busy: go\n  Done --> [*]\n";
+  expect(endsOf(source)).toEqual({ initial: ["Idle"], final: ["Done"] });
+});
+
+test("a sequence each step of which has a test, but no test takes whole, is not driven", () => {
+  const source = "stateDiagram-v2\n[*] --> Idle\nFailed --> [*]\n";
+  const map: StateMap = JSON.parse(
+    JSON.stringify({
+      states: { Idle: [lib(1)], Busy: [lib(3)], Done: [lib(4)], Failed: [lib(5)] },
+      transitions: [
+        { from: "Idle", to: "Busy", at: [lib(1)] },
+        { from: "Busy", to: "Done", at: [lib(3)] },
+        { from: "Busy", to: "Failed", at: [lib(4)] },
+        { from: "Failed", to: "Busy", at: [lib(6)] },
+        { from: "Busy", to: "Idle", at: [lib(5)] },
+      ],
+    }),
+  );
+  const tests = (...ids: string[]): EdgeMark => ({ kind: "covered", run: 1, total: 1, tests: ids });
+  const untested: EdgeMark = { kind: "uncovered", run: 0, total: 1, tests: [] };
+  const marks = [tests("a", "b"), tests("b"), tests("c"), tests("d"), untested];
+  const found = notDriven(map, source, marks).map((s) => s.states.join(" → "));
+  // Idle → Busy → Done is driven by b; anything through Busy → Idle has an untested step.
+  expect(found).toEqual(["Idle → Busy → Failed", "Idle → Busy → Failed → Busy → Done"]);
+  expect(notDriven(map, source, marks)[0]?.moves).toEqual([0, 2]);
+  // Without per-test runs nothing names a test, so nothing is listed.
+  expect(
+    notDriven(
+      map,
+      source,
+      marks.map((m) => ({ ...m, tests: [] })),
+    ),
+  ).toEqual([]);
 });
 
 test("a mark reads as words with its line count", () => {

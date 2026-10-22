@@ -208,6 +208,62 @@ export function describeEdgeMark(mark: EdgeMark, perTest: boolean): string {
   return `taken by ${mark.tests.length === 1 ? "1 test" : `${mark.tests.length} tests`}`;
 }
 
+/** A run of transitions from the initial state, by their index in the map, and the states it visits. */
+export type Sequence = { readonly moves: readonly number[]; readonly states: readonly string[] };
+
+/** The longest sequence considered, in transitions. */
+const MAX_STEPS = 5;
+
+/** The states a stateDiagram starts in (`[*] --> X`) and ends in (`X --> [*]`). */
+export function endsOf(source: string): { initial: string[]; final: string[] } {
+  const initial: string[] = [];
+  const final: string[] = [];
+  for (const line of source.split("\n")) {
+    const start = /^\s*\[\*\]\s*-->\s*([^\s:[]+)/.exec(line)?.[1];
+    const end = /^\s*([^\s:[]+)\s*-->\s*\[\*\]/.exec(line)?.[1];
+    if (start !== undefined) initial.push(start);
+    if (end !== undefined) final.push(end);
+  }
+  return { initial, final };
+}
+
+/**
+ * Sequences every step of which some test takes, but no one test takes them all: walks from the
+ * initial state (the diagram's `[*] -->`, else the map's first state) to a final state (`--> [*]`,
+ * or one nothing leaves), up to five transitions, never repeating one, so each cycle is taken at
+ * most once. A sequence with a step no test takes is left out; its red edge already says so.
+ * Shortest first.
+ */
+export function notDriven(map: StateMap, source: string, marks: readonly EdgeMark[]): Sequence[] {
+  const transitions = map.transitions ?? [];
+  const names = Object.keys(map.states);
+  const { initial, final } = endsOf(source);
+  const starts = initial.filter((name) => names.includes(name));
+  const first = names[0];
+  const from = starts.length > 0 ? starts : first === undefined ? [] : [first];
+  const leaving = (state: string) => transitions.flatMap((t, i) => (t.from === state ? [i] : []));
+  const ends = new Set([...final, ...names.filter((name) => leaving(name).length === 0)]);
+  const testsOf = (i: number) => marks[i]?.tests ?? [];
+  const found: Sequence[] = [];
+  const walk = (state: string, moves: readonly number[], states: readonly string[]) => {
+    if (moves.length >= 2 && ends.has(state)) {
+      const [head = -1, ...rest] = moves;
+      const driven = testsOf(head).some((test) => rest.every((i) => testsOf(i).includes(test)));
+      if (!driven) found.push({ moves, states });
+    }
+    if (moves.length === MAX_STEPS) return;
+    for (const i of leaving(state)) {
+      const to = transitions[i]?.to;
+      if (to === undefined || moves.includes(i) || testsOf(i).length === 0) continue;
+      walk(to, [...moves, i], [...states, to]);
+    }
+  };
+  for (const start of new Set(from)) walk(start, [], [start]);
+  return found.sort(
+    (a, b) => a.moves.length - b.moves.length || a.states.join().localeCompare(b.states.join()),
+  );
+}
+
 /** An edge Mermaid drew: its SVG id, the states nearest its two ends, and its label text. */
 export type DrawnEdge = {
   readonly id: string;

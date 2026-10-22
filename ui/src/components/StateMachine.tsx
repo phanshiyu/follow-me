@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
 import type { Loc } from "../lib/coverage.ts";
 import {
@@ -14,6 +14,7 @@ import {
   type MachineRow,
   markOfEdge,
   markOfPlaces,
+  notDriven,
   placeLabel,
   rowsOfMap,
   type StateMark,
@@ -25,6 +26,7 @@ import { usePage } from "../page.tsx";
 import { useDerived, useReview } from "../store.tsx";
 import { type Subject, useGoToPlaces } from "./Definition.tsx";
 import { Diagram } from "./Diagram.tsx";
+import { NotDriven } from "./NotDriven.tsx";
 
 const SVG = "http://www.w3.org/2000/svg";
 const STATE: Subject = {
@@ -256,6 +258,8 @@ function decorateEdges(
   map: StateMap,
   edges: readonly EdgeDecoration[],
   perTest: boolean,
+  /** Transitions of the sequence the reader asked to see, outlined under their edges. */
+  outlined: ReadonlySet<number>,
 ): void {
   const transitions = map.transitions ?? [];
   const ids = edgesOfMap(transitions, drawnEdges(svg, Object.keys(map.states)));
@@ -267,6 +271,16 @@ function decorateEdges(
       `.edgeLabel [data-id="${CSS.escape(id.slice(svg.id.length + 1))}"]`,
     );
     restyle(path, EDGE_LINE[mark.kind]);
+    if (outlined.has(index)) {
+      path.before(
+        element("path", {
+          class: "sm-sequence",
+          d: path.getAttribute("d") ?? "",
+          style:
+            "fill: none; pointer-events: none; stroke: var(--cov-uncovered); stroke-opacity: 0.35; stroke-width: 9px; stroke-linecap: round; stroke-dasharray: 10 6",
+        }),
+      );
+    }
     path.setAttribute("data-mark", mark.kind);
     const d = path.getAttribute("d") ?? "";
     const said = describeEdgeMark(mark, perTest);
@@ -426,15 +440,26 @@ export function StateMachine({
       ),
     [map, edgeMarks],
   );
+  const sequences = useMemo(
+    () => (perTest ? notDriven(map, source, edgeMarks) : []),
+    [perTest, map, source, edgeMarks],
+  );
+  const [hovered, setHovered] = useState<number | null>(null);
+  const [pinned, setPinned] = useState<number | null>(null);
+  const shown = hovered ?? pinned;
+  const outlined = useMemo(
+    () => new Set(shown === null ? [] : (sequences[shown]?.moves ?? [])),
+    [shown, sequences],
+  );
   const decorate = useCallback(
     (root: HTMLElement) => {
       const svg = root.querySelector("svg");
       if (svg === null) return;
       for (const added of svg.querySelectorAll(".sm-added")) added.remove();
       decorateStates(svg, stateMarks);
-      decorateEdges(svg, map, edges, perTest);
+      decorateEdges(svg, map, edges, perTest, outlined);
     },
-    [stateMarks, map, edges, perTest],
+    [stateMarks, map, edges, perTest, outlined],
   );
   const picks = useMemo(
     () => ({
@@ -498,6 +523,14 @@ export function StateMachine({
           </span>
         )}
       </p>
+      <NotDriven
+        sequences={sequences}
+        shown={shown}
+        pinned={pinned}
+        onHover={setHovered}
+        onPin={setPinned}
+        commit={from}
+      />
       <table className="mt-3 w-full border-collapse text-sm">
         <caption className="sr-only">States and moves of {title}</caption>
         <thead className="text-left text-muted-foreground text-xs">
