@@ -147,7 +147,8 @@ function Page() {
     <GoToProvider value={going}>
       <div className="min-h-screen">
         <header className="sticky top-0 z-30 h-11 border-b bg-background/95 backdrop-blur">
-          <div className="grid h-full grid-cols-[1fr_auto_1fr] items-center gap-2 px-4 text-sm">
+          {/* The actions keep their width; the commit title in the middle truncates before they overlap it. */}
+          <div className="grid h-full grid-cols-[minmax(0,1fr)_minmax(0,auto)_minmax(max-content,1fr)] items-center gap-2 px-4 text-sm">
             <div className="min-w-0 truncate">
               <strong>follow-me</strong>
               <span className="text-muted-foreground">

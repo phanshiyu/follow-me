@@ -66,7 +66,10 @@ export function FileCoverage({ tally }: { tally: Tally | undefined }) {
   );
 }
 
-/** "Changed lines covered 84%" in the page header, over every commit's added lines. */
+/**
+ * "Changed lines covered 84%" in the page header, over every commit's added lines; "Covered 84%"
+ * below 1280px, where the header also holds the commit picker.
+ */
 export function BranchCoverage() {
   const coverage = useCoverage();
   if (coverage === null || coverage.branch.total === 0) return null;
@@ -78,7 +81,8 @@ export function BranchCoverage() {
       )}
       title={`${coverage.branch.run} of ${coverage.branch.total} added lines the tests can run`}
     >
-      Changed lines covered {percentOf(coverage.branch)}%
+      <span className="xl:hidden">Covered {percentOf(coverage.branch)}%</span>
+      <span className="hidden xl:inline">Changed lines covered {percentOf(coverage.branch)}%</span>
     </span>
   );
 }

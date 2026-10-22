@@ -1,7 +1,7 @@
-import { expect, test } from "vitest";
+import { afterEach, expect, test } from "vitest";
 import { page, userEvent } from "vitest/browser";
 import type { TextHunk } from "../lib/wire.ts";
-import { aCandidate, aCoverage, aHunk, aLongState, aState } from "../test/factories.ts";
+import { aCandidate, aCommit, aCoverage, aHunk, aLongState, aState } from "../test/factories.ts";
 import { indexEntry } from "../test/pages.ts";
 import { renderReview } from "../test/render.tsx";
 
@@ -367,4 +367,44 @@ test("x moves on from the last rows of the page, which cannot scroll up to the r
   await expect.element(row(2, /^Added 4/)).toHaveFocus();
   await userEvent.keyboard("X");
   await expect.element(row(2, /^Added 5/)).toHaveFocus();
+});
+
+afterEach(async () => {
+  await page.viewport(1280, 900);
+});
+
+const overlaps = (a: DOMRect, b: DOMRect) =>
+  a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+
+test("in a tight header the branch figure shortens and never covers the commit title", async () => {
+  const base = aState();
+  const long =
+    "feat: guard add and mul so both arithmetic entry points check their arguments first";
+  await renderReview(
+    aState({
+      commits: [aCommit(0, { ...base.commits[0], message: long }), ...base.commits.slice(1)],
+    }),
+    (server) => server.on("GET", "/api/coverage", () => aCoverage()),
+  );
+  for (const [width, words] of [
+    [1024, "Covered 66%"],
+    [1279, "Covered 66%"],
+    [1440, "Changed lines covered 66%"],
+  ] as const) {
+    await page.viewport(width, 800);
+    const figure = page.getByText(words, { exact: true });
+    await expect.element(figure).toBeVisible();
+    const title = document.querySelector("header [aria-haspopup='menu']");
+    const box = figure.element().getBoundingClientRect();
+    if (title !== null)
+      expect(overlaps(box, title.getBoundingClientRect()), `at ${width}px`).toBe(false);
+    expect(box.right, `at ${width}px`).toBeLessThanOrEqual(window.innerWidth);
+  }
+  await page.getByRole("button", { name: "Hide index" }).click();
+  const title = page.getByRole("button", { name: /^Commit 1 of 2/ });
+  await expect.element(title).toBeVisible();
+  const figure = page.getByText("Changed lines covered 66%", { exact: true }).element();
+  expect(overlaps(figure.getBoundingClientRect(), title.element().getBoundingClientRect())).toBe(
+    false,
+  );
 });
