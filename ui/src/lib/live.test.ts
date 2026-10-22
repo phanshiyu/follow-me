@@ -59,4 +59,9 @@ describe("applyEvent", () => {
     expect(state.resolved).toEqual(["c_bbbbbb"]);
     expect(state.seq).toBe(7);
   });
+  test("a dismissed offer is kept once, however often its event replays", () => {
+    const dismissed = event({ seq: 1, type: "offer-dismissed", offer: "o_1a2b3c4d" });
+    const once = applyEvent(aState(), dismissed);
+    expect(applyEvent(once, dismissed).dismissedOffers).toEqual(["o_1a2b3c4d"]);
+  });
 });

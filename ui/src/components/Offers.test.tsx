@@ -106,15 +106,21 @@ test("an accept the server refuses brings the chip back", async () => {
 test("× dismisses an offer for good, from the keyboard too", async () => {
   const dismissed: OfferId = JSON.parse(`"${ON_HUNK}"`);
   const { server } = await renderReview(withOffers());
-  server.on("POST", `/api/offers/${ON_HUNK}/dismiss`, () => undefined);
-  server.on("GET", "/api/state", () => withOffers({ dismissedOffers: [dismissed] }));
+  server.on("POST", `/api/offers/${ON_HUNK}/dismiss`, () =>
+    server.push({ type: "offer-dismissed", offer: dismissed }),
+  );
   page.getByRole("button", { name: "Dismiss offer: Draw add as a sequence" }).element().focus();
   await userEvent.keyboard("{Enter}");
 
   await expect.element(chip("add as a sequence")).not.toBeInTheDocument();
   await expect.element(chip("UploadButton as a state machine")).toBeVisible();
   expect(server.calls.some((c) => c.path === `/api/offers/${ON_HUNK}/dismiss`)).toBe(true);
-  await expect.poll(() => server.calls.some((c) => c.path === "/api/state")).toBe(true);
+});
+
+test("an offer dismissed in another tab goes away here too", async () => {
+  const { server } = await renderReview(withOffers());
+  await expect.element(chip("add as a sequence")).toBeVisible();
+  server.push({ type: "offer-dismissed", offer: JSON.parse(`"${ON_HUNK}"`) });
   await expect.element(chip("add as a sequence")).not.toBeInTheDocument();
 });
 

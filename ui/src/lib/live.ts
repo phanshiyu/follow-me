@@ -51,6 +51,10 @@ export function applyEvent(state: State, event: ServerEvent): State {
       const others = state.resolved.filter((id) => id !== event.commentId);
       return next({ resolved: event.resolved ? [...others, event.commentId] : others });
     }
+    case "offer-dismissed": {
+      const others = (state.dismissedOffers ?? []).filter((id) => id !== event.offer);
+      return next({ dismissedOffers: [...others, event.offer] });
+    }
     default:
       // version and ended carry nothing to fold in, and a newer server may send types this page
       // does not know.

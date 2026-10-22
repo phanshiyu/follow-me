@@ -54,7 +54,7 @@ function Chip({
  * A chip turns into its question thread in place; × waves it away for good.
  */
 export function Offers({ commit, unit }: { commit: ProjectedCommit; unit: UnitId | null }) {
-  const { state, run, refresh } = useReview();
+  const { state, run } = useReview();
   const { units } = useDerived();
   const [dismissed, setDismissed] = useState<ReadonlySet<OfferId>>(new Set());
   const [accepting, setAccepting] = useState<ReadonlySet<OfferId>>(new Set());
@@ -68,8 +68,7 @@ export function Offers({ commit, unit }: { commit: ProjectedCommit; unit: UnitId
   const dismiss = async (offer: Offer) => {
     setDismissed((before) => new Set([...before, offer.id]));
     const ok = await run(() => api.dismissOffer(offer.id));
-    if (ok) await refresh().catch(() => undefined);
-    else setDismissed((before) => new Set([...before].filter((id) => id !== offer.id)));
+    if (!ok) setDismissed((before) => new Set([...before].filter((id) => id !== offer.id)));
   };
   return placed.map((p) => {
     const label = `Offer: ${p.offer.label}`;

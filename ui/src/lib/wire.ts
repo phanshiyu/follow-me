@@ -1,13 +1,12 @@
 // The server's JSON as the page reads it. The domain types are the contract; this file only adds
-// the fields the server owner is landing beside this page (exclusions, the report, offers).
+// the fields the server owner is landing beside this page (exclusions, the report).
 
 import type {
   CarriedComment,
+  Comment,
   CommentId,
   ConcernDecision,
   ConcernId,
-  Comment as DomainComment,
-  Reply as DomainReply,
   OfferId,
   PlanVersion,
   PreviousVersion,
@@ -17,11 +16,12 @@ import type {
   Severity,
   Unit,
 } from "../../../src/types.ts";
-import type { Loc } from "./coverage.ts";
 
 export type {
   Anchor,
   Candidate,
+  CarriedComment as Carried,
+  Comment,
   CommentId,
   CommentResponse,
   CommitSection as Section,
@@ -33,38 +33,19 @@ export type {
   PlacedOffer as Offer,
   PreviousVersion,
   ProjectedCommit,
+  Reply,
   RepoPath,
   ServerEvent,
   Severity,
+  StateMap,
   TextHunk,
   Unit,
   UnitId,
   UnitRef,
 } from "../../../src/types.ts";
 
-/** Ties a state diagram to tip lines: each state, and each transition where the agent could. */
-export type StateMap = {
-  readonly states: Readonly<Record<string, readonly Loc[]>>;
-  readonly transitions?: readonly {
-    readonly from: string;
-    readonly to: string;
-    readonly event?: string;
-    readonly at: readonly Loc[];
-  }[];
-};
-
-export type Reply = DomainReply & { readonly map?: StateMap };
-
-export type Comment = DomainComment & {
-  /** The offer this comment accepted. */
-  readonly offer?: OfferId;
-  readonly replies?: readonly Reply[];
-};
-
 /** Every comment reaches the agent as it is saved, so the page ignores any `pending` mark. */
 export type WireComment = Omit<Comment, "pending">;
-
-export type Carried = Omit<CarriedComment, "comment"> & { readonly comment: Comment };
 
 /** GET api/state. */
 export type State = {
@@ -83,7 +64,7 @@ export type State = {
    * The threads of earlier versions placed on this one: every version of the open review, then
    * `previous`. Absent from a server that does not carry threads.
    */
-  readonly carried?: readonly Carried[];
+  readonly carried?: readonly CarriedComment[];
   /** Hand-off items the reviewer left out of the merge request. */
   /** Offers the reviewer waved away; they never show again. */
   readonly dismissedOffers?: readonly OfferId[];
