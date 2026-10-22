@@ -377,6 +377,7 @@ const overlaps = (a: DOMRect, b: DOMRect) =>
   a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
 
 test("in a tight header the branch figure shortens and never covers the commit title", async () => {
+  await page.viewport(1024, 800);
   const base = aState();
   const long =
     "feat: guard add and mul so both arithmetic entry points check their arguments first";
@@ -386,6 +387,8 @@ test("in a tight header the branch figure shortens and never covers the commit t
     }),
     (server) => server.on("GET", "/api/coverage", () => aCoverage()),
   );
+  // The index starts as the rail at 1024px, so the commit title stays in the header as it widens.
+  const title = page.getByRole("button", { name: /^Commit 1 of 2 · feat: guard add/ });
   for (const [width, words] of [
     [1024, "Covered 66%"],
     [1279, "Covered 66%"],
@@ -394,17 +397,9 @@ test("in a tight header the branch figure shortens and never covers the commit t
     await page.viewport(width, 800);
     const figure = page.getByText(words, { exact: true });
     await expect.element(figure).toBeVisible();
-    const title = document.querySelector("header [aria-haspopup='menu']");
+    await expect.element(title).toBeVisible();
     const box = figure.element().getBoundingClientRect();
-    if (title !== null)
-      expect(overlaps(box, title.getBoundingClientRect()), `at ${width}px`).toBe(false);
+    expect(overlaps(box, title.element().getBoundingClientRect()), `at ${width}px`).toBe(false);
     expect(box.right, `at ${width}px`).toBeLessThanOrEqual(window.innerWidth);
   }
-  await page.getByRole("button", { name: "Hide index" }).click();
-  const title = page.getByRole("button", { name: /^Commit 1 of 2/ });
-  await expect.element(title).toBeVisible();
-  const figure = page.getByText("Changed lines covered 66%", { exact: true }).element();
-  expect(overlaps(figure.getBoundingClientRect(), title.element().getBoundingClientRect())).toBe(
-    false,
-  );
 });
