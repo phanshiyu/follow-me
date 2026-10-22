@@ -493,7 +493,15 @@ export type FileCoverage = {
   /** Tip line to hit count. */
   readonly lines: ReadonlyMap<number, number>;
   readonly branches: ReadonlyMap<number, BranchHits>;
+  /** lcov's FN records, in file order, so decisions can be grouped by the function they sit in. */
+  readonly functions?: readonly FunctionSpan[];
 };
+
+/** One FN record: the function's first line, its last when the tool gives it, and its name. */
+export type FunctionSpan = { readonly name: string; readonly start: number; readonly end?: number };
+
+/** Per branch line, one count per BRDA branch in lcov's order; a branch not evaluated counts 0. */
+export type BranchCounts = ReadonlyMap<number, readonly number[]>;
 
 /**
  * What one test ran: its tip lines with at least one hit, per file. at is where the test is, and
@@ -503,6 +511,8 @@ export type TestCoverage = {
   readonly at?: Loc;
   readonly preview?: readonly string[];
   readonly lines: ReadonlyMap<RepoPath, readonly number[]>;
+  /** What this test's run took at each decision, per file; absent when lcov had no BRDA. */
+  readonly branches?: ReadonlyMap<RepoPath, BranchCounts>;
 };
 
 /**

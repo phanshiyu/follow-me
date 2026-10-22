@@ -249,12 +249,15 @@ version swap replaces, so the cache never outlives its tip.
 follow-me never runs tests. The agent runs the project's suite with coverage at the branch tip and
 hands the lcov over with `follow-me coverage <lcov> [--test <id> [--at <path:line>]]`, which writes
 `.follow-me/<slug>/coverage.json` atomically:
-`{ tip, takenAt, files: { <path>: { lines: { <n>: hits }, branches?: { <n>: [taken, total] } } },
-tests?: { <id>: { at?: Loc, lines: { <path>: number[] } } } }`, with `Loc = { path, start, end }` in
-tip lines. `src/coverage.ts` holds the parser, the merge and the counts; `session.ts` owns the file.
+`{ tip, takenAt, files: { <path>: { lines: { <n>: hits }, branches?: { <n>: [taken, total] },
+functions?: { name, start, end? }[] } }, tests?: { <id>: { at?: Loc, lines: { <path>: number[] },
+branches?: { <path>: { <n>: number[] } } } } }`, with `Loc = { path, start, end }` in tip lines.
+A test's `branches` holds one count per `BRDA` branch of the line, in lcov's order, so a later
+reader can tell which outcome each test took at each decision; `functions` are the `FN` records. `src/coverage.ts` holds the parser, the merge and the counts; `session.ts` owns the file.
 
-- **Parsing.** `TN`, `SF`, `DA`, `BRDA` and `end_of_record` are read; every other `KEY:` record is
-  skipped. A line that is not a record, a bad `DA` or `BRDA`, a hit before any `SF` and a file with
+- **Parsing.** `TN`, `SF`, `DA`, `BRDA`, `FN` (`<line>,<name>`, or lcov 2's `<start>,<end>,<name>`)
+  and `end_of_record` are read; every other `KEY:` record is skipped. A line that is not a record, a
+  bad `DA`, `BRDA` or `FN`, a hit before any `SF` and a file with
   no `SF` are errors that name the line. Records of one file are summed, and a branch counts as taken
   when any record took it, so `[taken, total]` is per line over distinct branch ids.
 - **Paths.** An `SF` path is absolute, else relative to the cwd and failing that to the repo root,

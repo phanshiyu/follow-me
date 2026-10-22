@@ -4,9 +4,11 @@ import { isRepoPath, isSha, tipStartOf } from "./diff.ts";
 import { GitError, pathsChanged } from "./git.ts";
 import { isFields } from "./plan.ts";
 import type {
+  BranchCounts,
   BranchHits,
   Coverage,
   FileCoverage,
+  FunctionSpan,
   Loc,
   RepoPath,
   Sha,
@@ -25,21 +27,28 @@ export class LcovError extends Error {
   }
 }
 
-/** One SF ... end_of_record block. branches maps a line to each branch id and whether it ran. */
+/**
+ * One SF ... end_of_record block. branches maps a line to each branch id and how often it ran,
+ * "-" (never evaluated) counting 0. functions are the FN records in the order lcov gives them.
+ */
 export type LcovRecord = {
   readonly test: string | null;
   readonly path: string;
   readonly lines: ReadonlyMap<number, number>;
-  readonly branches: ReadonlyMap<number, ReadonlyMap<string, boolean>>;
+  readonly branches: ReadonlyMap<number, ReadonlyMap<string, number>>;
+  readonly functions: readonly FunctionSpan[];
 };
 
 const RECORD = /^([A-Z][A-Z0-9_]*):(.*)$/;
 const DA = /^([1-9][0-9]*),([0-9]+)(?:,.*)?$/;
 const BRDA = /^([1-9][0-9]*),([^,]+),(.+),(-|[0-9]+)$/;
+/** FN:<start>,<name>, or lcov 2's FN:<start>,<end>,<name>. */
+const FN = /^([1-9][0-9]*),(?:([1-9][0-9]*),)?(.+)$/;
 
 /**
  * Reads lcov's tracefile format: TN names the test of the records after it, SF opens a file, DA
- * and BRDA give line and branch hits, end_of_record closes it. Other records are skipped.
+ * and BRDA give line and branch hits, FN a function's place, end_of_record closes it. Other
+ * records are skipped.
  */
 export function parseLcov(text: string): LcovRecord[] {
   const records: LcovRecord[] = [];
@@ -48,7 +57,8 @@ export function parseLcov(text: string): LcovRecord[] {
     path: string;
     test: string | null;
     lines: Map<number, number>;
-    branches: Map<number, Map<string, boolean>>;
+    branches: Map<number, Map<string, number>>;
+    functions: FunctionSpan[];
   } | null = null;
   const close = (): void => {
     if (open !== null) records.push(open);
@@ -73,10 +83,10 @@ export function parseLcov(text: string): LcovRecord[] {
     if (key === "SF") {
       close();
       if (value === "") throw new LcovError(n, "SF needs a path");
-      open = { path: value, test, lines: new Map(), branches: new Map() };
+      open = { path: value, test, lines: new Map(), branches: new Map(), functions: [] };
       continue;
     }
-    if (key !== "DA" && key !== "BRDA") continue;
+    if (key !== "DA" && key !== "BRDA" && key !== "FN") continue;
     if (open === null) throw new LcovError(n, `${key} comes before any SF`);
     if (key === "DA") {
       const da = DA.exec(value);
@@ -85,15 +95,25 @@ export function parseLcov(text: string): LcovRecord[] {
       open.lines.set(line, (open.lines.get(line) ?? 0) + Number(da[2]));
       continue;
     }
+    if (key === "FN") {
+      const fn = FN.exec(value);
+      if (fn === null) throw new LcovError(n, `FN needs <line>,<name>, got "${value}"`);
+      const start = Number(fn[1]);
+      const end = fn[2] === undefined ? undefined : Number(fn[2]);
+      const name = fn[3] ?? "";
+      if (end !== undefined && end < start) throw new LcovError(n, "FN ends before it starts");
+      open.functions.push(end === undefined ? { name, start } : { name, start, end });
+      continue;
+    }
     const br = BRDA.exec(value);
     if (br === null) {
       throw new LcovError(n, `BRDA needs <line>,<block>,<branch>,<taken>, got "${value}"`);
     }
     const line = Number(br[1]);
     const id = `${br[2]},${br[3]}`;
-    const taken = br[4] !== "-" && Number(br[4]) > 0;
-    const branches = open.branches.get(line) ?? new Map<string, boolean>();
-    branches.set(id, (branches.get(id) ?? false) || taken);
+    const taken = br[4] === "-" ? 0 : Number(br[4]);
+    const branches = open.branches.get(line) ?? new Map<string, number>();
+    branches.set(id, (branches.get(id) ?? 0) + taken);
     open.branches.set(line, branches);
   }
   close();
@@ -132,11 +152,57 @@ export function tipPlacer(
   };
 }
 
-/** One lcov file placed at the tip: the aggregate, and each TN-named test's lines. */
+/** What one test ran: its hit lines and its branch counts, per file. */
+export type TestRun = {
+  readonly lines: ReadonlyMap<RepoPath, readonly number[]>;
+  readonly branches: ReadonlyMap<RepoPath, BranchCounts>;
+};
+
+/**
+ * One lcov file placed at the tip: the aggregate, the branch counts of the whole run (what a
+ * `--test` run keeps for its test), and each TN-named test's lines and branch counts.
+ */
 export type Run = {
   readonly files: ReadonlyMap<RepoPath, FileCoverage>;
-  readonly tests: ReadonlyMap<string, ReadonlyMap<RepoPath, readonly number[]>>;
+  readonly counts: ReadonlyMap<RepoPath, BranchCounts>;
+  readonly tests: ReadonlyMap<string, TestRun>;
 };
+
+type Counting = Map<RepoPath, Map<number, Map<string, number>>>;
+
+/** Adds a record's branch counts into `into`, keeping lcov's branch order per line. */
+function countInto(into: Counting, path: RepoPath, record: LcovRecord): void {
+  const joined = into.get(path) ?? new Map<number, Map<string, number>>();
+  for (const [line, ids] of record.branches) {
+    const on = joined.get(line) ?? new Map<string, number>();
+    for (const [id, n] of ids) on.set(id, (on.get(id) ?? 0) + n);
+    joined.set(line, on);
+  }
+  into.set(path, joined);
+}
+
+function countsOf(counting: Counting): Map<RepoPath, BranchCounts> {
+  const out = new Map<RepoPath, BranchCounts>();
+  for (const [path, byLine] of counting) {
+    if (byLine.size === 0) continue;
+    out.set(path, sorted(new Map([...byLine].map(([line, ids]) => [line, [...ids.values()]]))));
+  }
+  return out;
+}
+
+/** Functions of both lists, once each by start and name, in line order. */
+function joinFunctions(
+  a: readonly FunctionSpan[],
+  b: readonly FunctionSpan[],
+): readonly FunctionSpan[] {
+  const seen = new Map<string, FunctionSpan>();
+  for (const f of [...a, ...b]) {
+    const key = `${f.start}|${f.name}`;
+    const had = seen.get(key);
+    if (had === undefined || (had.end === undefined && f.end !== undefined)) seen.set(key, f);
+  }
+  return [...seen.values()].sort((x, y) => x.start - y.start);
+}
 
 /** Sums hits and joins branches over records of the same file; drops what `place` rejects. */
 export function runOf(
@@ -144,42 +210,51 @@ export function runOf(
   place: (raw: string) => RepoPath | null,
 ): Run {
   const lines = new Map<RepoPath, Map<number, number>>();
-  const branches = new Map<RepoPath, Map<number, Map<string, boolean>>>();
-  const tests = new Map<string, Map<RepoPath, Set<number>>>();
+  const branches: Counting = new Map();
+  const functions = new Map<RepoPath, readonly FunctionSpan[]>();
+  const tests = new Map<string, { lines: Map<RepoPath, Set<number>>; branches: Counting }>();
   for (const record of records) {
     const path = place(record.path);
     if (path === null) continue;
     const hits = lines.get(path) ?? new Map<number, number>();
     for (const [line, n] of record.lines) hits.set(line, (hits.get(line) ?? 0) + n);
     lines.set(path, hits);
-    const joined = branches.get(path) ?? new Map<number, Map<string, boolean>>();
-    for (const [line, ids] of record.branches) {
-      const on = joined.get(line) ?? new Map<string, boolean>();
-      for (const [id, taken] of ids) on.set(id, (on.get(id) ?? false) || taken);
-      joined.set(line, on);
-    }
-    branches.set(path, joined);
+    countInto(branches, path, record);
+    functions.set(path, joinFunctions(functions.get(path) ?? [], record.functions));
     if (record.test === null) continue;
-    const ran = tests.get(record.test) ?? new Map<RepoPath, Set<number>>();
-    const set = ran.get(path) ?? new Set<number>();
+    const ran = tests.get(record.test) ?? { lines: new Map(), branches: new Map() };
+    const set = ran.lines.get(path) ?? new Set<number>();
     for (const [line, n] of record.lines) if (n > 0) set.add(line);
-    ran.set(path, set);
+    ran.lines.set(path, set);
+    countInto(ran.branches, path, record);
     tests.set(record.test, ran);
   }
   const files = new Map<RepoPath, FileCoverage>();
   for (const [path, hits] of lines) {
     const counted = new Map<number, BranchHits>();
     for (const [line, ids] of branches.get(path) ?? []) {
-      counted.set(line, [[...ids.values()].filter(Boolean).length, ids.size]);
+      const n = [...ids.values()];
+      counted.set(line, [n.filter((c) => c > 0).length, n.length]);
     }
-    files.set(path, { lines: sorted(hits), branches: sorted(counted) });
+    const fns = functions.get(path) ?? [];
+    files.set(path, {
+      lines: sorted(hits),
+      branches: sorted(counted),
+      ...(fns.length === 0 ? {} : { functions: fns }),
+    });
   }
   return {
     files,
+    counts: countsOf(branches),
     tests: new Map(
-      [...tests].map(([id, ran]) => [
+      [...tests].map(([id, ran]): [string, TestRun] => [
         id,
-        new Map([...ran].map(([path, set]) => [path, [...set].sort((a, b) => a - b)])),
+        {
+          lines: new Map(
+            [...ran.lines].map(([path, set]) => [path, [...set].sort((a, b) => a - b)]),
+          ),
+          branches: countsOf(ran.branches),
+        },
       ]),
     ),
   };
@@ -218,7 +293,12 @@ function mergeMax(
       const [t, n] = branches.get(l) ?? [0, 0];
       branches.set(l, [Math.max(taken, t), Math.max(total, n)]);
     }
-    out.set(path, { lines: sorted(lines), branches: sorted(branches) });
+    const functions = joinFunctions(had.functions ?? [], f.functions ?? []);
+    out.set(path, {
+      lines: sorted(lines),
+      branches: sorted(branches),
+      ...(functions.length === 0 ? {} : { functions }),
+    });
   }
   return out;
 }
@@ -245,7 +325,7 @@ export function recordRun(
   const { tip, takenAt, test } = at;
   if (test === undefined) {
     const tests = new Map(
-      [...run.tests].map(([id, lines]): [string, TestCoverage] => [id, { lines }]),
+      [...run.tests].map(([id, ran]): [string, TestCoverage] => [id, testEntry(ran)]),
     );
     return { tip, takenAt, files: run.files, tests };
   }
@@ -254,11 +334,16 @@ export function recordRun(
   const entry: TestCoverage = {
     ...(test.at === undefined ? {} : { at: test.at }),
     ...(test.preview === undefined ? {} : { preview: test.preview }),
-    lines: hitLines(run.files),
+    ...testEntry({ lines: hitLines(run.files), branches: run.counts }),
   };
   tests.set(test.id, entry);
   const files = base === null ? run.files : mergeMax(base.files, run.files);
   return { tip, takenAt, files, tests };
+}
+
+/** A test's lines, and its branch counts when the run had any. */
+function testEntry(ran: TestRun): TestCoverage {
+  return { lines: ran.lines, ...(ran.branches.size === 0 ? {} : { branches: ran.branches }) };
 }
 
 /** Executable added rows of a file and how many of them ran. */
@@ -333,7 +418,11 @@ export type CoverageJson = {
   readonly takenAt: string;
   readonly files: Record<
     string,
-    { readonly lines: Record<string, number>; readonly branches?: Record<string, BranchHits> }
+    {
+      readonly lines: Record<string, number>;
+      readonly branches?: Record<string, BranchHits>;
+      readonly functions?: readonly FunctionSpan[];
+    }
   >;
   readonly tests?: Record<
     string,
@@ -341,6 +430,7 @@ export type CoverageJson = {
       readonly at?: Loc;
       readonly preview?: readonly string[];
       readonly lines: Record<string, number[]>;
+      readonly branches?: Record<string, Record<string, readonly number[]>>;
     }
   >;
 };
@@ -352,6 +442,7 @@ export function serializeCoverage(c: Coverage): CoverageJson {
       {
         lines: Object.fromEntries(f.lines),
         ...(f.branches.size === 0 ? {} : { branches: Object.fromEntries(f.branches) }),
+        ...(f.functions === undefined ? {} : { functions: f.functions }),
       },
     ]),
   );
@@ -362,6 +453,13 @@ export function serializeCoverage(c: Coverage): CoverageJson {
         ...(t.at === undefined ? {} : { at: t.at }),
         ...(t.preview === undefined ? {} : { preview: [...t.preview] }),
         lines: Object.fromEntries([...t.lines].map(([p, ls]) => [p, [...ls]])),
+        ...(t.branches === undefined
+          ? {}
+          : {
+              branches: Object.fromEntries(
+                [...t.branches].map(([p, byLine]) => [p, Object.fromEntries(byLine)]),
+              ),
+            }),
       },
     ]),
   );
@@ -401,8 +499,48 @@ export function parseLocArg(raw: string, place: (raw: string) => RepoPath | null
   return end < start ? `--at ${raw} runs backwards` : { path, start, end };
 }
 
+function parseFunction(v: unknown): FunctionSpan | null {
+  if (!isFields<"name" | "start" | "end">(v)) return null;
+  const { name, start, end } = v;
+  if (typeof name !== "string" || !isLine(start)) return null;
+  if (end === undefined) return { name, start };
+  return isLine(end) && end >= start ? { name, start, end } : null;
+}
+
+function parseFunctions(v: unknown): readonly FunctionSpan[] | undefined | string {
+  if (v === undefined) return undefined;
+  if (!Array.isArray(v)) return "functions is not a list";
+  const out: FunctionSpan[] = [];
+  for (const raw of v) {
+    const f = parseFunction(raw);
+    if (f === null) return "a function is not a { name, start, end? }";
+    out.push(f);
+  }
+  return out;
+}
+
+function parseCounts(v: unknown): Map<RepoPath, BranchCounts> | undefined | string {
+  if (v === undefined) return undefined;
+  const files = entries(v);
+  if (files === null) return "branches is not an object";
+  const out = new Map<RepoPath, BranchCounts>();
+  for (const [path, raw] of files) {
+    const lines = entries(raw);
+    if (!isRepoPath(path) || lines === null) return `branches of ${path} are not by line`;
+    const byLine = new Map<number, readonly number[]>();
+    for (const [key, counts] of lines) {
+      if (!LINE_KEY.test(key) || !Array.isArray(counts) || !counts.every(isCount)) {
+        return `branches of ${path}:${key} are not counts`;
+      }
+      byLine.set(Number(key), counts.filter(isCount));
+    }
+    out.set(path, sorted(byLine));
+  }
+  return out;
+}
+
 function parseFile(v: unknown): FileCoverage | string {
-  if (!isFields<"lines" | "branches">(v)) return "a file is not an object";
+  if (!isFields<"lines" | "branches" | "functions">(v)) return "a file is not an object";
   const lines = entries(v.lines);
   if (lines === null) return "lines is not an object";
   const hits = new Map<number, number>();
@@ -423,11 +561,17 @@ function parseFile(v: unknown): FileCoverage | string {
     }
     branches.set(Number(key), [taken, total]);
   }
-  return { lines: sorted(hits), branches: sorted(branches) };
+  const functions = parseFunctions(v.functions);
+  if (typeof functions === "string") return functions;
+  return {
+    lines: sorted(hits),
+    branches: sorted(branches),
+    ...(functions === undefined ? {} : { functions }),
+  };
 }
 
 function parseTest(v: unknown): TestCoverage | string {
-  if (!isFields<"at" | "preview" | "lines">(v)) return "a test is not an object";
+  if (!isFields<"at" | "preview" | "lines" | "branches">(v)) return "a test is not an object";
   const at = v.at === undefined ? undefined : parseLoc(v.at);
   if (at === null) return "at is not a { path, start, end }";
   const preview = v.preview;
@@ -446,10 +590,13 @@ function parseTest(v: unknown): TestCoverage | string {
     }
     lines.set(path, list);
   }
+  const branches = parseCounts(v.branches);
+  if (typeof branches === "string") return branches;
   return {
     ...(at === undefined ? {} : { at }),
     ...(preview === undefined ? {} : { preview: preview.filter((l) => typeof l === "string") }),
     lines,
+    ...(branches === undefined ? {} : { branches }),
   };
 }
 

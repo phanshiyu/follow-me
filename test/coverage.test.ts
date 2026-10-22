@@ -5,7 +5,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { LcovError, parseLcov, recordRun, runOf, tipPlacer } from "../src/coverage.ts";
+import {
+  LcovError,
+  parseCoverage,
+  parseLcov,
+  recordRun,
+  runOf,
+  serializeCoverage,
+  tipPlacer,
+} from "../src/coverage.ts";
 import { isRepoPath, isSha } from "../src/diff.ts";
 import { loadDiff } from "../src/git.ts";
 import type { RepoPath } from "../src/types.ts";
@@ -105,12 +113,13 @@ test("lcov lines, partly taken branches and TN blocks parse; unknown records are
           [
             2,
             new Map([
-              ["0,0", true],
-              ["0,1", false],
-              ["e0,2", false],
+              ["0,0", 1],
+              ["0,1", 0],
+              ["e0,2", 0],
             ]),
           ],
         ],
+        functions: [{ name: "f", start: 1 }],
       },
       {
         test: "adds",
@@ -120,6 +129,7 @@ test("lcov lines, partly taken branches and TN blocks parse; unknown records are
           [2, 1],
         ],
         branches: [],
+        functions: [],
       },
     ],
   );
@@ -141,6 +151,76 @@ test("lcov lines, partly taken branches and TN blocks parse; unknown records are
   assert.deepEqual(
     [...tests].map(([id, t]) => [id, [...t.lines]]),
     [["adds", [["src/a.js", [1, 2]]]]],
+  );
+});
+
+/**
+ * Real output of `node --test --experimental-test-coverage --test-reporter=lcov
+ * --test-name-pattern '^<name>$'`, one run per test, over this module:
+ *
+ *   1 export function step(state, event) {
+ *   2   if (state === "idle" && event === "submit") {
+ *   3     return "checking";
+ *   4   }
+ *   5   if (state === "checking") {
+ *   6     return event === "ok" ? "done" : "failed";
+ *   7   }
+ *   8   return state;
+ *   9 }
+ */
+const FIXTURES = fileURLToPath(new URL("fixtures/lcov/", import.meta.url));
+const fixture = (name: string) => readFileSync(join(FIXTURES, name), "utf8");
+
+test("per-test runs keep each test's branch counts and the file's functions, and round-trip", () => {
+  const machine = repoPath("src/machine.js");
+  const place = (raw: string) => (raw === "machine.js" ? machine : null);
+  const tip = sha(TIP);
+  const submits = runOf(parseLcov(fixture("submits.info")), place);
+  const fails = runOf(parseLcov(fixture("fails.info")), place);
+  const one = recordRun(null, submits, { tip, takenAt: "t1", test: { id: "submits" } });
+  const both = recordRun(one, fails, { tip, takenAt: "t2", test: { id: "fails" } });
+
+  const json = serializeCoverage(both);
+  assert.deepEqual(json.files["src/machine.js"]?.functions, [{ name: "step", start: 1 }]);
+  assert.deepEqual(json.tests, {
+    submits: {
+      lines: { "src/machine.js": [1, 2, 3, 4, 9] },
+      branches: { "src/machine.js": { 1: [1, 1], 4: [0] } },
+    },
+    fails: {
+      lines: { "src/machine.js": [1, 2, 5, 6, 7, 9] },
+      branches: { "src/machine.js": { 1: [1, 1], 2: [0, 0], 6: [0], 7: [0] } },
+    },
+  });
+  const back = parseCoverage(JSON.parse(JSON.stringify(json)));
+  assert.ok(typeof back !== "string", String(back));
+  assert.deepEqual(serializeCoverage(back), json);
+
+  // One lcov with a TN block per test gives the same per-test detail.
+  const blocks = `TN:submits\n${fixture("submits.info").replace(/^TN:\n/, "")}TN:fails\n${fixture("fails.info").replace(/^TN:\n/, "")}`;
+  const plain = serializeCoverage(
+    recordRun(null, runOf(parseLcov(blocks), place), { tip, takenAt: "t" }),
+  );
+  assert.deepEqual(plain.tests, json.tests);
+  assert.deepEqual(plain.files["src/machine.js"]?.functions, [{ name: "step", start: 1 }]);
+});
+
+test("lcov 2 FN records carry the end line; a bad one names its line", () => {
+  const [record] = parseLcov("SF:a.js\nFN:3,9,go\nFN:12,(anonymous_0)\nend_of_record\n");
+  assert.deepEqual(record?.functions, [
+    { name: "go", start: 3, end: 9 },
+    { name: "(anonymous_0)", start: 12 },
+  ]);
+  assert.throws(() => parseLcov("SF:a.js\nFN:x\n"), /lcov line 2: FN needs <line>,<name>/);
+  assert.throws(() => parseLcov("SF:a.js\nFN:9,3,go\n"), /lcov line 2: FN ends before it starts/);
+  assert.equal(
+    parseCoverage({
+      tip: TIP,
+      takenAt: "t",
+      files: {},
+      tests: { a: { lines: {}, branches: { "a.js": { 2: [1, -1] } } } },
+    }),
+    "test a: branches of a.js:2 are not counts",
   );
 });
 
@@ -182,8 +262,9 @@ test("lcov paths become repo-relative at the tip; outside the repo or not at the
 test("a plain run replaces the last; --test runs add up until the next plain run", () => {
   const a = repoPath("src/a.js");
   const run = (lines: [number, number][]) =>
-    runOf([{ test: null, path: a, lines: new Map(lines), branches: new Map() }], (p) =>
-      repoPath(p),
+    runOf(
+      [{ test: null, path: a, lines: new Map(lines), branches: new Map(), functions: [] }],
+      (p) => repoPath(p),
     );
   const tip = sha(TIP);
   const plain = recordRun(
