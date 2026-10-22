@@ -2240,7 +2240,11 @@ test("reply --map ties states to tip lines, names every bad entry, and show prin
 
   const good = write({
     states: { Checking: [place(1, 3), place(5)], Adding: [place(6, 7)] },
-    transitions: [{ from: "Checking", to: "Adding", event: "numbers", at: [place(4)] }],
+    // [*] marks the start in the diagram; a move from it in the map is dropped, not refused.
+    transitions: [
+      { from: "[*]", to: "Checking", at: [] },
+      { from: "Checking", to: "Adding", event: "numbers", at: [place(4)] },
+    ],
   });
   assert.equal(good.code, 0, good.err);
   const state = JSON.parse(await (await fetch(new URL("api/state", url))).text());

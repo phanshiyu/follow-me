@@ -333,7 +333,8 @@ commit or a unit ref, with kind one of `state-machine`, `sequence`, `diagram`.
   coverage from lcov; the agent never states coverage. Every state has at least one place; `at` of a
   transition may be empty. The server (`parseNewReply`) checks the shape, that a map comes with a
   diagram, that transitions name states of the map, and with a `stateDiagram` that every state name
-  appears in it as a word. `follow-me reply --map` also checks against the tip: every path is a file
+  appears in it as a word. A transition to or from `[*]` is dropped, since the diagram's `[*]` marks
+  start and end and the move has no code of its own. `follow-me reply --map` also checks against the tip: every path is a file
   there and every range ends within it, listing every bad entry (`map.states.Idle[1]: …`) at once.
   Paths are typed as UTF-8 and stored as git's bytes, like coverage paths. The map lives on the reply,
   so swaps carry it as they carry replies, and `follow-me show <c_…>` prints it one line per state

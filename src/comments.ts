@@ -97,13 +97,17 @@ function parseLocs(v: unknown, at: string, needed: boolean): Loc[] | string {
 
 const TRANSITION_ENDS: readonly ("from" | "to")[] = ["from", "to"];
 
+/** A stateDiagram's start and end marker. */
+const START_END = "[*]";
+
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /**
  * Boundary parse of a reply's state map. Every state has at least one place, every transition
- * names states of the map, and with a stateDiagram every state name appears in it. The reason
+ * names states of the map, and with a stateDiagram every state name appears in it. A transition
+ * to or from `[*]` is dropped: the diagram marks the start and end. The reason
  * names the bad entry, as map.states.<name>[i] or map.transitions[i].<field>.
  */
 export function parseStateMap(v: unknown, diagram: string | undefined): StateMap | string {
@@ -126,6 +130,9 @@ export function parseStateMap(v: unknown, diagram: string | undefined): StateMap
     const at = `map.transitions[${i}]`;
     if (!isFields<"from" | "to" | "event" | "at">(raw))
       return `${at}: expected { from, to, event, at }`;
+    // The diagram's [*] already marks where the machine starts and ends; a move to or from it
+    // has no code of its own, so it is dropped rather than refused.
+    if (raw.from === START_END || raw.to === START_END) continue;
     for (const end of TRANSITION_ENDS) {
       const state = raw[end];
       if (typeof state !== "string" || !named.has(state)) {
