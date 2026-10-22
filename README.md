@@ -75,13 +75,16 @@ The red blob in the party hat is your branch tip. Nothing follow-me does moves i
 ![Cmd-clicking format in pow opens a peek of its definition, which lives outside this branch](assets/screenshots/definition.png)
 *Cmd-click a name to jump to where it is defined, even in a later commit, and Alt+Left to come back. A definition the branch does not change opens as a peek.*
 
+![Coverage while reading: gutter bars mark covered, partly covered and uncovered lines, with counts per commit, per file and for the branch, and a popover listing the test that ran a line](assets/screenshots/coverage.png)
+*Coverage while reading. Your agent runs the tests with coverage and passes the lcov to `follow-me coverage`; follow-me never runs anything. Bars show covered, partly covered and uncovered lines, `x` jumps to the next uncovered line, and clicking a bar lists the tests that ran it.*
+
 ![A diagram opened in the lightbox at full size](assets/screenshots/diagram.png)
 *Diagrams sit full width under the commit or reply they explain, and open full size on click.*
 
 ![The hand-off page: every kept item with its original-branch path and line, an include checkbox, and copy buttons](assets/screenshots/handoff.png)
 *Submit review. Each item carries the original branch's path and line, so your agent can post it to the merge request as is.*
 
-Keys: `[` shows or hides the index, `j` and `k` move between commits, Cmd-click (Ctrl-click) goes to a definition and Alt+Left comes back, arrows and Shift+arrows pick rows inside a hunk, `c` comments on the pick, `v` marks a commit viewed, `?` lists the rest. An unfinished review autosaves and comes back when the page is opened again.
+Keys: `[` shows or hides the index, `j` and `k` move between commits, Cmd-click (Ctrl-click) goes to a definition and Alt+Left comes back, arrows and Shift+arrows pick rows inside a hunk, `c` comments on the pick, `v` marks a commit viewed, `g` shows or hides coverage and `x` jumps to the next uncovered line, `?` lists the rest. An unfinished review autosaves and comes back when the page is opened again.
 
 ### Reviewing someone else's branch
 
