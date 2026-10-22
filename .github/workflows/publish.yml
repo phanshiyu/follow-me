@@ -27,4 +27,14 @@ jobs:
           tag="${GITHUB_REF_NAME#v}"
           version="$(node -p "require('./package.json').version")"
           [ "$tag" = "$version" ] || { echo "tag v$tag but package.json says $version"; exit 1; }
-      - run: npm publish
+      # The same gates as ci.yml, in the same order, as separate steps so a failure names its
+      # step. The package's own prepublishOnly would repeat them, so publish skips scripts.
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm run ui:test
+      - run: npm test
+      - name: publish
+        # Trusted publishing never asks for a login; if npm falls back to one, fail fast.
+        timeout-minutes: 5
+        run: npm publish --ignore-scripts
