@@ -392,6 +392,8 @@ test("follow-me coverage records the run at the tip and counts the changed lines
     "SF:src/lib.js",
     "DA:4,1",
     "DA:5,1",
+    "BRDA:4,0,0,1",
+    "BRDA:4,0,1,0",
     "end_of_record",
   );
   const named = run(
@@ -404,9 +406,14 @@ test("follow-me coverage records the run at the tip and counts the changed lines
     "src/lib.js:3-7",
   );
   assert.equal(named.code, 0, named.err);
+  // What this test ran is said apart from the total, which also holds the run before it.
   assert.equal(
     named.out,
-    `coverage for 2 files at ${tip.slice(0, 12)}; 4 of 4 changed lines covered\n`,
+    [
+      'recorded test "add rejects strings": 2 changed lines, 1 branch',
+      `running total of 1 test: coverage for 2 files at ${tip.slice(0, 12)}; 4 of 4 changed lines covered`,
+      "",
+    ].join("\n"),
   );
   const withTest = readCoverage(repo.dir);
   assert.ok(typeof withTest === "object" && withTest !== null && "tests" in withTest);
@@ -414,6 +421,7 @@ test("follow-me coverage records the run at the tip and counts the changed lines
     "add rejects strings": {
       at: { path: "src/lib.js", start: 3, end: 7 },
       lines: { "src/lib.js": [4, 5] },
+      branches: { "src/lib.js": { 4: [1, 0] } },
     },
   });
 

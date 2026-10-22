@@ -277,7 +277,9 @@ reader can tell which outcome each test took at each decision; `functions` are t
   nothing. A `--test` run against another tip starts over.
 - **Changed lines.** The summary line counts the branch's added rows that the run calls executable,
   that is rows with a `DA` record, and how many were hit: "coverage for N files at <tip>; M of K
-  changed lines covered".
+  changed lines covered". A `--test` run says first what it recorded for that test alone,
+  `recorded test "<name>": N changed lines, M branches` (branches taken on added rows), then the
+  same summary prefixed `running total of T tests:`, so per-test runs do not read as one count.
 
 The server serves the file at `GET api/coverage` (404 before the first run), read from disk on every
 request so a restarted server has it, plus `stale`: the covered paths whose content differs between

@@ -349,6 +349,24 @@ function testEntry(ran: TestRun): TestCoverage {
 /** Executable added rows of a file and how many of them ran. */
 export type Tally = { readonly covered: number; readonly executable: number };
 
+/** Calls visit with each added row's tip line, per hunk, for files the run covers. */
+function eachAddedLine(
+  units: ReadonlyMap<UnitId, Unit>,
+  files: ReadonlyMap<RepoPath, FileCoverage>,
+  visit: (path: RepoPath, file: FileCoverage, line: number) => void,
+): void {
+  for (const unit of units.values()) {
+    if (unit.kind !== "hunk") continue;
+    const file = files.get(unit.path);
+    if (file === undefined) continue;
+    let line = tipStartOf(unit, units);
+    for (const row of unit.body) {
+      if (row.op === "+") visit(unit.path, file, line);
+      if (row.op !== "-") line += 1;
+    }
+  }
+}
+
 /**
  * Per file, the branch's added rows that lcov calls executable, and how many ran. Every added
  * row is a tip line, which is where the run was taken. Files without such rows are left out.
@@ -358,23 +376,25 @@ export function changedLines(
   files: ReadonlyMap<RepoPath, FileCoverage>,
 ): Map<RepoPath, Tally> {
   const out = new Map<RepoPath, Tally>();
-  for (const unit of units.values()) {
-    if (unit.kind !== "hunk") continue;
-    const file = files.get(unit.path);
-    if (file === undefined) continue;
-    let line = tipStartOf(unit, units);
-    let { covered, executable } = out.get(unit.path) ?? { covered: 0, executable: 0 };
-    for (const row of unit.body) {
-      const hits = row.op === "+" ? file.lines.get(line) : undefined;
-      if (hits !== undefined) {
-        executable += 1;
-        if (hits > 0) covered += 1;
-      }
-      if (row.op !== "-") line += 1;
-    }
-    if (executable > 0) out.set(unit.path, { covered, executable });
-  }
+  eachAddedLine(units, files, (path, file, line) => {
+    const hits = file.lines.get(line);
+    if (hits === undefined) return;
+    const { covered, executable } = out.get(path) ?? { covered: 0, executable: 0 };
+    out.set(path, { covered: covered + (hits > 0 ? 1 : 0), executable: executable + 1 });
+  });
   return out;
+}
+
+/** How many branches the run took on the branch's added rows, summed over every decision. */
+export function changedBranchesTaken(
+  units: ReadonlyMap<UnitId, Unit>,
+  files: ReadonlyMap<RepoPath, FileCoverage>,
+): number {
+  let taken = 0;
+  eachAddedLine(units, files, (_, file, line) => {
+    taken += file.branches.get(line)?.[0] ?? 0;
+  });
+  return taken;
 }
 
 export function totalOf(tallies: Iterable<Tally>): Tally {

@@ -5,6 +5,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mapOffTip, parseStateMap } from "./comments.ts";
 import {
+  changedBranchesTaken,
   changedLines,
   LcovError,
   type NamedTest,
@@ -1724,9 +1725,17 @@ async function coverage(cwd: string, args: Args): Promise<number> {
   const { covered, executable } = totalOf(
     changedLines(session.diff.units, recorded.files).values(),
   );
-  say(
-    `coverage for ${plural(recorded.files.size, "file")} at ${short(tip)}; ${covered} of ${executable} changed lines covered`,
-  );
+  const total = `coverage for ${plural(recorded.files.size, "file")} at ${short(tip)}; ${covered} of ${executable} changed lines covered`;
+  if (test === undefined) say(total);
+  else {
+    // A per-test run adds to what is on record, so its own share is said apart from the total.
+    const own = totalOf(changedLines(session.diff.units, run.files).values()).covered;
+    const branches = changedBranchesTaken(session.diff.units, run.files);
+    say(
+      `recorded test ${JSON.stringify(test.id)}: ${plural(own, "changed line")}, ${branches === 1 ? "1 branch" : `${branches} branches`}`,
+    );
+    say(`running total of ${plural(recorded.tests.size, "test")}: ${total}`);
+  }
   if (test === undefined && open !== null && (await mapWantsTests(session, open))) {
     next(`${perTestStep(session, cwd)}; then run follow-me again`);
   }
