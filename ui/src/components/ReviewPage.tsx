@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { commitKey } from "../lib/commit.ts";
 import { HEADER_PX, PageProvider, scrollToCommit, usePage } from "../page.tsx";
@@ -133,6 +133,8 @@ function Page() {
   const { state, error, ended, arrived, dismissArrived, reconnecting } = useReview();
   const { indexOpen } = usePage();
   const definitions = useDefinitions();
+  const { goTo, goToPlaces } = definitions;
+  const going = useMemo(() => ({ goTo, goToPlaces }), [goTo, goToPlaces]);
   const [stackOpen, setStackOpen] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [submitOpen, setSubmitOpen] = useState(false);
@@ -142,7 +144,7 @@ function Page() {
     () => setSubmitOpen(true),
   );
   return (
-    <GoToProvider value={definitions.goTo}>
+    <GoToProvider value={going}>
       <div className="min-h-screen">
         <header className="sticky top-0 z-30 h-11 border-b bg-background/95 backdrop-blur">
           <div className="grid h-full grid-cols-[1fr_auto_1fr] items-center gap-2 px-4 text-sm">

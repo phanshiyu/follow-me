@@ -3,7 +3,7 @@
 
 import { filesOf } from "./commit.ts";
 import { type LineNumber, ownersOf, rowsOf } from "./rows.ts";
-import type { ProjectedCommit, RepoPath, Unit, UnitId } from "./wire.ts";
+import type { Candidate, ProjectedCommit, RepoPath, Unit, UnitId } from "./wire.ts";
 
 /** Tip lines of one file, both ends included. */
 export type Loc = { readonly path: RepoPath; readonly start: number; readonly end: number };
@@ -229,6 +229,19 @@ export function locate(
     if (commit !== undefined) return { unit: unit.id, row, commit };
   }
   return null;
+}
+
+/** A place for the jump or the peek, from where `locate` found it on the page; it has no preview. */
+export function candidateAt(at: Loc, shown: ReturnType<typeof locate>): Candidate {
+  return {
+    path: at.path,
+    newLine: at.start,
+    kind: "other",
+    unit: shown?.unit ?? null,
+    row: shown?.row ?? null,
+    commit: shown?.commit ?? null,
+    preview: [],
+  };
 }
 
 /** "2026-10-22 14:05" in the reader's time zone. */

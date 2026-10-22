@@ -198,3 +198,40 @@ export function anOffer(overrides: Partial<Offer> = {}): Offer {
     ...overrides,
   });
 }
+
+export const GUARD = "h_0000000000aa";
+
+/** Eight commits; commit 6, in "The details", adds src/guard.js where assertNumber is defined. */
+export function aGuardedState(overrides: Partial<State> = {}): State {
+  const guard: TextHunk = aHunk({
+    id: JSON.parse(`"${GUARD}"`),
+    path: JSON.parse('"src/guard.js"'),
+    body: [
+      { op: "+", text: "export function assertNumber(x) {\n", change: 0 },
+      {
+        op: "+",
+        text: "  if (typeof x !== 'number') throw new TypeError('not a number');\n",
+        change: 1,
+      },
+      { op: "+", text: "}\n", change: 2 },
+    ],
+    changeCount: 3,
+  });
+  const base = aLongState();
+  return aLongState({
+    units: [...base.units, guard],
+    commits: base.commits.map((c) =>
+      c.index === 5
+        ? JSON.parse(
+            JSON.stringify({
+              ...c,
+              message: "Add the guard",
+              section: "details",
+              refs: [{ unit: GUARD, select: { kind: "lines", changes: [0, 1, 2] } }],
+            }),
+          )
+        : c,
+    ),
+    ...overrides,
+  });
+}

@@ -9,6 +9,7 @@ import { CommentBox } from "./CommentBox.tsx";
 import { Diagram } from "./Diagram.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { SeverityChip } from "./Severity.tsx";
+import { StateMachine } from "./StateMachine.tsx";
 
 function firstLine(text: string): string {
   return text.split("\n")[0] ?? "";
@@ -140,7 +141,16 @@ export function ThreadCard({
           {reply.author === "agent" ? <Markdown text={reply.body} /> : <Text>{reply.body}</Text>}
           {reply.diagram === undefined ? null : (
             <div className="mt-2">
-              <Diagram source={reply.diagram} title="The agent's diagram" />
+              {reply.map === undefined ? (
+                <Diagram source={reply.diagram} title="The agent's diagram" />
+              ) : (
+                <StateMachine
+                  source={reply.diagram}
+                  map={reply.map}
+                  from={comment.anchor.kind === "plan" ? 0 : comment.anchor.commit}
+                  title="The agent's state machine"
+                />
+              )}
             </div>
           )}
         </div>

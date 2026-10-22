@@ -1,46 +1,10 @@
 import { expect, test } from "vitest";
 import { page, userEvent } from "vitest/browser";
 import { isMac } from "../lib/definition.ts";
-import type { Candidate, TextHunk } from "../lib/wire.ts";
-import { aCandidate, aHunk, aLongState } from "../test/factories.ts";
+import type { Candidate } from "../lib/wire.ts";
+import { aCandidate, aGuardedState, GUARD } from "../test/factories.ts";
 import { goToCommit, indexEntry } from "../test/pages.ts";
 import { renderReview } from "../test/render.tsx";
-
-const GUARD = "h_0000000000aa";
-
-/** Eight commits; commit 6, in "The details", adds src/guard.js where assertNumber is defined. */
-function withGuard() {
-  const guard: TextHunk = aHunk({
-    id: JSON.parse(`"${GUARD}"`),
-    path: JSON.parse('"src/guard.js"'),
-    body: [
-      { op: "+", text: "export function assertNumber(x) {\n", change: 0 },
-      {
-        op: "+",
-        text: "  if (typeof x !== 'number') throw new TypeError('not a number');\n",
-        change: 1,
-      },
-      { op: "+", text: "}\n", change: 2 },
-    ],
-    changeCount: 3,
-  });
-  const base = aLongState();
-  return aLongState({
-    units: [...base.units, guard],
-    commits: base.commits.map((c) =>
-      c.index === 5
-        ? JSON.parse(
-            JSON.stringify({
-              ...c,
-              message: "Add the guard",
-              section: "details",
-              refs: [{ unit: GUARD, select: { kind: "lines", changes: [0, 1, 2] } }],
-            }),
-          )
-        : c,
-    ),
-  });
-}
 
 const inGuard = aCandidate({ unit: JSON.parse(`"${GUARD}"`), row: 0, commit: 5 });
 const outside = aCandidate({
@@ -59,7 +23,7 @@ const usage = () =>
     .getByText("assertNumber", { exact: true });
 
 async function answer(candidates: readonly Candidate[]) {
-  const rendered = await renderReview(withGuard());
+  const rendered = await renderReview(aGuardedState());
   rendered.server.on("GET", /^\/api\/definition\?/, () => ({ candidates }));
   await expect.element(usage()).toHaveClass("tok-function");
   return rendered;

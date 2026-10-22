@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { api } from "../lib/api.ts";
 import {
+  candidateAt,
   type Loc,
   locate,
   type Mark,
@@ -19,7 +20,6 @@ import {
   toneOf,
 } from "../lib/coverage.ts";
 import { flash } from "../lib/jump.ts";
-import type { Candidate } from "../lib/wire.ts";
 import { useCoverage, usePage } from "../page.tsx";
 import { useCoverageData, useDerived, useReview } from "../store.tsx";
 import { type Measurable, useGoTo } from "./Definition.tsx";
@@ -185,19 +185,6 @@ export function useUncoveredSteps(): (dir: 1 | -1) => void {
 
 const TEST = { title: "Test", kind: "test" } as const;
 
-/** A place for the jump or the peek; a test has no preview of its own. */
-function placeAt(at: Loc, shown: { unit: Candidate["unit"]; row: number; commit: number } | null) {
-  return {
-    path: at.path,
-    newLine: at.start,
-    kind: "other",
-    unit: shown?.unit ?? null,
-    row: shown?.row ?? null,
-    commit: shown?.commit ?? null,
-    preview: [],
-  } satisfies Candidate;
-}
-
 const hitTimes = (n: number) => (n === 1 ? "Hit once" : `Hit ${n} times`);
 
 /**
@@ -252,7 +239,7 @@ export function MarkDetails({
   const open = async (id: string, at: Loc | null) => {
     onClose();
     const shown = shownAt(at);
-    if (at !== null && shown !== null) return goTo(placeAt(at, shown), id, commit, near, TEST);
+    if (at !== null && shown !== null) return goTo(candidateAt(at, shown), id, commit, near, TEST);
     const named = testNameOf(id);
     const file = at?.path ?? named.path;
     if (named.name !== null && file !== null) {
@@ -260,7 +247,7 @@ export function MarkDetails({
       const found = answer.candidates.find((c) => c.path === file);
       if (found !== undefined) return goTo(found, named.name, commit, near, TEST);
     }
-    if (at !== null) goTo(placeAt(at, null), id, commit, near, TEST);
+    if (at !== null) goTo(candidateAt(at, null), id, commit, near, TEST);
   };
   return (
     <div className="space-y-2">

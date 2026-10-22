@@ -122,13 +122,16 @@ function useLookup() {
   return { lookup, cached };
 }
 
-/** What a peek is of: "Definition" and the candidate's kind, or "Test" and "test". */
-type Subject = { readonly title: string; readonly kind: string };
+/**
+ * What a peek is of: "Definition" and the candidate's kind, or "Test" and "test". `empty` says why
+ * a place has no lines to show.
+ */
+export type Subject = { readonly title: string; readonly kind: string; readonly empty?: string };
 
 /** A popover beside a clicked name; `from` is the commit whose code was clicked. */
-type Shown = { readonly name: string; readonly from: number } & (
+type Shown = { readonly name: string; readonly from: number; readonly subject?: Subject } & (
   | { readonly kind: "choose"; readonly candidates: readonly Candidate[] }
-  | { readonly kind: "peek"; readonly candidate: Candidate; readonly subject?: Subject }
+  | { readonly kind: "peek"; readonly candidate: Candidate }
 );
 
 export type Measurable = { getBoundingClientRect(): DOMRect };
@@ -145,13 +148,30 @@ export type GoTo = (
   subject?: Subject,
 ) => void;
 
-const GoToContext = createContext<GoTo | null>(null);
+/** Goes to one of several places: straight there for one, the list of places for more. */
+export type GoToPlaces = (
+  candidates: readonly Candidate[],
+  name: string,
+  from: number,
+  near: Measurable,
+  subject?: Subject,
+) => void;
+
+const GoToContext = createContext<{ goTo: GoTo; goToPlaces: GoToPlaces } | null>(null);
 export const GoToProvider = GoToContext.Provider;
 
+function useGoToContext() {
+  const value = useContext(GoToContext);
+  if (value === null) throw new Error("useGoTo outside GoToProvider");
+  return value;
+}
+
 export function useGoTo(): GoTo {
-  const goTo = useContext(GoToContext);
-  if (goTo === null) throw new Error("useGoTo outside GoToProvider");
-  return goTo;
+  return useGoToContext().goTo;
+}
+
+export function useGoToPlaces(): GoToPlaces {
+  return useGoToContext().goToPlaces;
 }
 
 /**
@@ -159,7 +179,12 @@ export function useGoTo(): GoTo {
  * knows where it is defined; Cmd-click jumps there, lists the places, or peeks at code the branch
  * does not change. Back, Alt+Left or the header chip, returns to where the jump started.
  */
-export function useDefinitions(): { back: ReactNode; layer: ReactNode; goTo: GoTo } {
+export function useDefinitions(): {
+  back: ReactNode;
+  layer: ReactNode;
+  goTo: GoTo;
+  goToPlaces: GoToPlaces;
+} {
   const { state } = useReview();
   const { units } = useDerived();
   const { reveal } = usePage();
@@ -198,10 +223,10 @@ export function useDefinitions(): { back: ReactNode; layer: ReactNode; goTo: GoT
   }, []);
 
   const open = useCallback(
-    (candidate: Candidate, name: string, from: number) => {
+    (candidate: Candidate, name: string, from: number, subject?: Subject) => {
       setShown(null);
       if (isOnPage(candidate)) jump(candidate, from);
-      else setShown({ kind: "peek", name, from, candidate });
+      else setShown({ kind: "peek", name, from, candidate, ...(subject ? { subject } : {}) });
     },
     [jump],
   );
@@ -214,6 +239,17 @@ export function useDefinitions(): { back: ReactNode; layer: ReactNode; goTo: GoT
       else setShown({ kind: "peek", name, from, candidate, ...(subject ? { subject } : {}) });
     },
     [jump],
+  );
+
+  const goToPlaces = useCallback<GoToPlaces>(
+    (candidates, name, from, near, subject) => {
+      anchor.current = near;
+      const outcome = outcomeOf(candidates);
+      if (outcome.kind === "choose") {
+        setShown({ kind: "choose", name, from, candidates, ...(subject ? { subject } : {}) });
+      } else if (outcome.kind !== "none") goTo(outcome.candidate, name, from, near, subject);
+    },
+    [goTo],
   );
 
   // The pointer and the modifier, tracked outside React so moving over code never re-renders.
@@ -340,25 +376,30 @@ export function useDefinitions(): { back: ReactNode; layer: ReactNode; goTo: GoT
           className="w-[min(600px,90vw)] gap-0 p-0"
           aria-label={
             shown.kind === "choose"
-              ? `Definitions of ${shown.name}`
+              ? `${shown.subject === undefined ? "Definitions" : "Places"} of ${shown.name}`
               : `${shown.subject?.title ?? "Definition"} of ${shown.name} at ${labelOf(shown.candidate, state.commits).place}`
           }
         >
           {shown.kind === "choose" ? (
             <Choices
               name={shown.name}
+              what={shown.subject === undefined ? "definitions" : "places"}
               candidates={shown.candidates}
-              onPick={(candidate) => open(candidate, shown.name, shown.from)}
+              onPick={(candidate) => open(candidate, shown.name, shown.from, shown.subject)}
             />
           ) : (
-            <Peek candidate={shown.candidate} kind={shown.subject?.kind ?? shown.candidate.kind} />
+            <Peek
+              candidate={shown.candidate}
+              kind={shown.subject?.kind ?? shown.candidate.kind}
+              empty={shown.subject?.empty ?? "The server sent no lines for this place."}
+            />
           )}
         </PopoverContent>
       )}
     </Popover>
   );
 
-  return { back, layer, goTo };
+  return { back, layer, goTo, goToPlaces };
 }
 
 function onListKeys(event: KeyboardEvent<HTMLElement>): void {
@@ -370,13 +411,15 @@ function onListKeys(event: KeyboardEvent<HTMLElement>): void {
   buttons[Math.max(0, Math.min(buttons.length - 1, at + move))]?.focus();
 }
 
-/** Several places define the name: path:line and where each sits, best first. */
+/** Several places define the name, or hold a state: path:line and where each sits, best first. */
 function Choices({
   name,
+  what,
   candidates,
   onPick,
 }: {
   name: string;
+  what: string;
   candidates: readonly Candidate[];
   onPick: (candidate: Candidate) => void;
 }) {
@@ -384,7 +427,7 @@ function Choices({
   return (
     <div>
       <div className="border-b px-3 py-1.5 text-muted-foreground text-xs">
-        {candidates.length} definitions of <code className="font-mono">{name}</code>
+        {candidates.length} {what} of <code className="font-mono">{name}</code>
       </div>
       <ul className="max-h-72 overflow-y-auto py-1" onKeyDown={onListKeys}>
         {candidates.map((candidate) => {
@@ -410,7 +453,7 @@ function Choices({
 }
 
 /** The definition's own lines, highlighted, for code this page does not show. */
-function Peek({ candidate, kind }: { candidate: Candidate; kind: string }) {
+function Peek({ candidate, kind, empty }: { candidate: Candidate; kind: string; empty: string }) {
   const { state } = useReview();
   const label = labelOf(candidate, state.commits);
   const body = useMemo(
@@ -426,9 +469,7 @@ function Peek({ candidate, kind }: { candidate: Candidate; kind: string }) {
         <span className="ml-auto text-muted-foreground">{label.where}</span>
       </div>
       {candidate.preview.length === 0 ? (
-        <p className="px-3 py-2 text-muted-foreground text-xs">
-          The server sent no lines for this place.
-        </p>
+        <p className="px-3 py-2 text-muted-foreground text-xs">{empty}</p>
       ) : null}
       <pre className="max-h-72 overflow-auto py-1.5 font-mono text-[12.5px] leading-5 empty:hidden">
         {candidate.preview.map((text, i) => (

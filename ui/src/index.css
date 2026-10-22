@@ -936,3 +936,44 @@
 [data-coverage] > button:hover > .cov-bar {
   width: 4px;
 }
+
+/*
+ * A state machine's states, marked from the test run over their mapped lines. Mermaid's own style
+ * sheet targets its nodes through the SVG's id, so the outlines and badges carry their colours as
+ * inline styles (see StateMachine.tsx); here are only the focus ring and the HTML badges.
+ */
+[data-pick] {
+  cursor: pointer;
+  outline: none;
+}
+.sm-ring {
+  opacity: 0;
+}
+[data-pick]:hover .sm-ring,
+[data-pick]:focus-visible .sm-ring {
+  opacity: 1;
+}
+/* The same badges in the legend and the table. */
+.sm-chip {
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+}
+.sm-chip[data-mark="covered"] {
+  background: var(--cov-covered);
+}
+.sm-chip[data-mark="uncovered"] {
+  background: var(--cov-uncovered);
+}
+.sm-chip[data-mark="partly"] {
+  border: 1.5px solid var(--cov-partly);
+  background: linear-gradient(to right, var(--cov-partly) 50%, transparent 50%);
+}
