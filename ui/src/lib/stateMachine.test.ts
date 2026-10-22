@@ -248,6 +248,41 @@ test("a self-loop mapped to the line only its path runs names the test that loop
   expect(notDriven(atGuard, source, marksOf(atGuard))).toEqual([]);
 });
 
+test("a sequence that only adds self-loops to a listed one is not listed again", () => {
+  // The true gap: no test both retries the payment and pays. A throw that stays in cart or in
+  // shipping is its own tested self-loop, whose test then checks out; splicing it into the gap
+  // makes the same gap, not a new one.
+  const source = "stateDiagram-v2\n[*] --> cart\npaid --> [*]\n";
+  const map: StateMap = JSON.parse(
+    JSON.stringify({
+      states: { cart: [lib(1)], shipping: [lib(2)], payment: [lib(3)], paid: [lib(4)] },
+      transitions: [
+        { from: "cart", to: "shipping", at: [lib(1)] },
+        { from: "shipping", to: "payment", at: [lib(2)] },
+        { from: "payment", to: "paid", at: [lib(3)] },
+        { from: "payment", to: "payment", at: [lib(4)] },
+        { from: "cart", to: "cart", at: [lib(5)] },
+        { from: "shipping", to: "shipping", at: [lib(6)] },
+      ],
+    }),
+  );
+  const tests = (...ids: string[]): EdgeMark => ({ kind: "covered", run: 1, total: 1, tests: ids });
+  const marks = [
+    tests("pays", "retries", "empty cart", "bad address"),
+    tests("pays", "retries", "empty cart", "bad address"),
+    tests("pays", "empty cart", "bad address"),
+    tests("retries"),
+    tests("empty cart"),
+    tests("bad address"),
+  ];
+  // Gone: cart → cart → shipping → payment → payment → paid and the one with shipping looping.
+  // Kept: two loops that no one test takes together are a gap of their own.
+  expect(notDriven(map, source, marks).map((s) => s.states.join(" → "))).toEqual([
+    "cart → shipping → payment → payment → paid",
+    "cart → cart → shipping → shipping → payment → paid",
+  ]);
+});
+
 test("a mark reads as words with its line count", () => {
   expect(describeStateMark({ kind: "partly", run: 3, total: 5, tests: [] })).toBe(
     "partly covered, 3 of 5 lines",

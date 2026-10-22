@@ -47,7 +47,7 @@ const PER_TEST = {
 };
 
 /** Commit 2 offered a state machine; the reviewer accepted and the agent answered with a map. */
-function answered(): State {
+function answered(map: StateMap = MAP, diagram = DIAGRAM): State {
   const base = aGuardedState();
   return aGuardedState({
     commits: base.commits.map((c) => (c.index === 1 ? { ...c, offers: [anOffer()] } : c)),
@@ -61,19 +61,26 @@ function answered(): State {
           createdAt: "2026-10-22T10:00:00Z",
           kind: "question",
           offer: OFFER,
-          replies: [aReply({ body: "Here it is.", diagram: DIAGRAM, map: MAP })],
+          replies: [aReply({ body: "Here it is.", diagram, map })],
         }),
       ),
     ],
   });
 }
 
-async function withMachine(coverage: "aggregate" | "per-test" | "none" = "aggregate") {
-  const rendered = await renderReview(answered(), (server) => {
+type Machine = {
+  readonly map?: StateMap;
+  readonly diagram?: string;
+  readonly tests?: Record<string, { lines: Record<string, number[]> }>;
+};
+
+async function withMachine(
+  coverage: "aggregate" | "per-test" | "none" = "aggregate",
+  { map = MAP, diagram = DIAGRAM, tests = PER_TEST }: Machine = {},
+) {
+  const rendered = await renderReview(answered(map, diagram), (server) => {
     if (coverage === "none") return;
-    server.on("GET", "/api/coverage", () =>
-      aCoverage(coverage === "per-test" ? { tests: PER_TEST } : {}),
-    );
+    server.on("GET", "/api/coverage", () => aCoverage(coverage === "per-test" ? { tests } : {}));
   });
   await expect
     .poll(() => card().element().querySelector("[data-pick]"), { timeout: 45_000 })
@@ -357,6 +364,30 @@ test("a sequence each step of which has a test, but no one test takes whole, is 
   await expect.poll(outlinedEdges).toBe(2);
   await show.click();
   await expect.element(show).toHaveAttribute("aria-pressed", "false");
+}, 60_000);
+
+test("a sequence that only splices a tested self-loop into a listed one is not listed", async () => {
+  // Checking retries on line 6, which only "retries" runs. Idle → Checking → Checking → Done is
+  // driven by no one test either, but it is the listed gap with the loop spliced in.
+  const map: StateMap = JSON.parse(
+    JSON.stringify({
+      ...MAP,
+      transitions: [
+        ...(MAP.transitions ?? []),
+        { from: "Checking", to: "Checking", event: "retry", at: [loc("src/lib.js", 6)] },
+      ],
+    }),
+  );
+  await withMachine("per-test", {
+    map,
+    diagram: `${DIAGRAM}\n  Checking --> Checking: retry`,
+    tests: { ...PER_TEST, retries: { lines: { "src/lib.js": [6] } } },
+  });
+  await expect.element(edge("Checking", "Checking")).toHaveAccessibleName(/taken by 1 test/);
+  await expect.element(notDriven()).toHaveAccessibleName("Not driven by any one test · 1");
+  await expect
+    .element(notDriven().getByRole("listitem"))
+    .toHaveAccessibleName("Idle → Checking → Done");
 }, 60_000);
 
 test("Flag as missing test posts a flag on the commit with the sequence as its body", async () => {

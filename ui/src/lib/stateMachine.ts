@@ -231,7 +231,8 @@ export function endsOf(source: string): { initial: string[]; final: string[] } {
  * Sequences every step of which some test takes, but no one test takes them all: walks from the
  * initial state (the diagram's `[*] -->`, else the map's first state) to a final state (`--> [*]`,
  * or one nothing leaves), up to five transitions, never repeating one, so each cycle is taken at
- * most once. A sequence with a step no test takes is left out; its red edge already says so.
+ * most once. A sequence with a step no test takes is left out; its red edge already says so, and
+ * so is one that only adds self-loops to a listed one (an error that stays put is not a new path).
  * Shortest first.
  */
 export function notDriven(map: StateMap, source: string, marks: readonly EdgeMark[]): Sequence[] {
@@ -259,9 +260,23 @@ export function notDriven(map: StateMap, source: string, marks: readonly EdgeMar
     }
   };
   for (const start of new Set(from)) walk(start, [], [start]);
-  return found.sort(
+  found.sort(
     (a, b) => a.moves.length - b.moves.length || a.states.join().localeCompare(b.states.join()),
   );
+  const isLoop = (i: number) => transitions[i]?.from === transitions[i]?.to;
+  const kept: Sequence[] = [];
+  for (const s of found) {
+    const loopsOnly = (k: Sequence) => {
+      let j = 0;
+      for (const i of s.moves) {
+        if (i === k.moves[j]) j += 1;
+        else if (!isLoop(i)) return false;
+      }
+      return j === k.moves.length;
+    };
+    if (!kept.some(loopsOnly)) kept.push(s);
+  }
+  return kept;
 }
 
 /** An edge Mermaid drew: its SVG id, the states nearest its two ends, and its label text. */

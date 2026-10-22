@@ -347,7 +347,8 @@ commit or a unit ref, with kind one of `state-machine`, `sequence`, `diagram`.
 - **Not driven by any one test.** With per-test runs, the page lists sequences from the initial
   state (`[*] -->`, else the map's first state) to a final one (`--> [*]`, or a state nothing
   leaves), up to five transitions with none repeated, each step of which some test takes but no one
-  test takes whole; sequences with an untested step are left out. Three show, shortest first, then
+  test takes whole; sequences with an untested step are left out, and so is one that only splices
+  self-loops into a listed one (an error that stays in its state is the same path). Three show, shortest first, then
   "+N more". Show outlines one on the diagram; Flag as missing test opens a flag box on the commit,
   posted through `api/comments` like any flag.
 - **Refs.** An inline code span of the agent's words that is wholly `path:a[-b][@n|@base]`, with a
