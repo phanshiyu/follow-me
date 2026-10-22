@@ -448,7 +448,7 @@ test("a walk report merges the reviewer and the agent, orders by line and ends w
       "Agent replied: new1 covers it.",
       "Answer (answered, explained in commit 1 (h_aaaaaaaaaaaa)): old1 is replaced by new1 on the same line.",
       "",
-      "Address each issue above in the code on this branch, then tell the reviewer what you changed and what you chose not to change and why.",
+      "This branch is someone else's, so leave its code alone. When the user asks, post this review to the merge request as porting.md beside the skill says.",
       "",
     ].join("\n"),
   );

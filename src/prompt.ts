@@ -1295,7 +1295,7 @@ function renderIncluded(review: Review, ctx: Context, opts: ReportOptions): stri
   if (started.length > 0) out.push(...renderThreads(ctx, started));
   if (walk && items.length > 0) {
     out.push(
-      "Address each issue above in the code on this branch, then tell the reviewer what you changed and what you chose not to change and why.",
+      "This branch is someone else's, so leave its code alone. When the user asks, post this review to the merge request as porting.md beside the skill says.",
       "",
     );
   }
