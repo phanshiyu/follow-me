@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1348,11 +1348,47 @@ async function offerStep(port: number, summary: HostedSummary): Promise<string |
   return `${STILL_WORKING}; offer ${first.offer} waits for your diagram: follow-me reply ${first.comment} --diagram <file> [--map <file>], then run follow-me again`;
 }
 
+/** The per-test step while a state map waits for it, said as a `next:` of the listening loop. */
+async function testsStep(session: Session, open: Open, cwd: string): Promise<string | null> {
+  if (!(await mapWantsTests(session, open))) return null;
+  return `${STILL_WORKING}; ${perTestStep(session, cwd)}; then run follow-me again`;
+}
+
+/**
+ * Where the agent writes lcov files, relative to cwd: inside the session, which `.follow-me/`'s
+ * own .gitignore hides and which goes when the session goes, so no run leaves a file in the repo.
+ */
+function lcovDir(session: Session, cwd: string): string {
+  const dir = join(session.dir, "lcov");
+  mkdirSync(dir, { recursive: true });
+  return relative(cwd, dir);
+}
+
+/** The aggregate run to take when a review opens. */
+function coverageStep(session: Session, cwd: string): string {
+  return `if the project has tests, run them with coverage at the tip, lcov to ${lcovDir(session, cwd)}/all.info, and pass it to follow-me coverage`;
+}
+
+/** The per-test runs a state map needs for its badges and its "Not driven" list. */
+function perTestStep(session: Session, cwd: string): string {
+  const dir = lcovDir(session, cwd);
+  return `the state machine needs one coverage run per test: follow-me coverage --reset, then for each test run it alone with lcov to ${dir}/<n>.info and follow-me coverage ${dir}/<n>.info --test "<test name>" --at <path:line>`;
+}
+
+/** Whether a reply of the hosted review carries a state map while no run has per-test detail. */
+async function mapWantsTests(session: Session, open: Open): Promise<boolean> {
+  if ((session.coverage()?.tests.size ?? 0) > 0) return false;
+  const said = await fetchComments(open.port, open.summary);
+  return said.some(({ comments }) =>
+    comments.some((c) => (c.replies ?? []).some((r) => r.map !== undefined)),
+  );
+}
+
 /**
  * Listens to the hosted review for up to --wait seconds and prints what the reviewer did. It
  * returns at once with news, and with the report when the reviewer submitted or ended the review.
  */
-async function listen(session: Session, open: Open, args: Args): Promise<number> {
+async function listen(session: Session, open: Open, args: Args, cwd: string): Promise<number> {
   const { port, summary } = open;
   const waitMs = waitOf(args) * 1000;
   const deadline = Date.now() + waitMs;
@@ -1403,6 +1439,7 @@ async function listen(session: Session, open: Open, args: Args): Promise<number>
       }
       next(
         (await offerStep(port, summary)) ??
+          (await testsStep(session, open, cwd)) ??
           `${STILL_WORKING}; answer with follow-me reply <id> --body "<markdown>" [--diagram file], then run follow-me again`,
       );
       return 0;
@@ -1410,6 +1447,7 @@ async function listen(session: Session, open: Open, args: Args): Promise<number>
     if (left <= 0) {
       next(
         (await offerStep(port, summary)) ??
+          (await testsStep(session, open, cwd)) ??
           `${STILL_WORKING}; run follow-me again to keep listening`,
       );
       return 0;
@@ -1433,7 +1471,7 @@ async function entry(cwd: string, args: Args): Promise<number> {
     if (handed !== null) return handed;
     if (hosted !== null) return swapOpenPage(session, hosted, args);
   }
-  if (hosted !== null) return listen(session, hosted, args);
+  if (hosted !== null) return listen(session, hosted, args, cwd);
 
   const state = draftState(session);
   if (state.kind === "invalid") {
@@ -1475,13 +1513,9 @@ async function entry(cwd: string, args: Args): Promise<number> {
   const detached = { ...args, flags: new Set([...args.flags, "detach"]) };
   const result = await hostReview(session, mode, detached, async () => prep, reportSaved);
   if (result.kind !== "elsewhere") return exitCode(result);
-  if (session.coverage() === null) {
-    next(
-      "if the project has tests, run them with coverage at the tip and pass the lcov to follow-me coverage",
-    );
-  }
+  if (session.coverage() === null) next(coverageStep(session, cwd));
   say("follow-me is interactive: keep running it until it prints the report");
-  return listen(session, result, args);
+  return listen(session, result, args, cwd);
 }
 
 /** Opens the session, re-extracting instead of failing when the branch moved or --base changed. */
@@ -1688,6 +1722,9 @@ async function coverage(cwd: string, args: Args): Promise<number> {
   say(
     `coverage for ${plural(recorded.files.size, "file")} at ${short(tip)}; ${covered} of ${executable} changed lines covered`,
   );
+  if (test === undefined && open !== null && (await mapWantsTests(session, open))) {
+    next(`${perTestStep(session, cwd)}; then run follow-me again`);
+  }
   return 0;
 }
 
@@ -1822,7 +1859,9 @@ async function reply(cwd: string, args: Args): Promise<number> {
     ...(refs.length === 0 ? {} : { refs }),
   });
   say(`replied ${id} to ${commentId}`);
-  next(`run follow-me again; ${STILL_WORKING}`);
+  if (map !== undefined && (session.coverage()?.tests.size ?? 0) === 0) {
+    next(`${perTestStep(session, cwd)}; then run follow-me again; ${STILL_WORKING}`);
+  } else next(`run follow-me again; ${STILL_WORKING}`);
   return 0;
 }
 

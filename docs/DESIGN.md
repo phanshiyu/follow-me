@@ -285,7 +285,13 @@ When the session is hosted, `follow-me coverage` posts `api/coverage` and the se
 stays small. The event is the agent's own act, so `watch` and the entry do not print it.
 
 The bare entry mentions coverage once: its launch output says to run the tests with coverage when the
-session has no `coverage.json`. The report uses only files that are not stale: the markdown adds
+session has no `coverage.json`, with the lcov written to `.follow-me/<slug>/lcov/all.info`. That
+directory sits inside the session, which `.follow-me/.gitignore` hides and which goes with the session,
+so no run leaves a file in the repo and `clean` needs no rule for it. A state map needs per-test runs
+for its badges and its "Not driven" list, so while a reply of the hosted review carries a map and no
+run has per-test detail, `reply --map`, an aggregate `coverage` and every listening `next:` name the
+per-test shape: `coverage --reset`, then one `coverage <dir>/<n>.info --test "<name>" --at <path:line>`
+per test run alone. The report uses only files that are not stale: the markdown adds
 "coverage: M of K changed lines" under each file heading, and `report --json` gives each flag and kept
 concern over added rows `covered`, true when every executable added row it points at ran.
 

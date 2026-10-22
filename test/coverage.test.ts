@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
@@ -459,7 +467,7 @@ test("on an open review the run reaches the page, outlives a re-plan and goes st
   assert.ok(url, opened.out);
   assert.match(
     opened.out,
-    /^next: if the project has tests, run them with coverage at the tip and pass the lcov to follow-me coverage$/m,
+    /^next: if the project has tests, run them with coverage at the tip, lcov to \.follow-me\/feature\/lcov\/all\.info, and pass it to follow-me coverage$/m,
   );
   assert.equal((await getJson(url, "api/coverage")).status, 404);
 
@@ -546,6 +554,85 @@ test("on an open review the run reaches the page, outlives a re-plan and goes st
   assert.deepEqual(await covered(), [[id, undefined]]);
   assert.equal((await markdown()).includes("coverage:"), false);
 });
+
+test("a state map asks for one run per test, lcov under .follow-me, until a per-test run arrives", async (t) => {
+  const run = cliIn(t);
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: repo.dir, encoding: "utf8" });
+  git("checkout", "-q", "feature");
+  git("config", "user.email", "fixture@example.com");
+  run(repo.dir, "extract");
+  const diff = await loadDiff(repo.dir, "main", "feature");
+  writeDraft(repo.dir, repo.base, repo.branch, [
+    { message: "feat: everything", units: [...diff.units.keys()] },
+  ]);
+  const opened = run(repo.dir, "--no-open", "--wait", "0");
+  const url = /^follow-me review: (\S+)$/m.exec(opened.out)?.[1];
+  assert.ok(url, opened.out);
+  const dir = ".follow-me/feature/lcov";
+  const perTest = `the state machine needs one coverage run per test: follow-me coverage --reset, then for each test run it alone with lcov to ${dir}/<n>.info and follow-me coverage ${dir}/<n>.info --test "<test name>" --at <path:line>; then run follow-me again`;
+
+  const asked = await fetch(new URL("api/comments", url), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      anchor: { kind: "plan" },
+      context: { commitMessage: "", path: null },
+      body: "Draw it as a state machine",
+      kind: "question",
+    }),
+  });
+  const { id } = JSON.parse(await asked.text());
+  run(repo.dir, "--wait", "0");
+  const diagram = join(repo.dir, ".follow-me", "machine.mmd");
+  writeFileSync(diagram, "stateDiagram-v2\n  [*] --> Checking\n  Checking --> Adding\n");
+  const map = join(repo.dir, ".follow-me", "map.json");
+  const place = (start: number) => ({ path: "src/lib.js", start, end: start });
+  writeFileSync(
+    map,
+    JSON.stringify({
+      states: { Checking: [place(1)], Adding: [place(6)] },
+      transitions: [{ from: "Checking", to: "Adding", at: [place(4)] }],
+    }),
+  );
+  const replied = run(repo.dir, "reply", id, "--diagram", diagram, "--map", map);
+  assert.equal(replied.code, 0, replied.err);
+  assert.match(
+    replied.out,
+    new RegExp(`\nnext: ${escapeRegExp(perTest)}; the reviewer is still working\n$`),
+  );
+  assert.ok(existsSync(join(repo.dir, dir)));
+  assert.equal(git("status", "--porcelain"), "");
+
+  // An aggregate run is not enough for the map, and the loop keeps saying so.
+  const all = lcov(repo.dir, `${dir}/all.info`, "SF:src/lib.js", "DA:4,1", "end_of_record");
+  const aggregate = run(repo.dir, "coverage", all);
+  assert.equal(aggregate.code, 0, aggregate.err);
+  assert.match(aggregate.out, new RegExp(`\nnext: ${escapeRegExp(perTest)}\n$`));
+  run(repo.dir, "--wait", "0");
+  assert.equal(
+    run(repo.dir, "--wait", "0").out,
+    `next: the reviewer is still working; ${perTest}\n`,
+  );
+
+  assert.equal(run(repo.dir, "coverage", "--reset").code, 0);
+  const one = lcov(repo.dir, `${dir}/1.info`, "SF:src/lib.js", "DA:4,1", "end_of_record");
+  const test1 = run(repo.dir, "coverage", one, "--test", "adds", "--at", "src/lib.js:3");
+  assert.equal(test1.code, 0, test1.err);
+  assert.doesNotMatch(test1.out, /next:/);
+  run(repo.dir, "--wait", "0");
+  assert.equal(
+    run(repo.dir, "--wait", "0").out,
+    "next: the reviewer is still working; run follow-me again to keep listening\n",
+  );
+  assert.equal(git("status", "--porcelain"), "");
+  await fetch(new URL("api/end", url), { method: "POST" });
+});
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 test("--reset starts per-test runs fresh, and a test outside the branch carries a preview", (t) => {
   const run = cliIn(t);

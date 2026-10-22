@@ -146,6 +146,10 @@ test("the fixture's prompt and the skill tell the agent to put the guard calls b
 });
 
 test("the skill asks for one coverage run per test and maps a transition to the line that performs it", () => {
-  assert.ok(section("Coverage").includes("run the tests one at a time with coverage"));
+  // When: once a reply carries a map; follow-me prints the command, with lcov kept out of the repo.
+  assert.ok(
+    section("Coverage").includes("Once you reply with a `--map`, also run each test alone"),
+  );
+  assert.ok(section("Coverage").includes("lcov into the directory `follow-me` names"));
   assert.ok(section("Offers").includes("Map a transition to the line that performs it"));
 });
