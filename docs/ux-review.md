@@ -661,3 +661,159 @@ Credentials stay entirely with `gh` and `glab`. follow-me never stores, reads or
 8. Show diagrams inline at full width with the lightbox. Add the "Ask about the branch" popover and the branch discussion block. S.
 9. Add the report page at `/s/<id>/report` with Include toggles and Copy comment, sharing the `feedback` renderer. Add `report --json` and `Review.excluded`. Add the skill's "Porting a review" section. M.
 10. CLI: merge `walk` into `review`, drop `--walk`, keep `report` (it now owns `--json`) and make `feedback` its alias, and change the prompt to ask for the why in the message body rather than first-person narration. S.
+
+## 10. Offers, state machines and coverage
+
+This section was written against `6731bf8`. The React page there has the scrolling document, a sectioned index beside it, inline threads with markdown replies and Mermaid, the lightbox, and Cmd-click go-to-definition with a Back chip and a peek. The constraints are fixed:
+
+- follow-me never calls a model and never runs tests. The agent does both in its own harness and talks to follow-me through the CLI and the event loop.
+- Coverage is evidence only if it comes from an actual test run, handed over as lcov.
+
+Sources checked on 2026-10-22:
+
+- VS Code testing docs: gutter overlay, hit count on hover, Show Inline Coverage, and a toolbar that navigates between uncovered blocks.
+- IntelliJ coverage docs: green, yellow and red gutter marks; clicking a mark shows hits and true/false branch hits; "Show tests that cover the code line" when per-test tracking is on.
+- Codecov GitHub checks: uncovered added lines are annotated in the Files changed view, and "patch" status covers only the change.
+- GitHub code scanning: alerts appear as annotations in the diff and are dismissed from the annotation with a reason.
+- coverage.py contexts: `dynamic_context = "test_function"` and pytest-cov `--cov-context=test` record which test ran each line.
+
+The Stately and XState pages I fetched did not describe their interaction (one returned 404), so nothing below claims their behaviour.
+
+Recommendation up front: build coverage first, on its own. It needs no judgement from the agent, it uses a standard file, and it answers the owner's sharpest question ("what code paths have been covered … as I read"). Offers come second, built generically for any diagram. Coverage on state machines comes last, once offers prove they are used.
+
+### 10.1 Coverage while reading
+
+How it arrives:
+
+- The agent runs the project's suite with coverage at the branch tip, then runs `follow-me coverage <lcov> [--test <id> [--at <path:line>]]`.
+- Per-test detail comes either from repeated `--test` calls, one lcov per test, or from one lcov with several `TN:<test id>` blocks. lcov's own test-name record carries the id.
+  - Go: run each test with `-run '^TestX$' -coverprofile` and convert.
+  - coverage.py: run with `--cov-context=test` and export one lcov per context.
+  - Tools without per-test detail give an aggregate only, and that is fine.
+- The command makes lcov paths relative to the repo root. It records the tip sha and the time. It refuses with "coverage must be taken on the tip; these files differ: …" when any covered path in the working tree differs from the tip. It writes `.follow-me/<slug>/coverage.json`, and if the session is hosted, posts it so the server emits a `coverage` event and the page reloads its marks.
+
+Mapping. Every row the page shows has a tip number or a base number. The split ends on the tip's tree, so each added row in any commit is a tip line. A context row maps if it still exists at the tip. Base-only rows (removed lines, and context removed by a later commit) show no mark. lcov `DA:<line>,<hits>` gives covered or not covered. `BRDA` with some branches untaken gives partly covered. A line with no `DA` record is not executable.
+
+Gutter marks:
+
+- A 3px bar at the far left of the gutter, before the hover `+`:
+  - covered: solid green;
+  - partly covered: amber, upper half only;
+  - not covered: red;
+  - not executable or not at the tip: nothing.
+- Every mark has screen-reader text ("covered, 14 hits"). The amber shape and the red bar differ in form as well as colour, so they read in dark mode and for colour-blind readers. Dark mode uses the same hues at reduced brightness on the dark gutter, keeping a contrast ratio of at least 3:1.
+- Marks show on rows of every kind. The summary counts only executable added rows, which is Codecov's "patch" idea.
+
+Summaries:
+
+- The commit header gets a chip after the title, "18/24 covered", with a 40px bar. It is red when any added row in the commit is not covered.
+- Each file line gets "6/7".
+- The index gets one small dot per commit: red if anything there is uncovered, amber if anything is only partly covered, nothing otherwise.
+- The page header shows the branch figure, "Changed lines covered 84%".
+- A **Coverage** toggle in the page header, also on `g`, hides every mark and chip. It is on by default once data exists, and the choice is remembered per browser.
+
+Navigation. `x` jumps to the next uncovered added row and `X` to the previous one, in document order across commits. Like VS Code's uncovered-block navigation, it scrolls the row to 30% from the top, flashes it, and expands a Viewed (collapsed) commit while it is shown.
+
+Clicking a mark opens a popover, borrowed from IntelliJ:
+
+- On a covered row: "Hit 14 times", plus the branch hits for a partly covered row. With per-test detail, it adds "Run by 3 tests" and lists each test id. A test whose `--at` location (or a `path::name` id) lies in the branch links into the document with the Back chip. Otherwise it opens the existing peek. Without per-test detail it says "No per-test detail in this run".
+- On an uncovered row: "Not run by the suite at b164dd3 (2026-10-22 14:05)", with a **Flag as missing test** button. That opens the Flag box under the row with kind `missing-test` preset.
+
+Staleness. A new plan version does not stale coverage, because reordering commits never changes the tip. Only a moved tip does:
+
+- On a tip move, files unchanged between the old tip and the new one keep their marks.
+- Files that changed show hatched marks and "coverage from b164dd3; this file changed since". The header chip reads "Coverage is 2 files stale".
+- `next:` in the bare entry tells the agent to run the suite again.
+
+### 10.2 Offers
+
+What an offer is. An offer is the agent saying "I can draw this for you". It is neither an opinion about the code (a concern) nor a question. The agent writes offers in the plan, because that is when it has read the code, as `offers` on a commit or unit ref, for example `{ "kind": "state-machine", "label": "Draw UploadButton as a state machine" }`. Validation derives an `o_` id.
+
+Placement and limits:
+
+- A commit offer sits under the commit message, after the Agent's note. A unit offer sits above its hunk, after the unit narration.
+- There are none in the index (they would only add noise there) and none in the page header.
+- At most one offer per commit and three per plan, enforced by `check` as errors.
+
+Visual:
+
+- A single-line chip with a dashed border, a diagram icon and muted text: "Agent can draw: UploadButton as a state machine". It has an **×** on the right.
+- Concerns are filled cards with a severity colour, and questions are blue cards. An offer is never a card until it is accepted.
+- Following GitHub's dismissable annotations, **×** dismisses it in place, with no reason asked because it is only a suggestion. It is stored and stays dismissed across versions.
+
+On click:
+
+1. The chip becomes a thread card at the same place. It posts a reviewer comment `{ kind: "question", offer: "o_…", body: <label> }` through the normal `api/comments`, so `watch`, the bare entry and the report all see it with no new path.
+2. The card shows "Waiting for the agent…" with a pulsing diagram placeholder at the full width the diagram will take.
+3. `watch` prints "Reviewer accepted offer o_… on src/upload.tsx:12-60 (commit 4): Draw UploadButton as a state machine. Reply with `follow-me reply <cid> --diagram <file> [--map <file>]`."
+4. The reply lands under the card like any reply, with its diagram inline and the lightbox on click.
+
+An offer that is dismissed or answered never shows as a chip again. If the agent never answers, the card stays "Waiting" and the bare entry's `next:` keeps naming it.
+
+### 10.3 The state machine view
+
+Where it lives. It is the accepted offer's reply: inline at full width in the thread card under the commit or above the hunk, at most 480px tall at 1280px and 360px at 1024px, with the lightbox for detail. There is no separate panel (section 9).
+
+Rendering. Mermaid `stateDiagram-v2` draws the picture. It cannot provide the clickability or the marks: under `securityLevel: "strict"` Mermaid disables click callbacks, and its `click` directive is a flowchart feature. So:
+
+- The reply carries a sidecar `map`, which ties each state, and each transition where possible, to code on the tip.
+- After Mermaid renders, the page finds each state's node in the SVG by its name (Mermaid's state node ids embed the state name; this is to be verified against the vendored version). It then adds `role="button"`, a tabindex, a click handler and a coverage class.
+- Matching edges in the SVG is fragile. So a transition table under the diagram is always shown: From → To, event, coverage, jump. It is also the accessible path to every state and transition.
+- If a state name cannot be matched in the SVG, its row in a matching "States" table still works. Nothing depends on parsing Mermaid's output.
+
+Clicking a state or transition:
+
+- It reuses the definition jump: the target rows are scrolled to, flashed, and the Back chip returns to the diagram.
+- A state whose code spans several commits opens the definition list-of-places popover ("Uploading: commit 2 src/upload.tsx:30-41 · commit 5 :88-95").
+- Code the branch does not change opens the peek.
+
+Coverage marks are derived only from lcov over the mapped lines, never from the agent's claims:
+
+- covered: every executable mapped line hit;
+- partly covered: some hit, or a mapped branch only partly taken;
+- not covered: none hit;
+- unknown: no coverage data, nothing executable, or stale.
+
+In the SVG, covered is a solid green outline with a small ✓ badge, partly is an amber dashed outline with a half-filled badge, not covered is a red double outline with a ✕ badge, and unknown is the plain Mermaid style. A legend row sits under the diagram ("✓ covered · ◐ partly · ✕ not covered · plain unknown · from tests at b164dd3"). With per-test detail, hovering or focusing a state lists the tests that reached it.
+
+Dark mode and 1024px. The Mermaid dark theme is already chosen from `prefers-color-scheme`. The outlines and badges use the same CSS variables as the gutter, so they keep 3:1 against both themes, and every mark has a shape as well as a colour. At 1024px the diagram is 992px wide and fit to width, and the tables wrap their location column under the state name. Anything denser is read in the lightbox, which keeps the clicks and marks because it renders the same post-processed SVG.
+
+### 10.4 What the agent is told
+
+The skill's "Offers" section:
+
+> Offer a diagram only when a picture would save the reviewer real reading: a component or module with an explicit status or mode and several transitions (a state machine), a request crossing three or more modules (a sequence), or a non-obvious data flow. At most one offer per commit and three per plan; most plans need none. Label it with the thing, not the type: "Draw UploadButton as a state machine". When `watch` says an offer was accepted, run the test suite with coverage at the tip first and pass it with `follow-me coverage`, then reply with `--diagram` (Mermaid stateDiagram-v2) and `--map`, tying every state and transition to tip path and lines. Never describe coverage yourself; the page derives it.
+
+The skill's "Coverage" section:
+
+> When a review opens and the project has a test command, run it with coverage at the tip and pass the lcov to `follow-me coverage`. Add per-test detail when the tool gives it cheaply, then pass `--test` and `--at` so tests in the branch are linkable. Do this again after the tip moves.
+
+### 10.5 Wire changes, effort and build order
+
+All of these are optional and change no existing hash:
+
+- Plan: `offers?: { "kind": "state-machine" | "sequence" | "diagram", "label": string }[]` on a commit and on a unit ref object. Ids are derived as `o_` plus 8 hex.
+- `Comment.offer?: OfferId`, set on the comment that accepts an offer.
+- `Reply.map?: { "states": { "<name>": Loc[] }, "transitions"?: { "from": string, "to": string, "event"?: string, "at": Loc[] }[] }`, where `Loc = { "path": string, "start": number, "end": number }` in tip lines. `follow-me reply` gains `--map <file>`.
+- `Review.dismissedOffers?: OfferId[]`.
+- A new session file, `coverage.json`: `{ tip, takenAt, files: { <path>: { lines: { <n>: hits }, branches?: { <n>: [taken, total] } } }, tests?: { <id>: { at?: Loc, lines: { <path>: number[] } } } }`. Add a `coverage` event `{ tip, takenAt }`, and serve the data from `api/coverage` rather than `api/state`, so state stays small.
+
+Effort:
+
+- `follow-me coverage`, lcov parsing and the tip check: M.
+- Gutter marks, summaries, toggle and `x`: M.
+- The click popover with hits: S. Per-test detail with links: M.
+- Staleness on a tip move: S.
+- Offers in the plan, the chip, the accept-as-comment flow, dismiss and the `watch` text: S to M.
+- `Reply.map`, SVG post-processing, the tables and the state marks: M to L.
+
+Build order, cheapest valuable first:
+
+1. `follow-me coverage` with aggregate lcov, plus gutter marks and the commit chip.
+2. `x` navigation, the toggle, file and index summaries, and the hit popover with Flag as missing test.
+3. Stale marking on a tip move.
+4. Offers, generic for any diagram, reusing threads.
+5. Per-test detail and test links.
+6. State-machine maps with clickable states, the transition table and coverage marks.
+
+Stop after step 3 and watch real reviews before building steps 4 to 6.
