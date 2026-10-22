@@ -156,7 +156,7 @@ Other commands:
                                             start a thread on the page without being asked
   show <h_…|c_…|k_…|path:a[-b][@n|@base]|name>
                                             print a unit, a comment's thread, a concern, the
-                                            lines around path:line in commit n, or where a name
+                                            lines around path:a-b in commit n, or where a name
                                             is defined, instead of reading files
   report [--json] [--markdown]              print the report of the latest review; --json lists
                                             the items to post to a merge request
@@ -209,7 +209,8 @@ Interactive loop (while the review page is open):
   reply <commentId> --body <text> [--diagram <file> [--map <file>]]
                                             answer under a comment on the page; the diagram is
                                             Mermaid source, the map JSON tying its states to
-                                            tip lines
+                                            tip lines. \`path:a-b[@n]\` in backticks in the body
+                                            points at code, and is refused if it does not exist
   explain [--commit <n>] [--unit <id>] [--lines <a-b>] --body <text> [--diagram <file>]
                                             start a thread on the page without being asked;
                                             --lines are change lines of the unit, commits count
@@ -218,7 +219,7 @@ Interactive loop (while the review page is open):
   show <h_…|c_…|k_…|path:a[-b][@n|@base]|name> [--branch <name>]
                                             print a unit with the commits that take it, a
                                             comment with its rows and thread, a concern with its
-                                            lines, the lines around path:line at the tip, in
+                                            lines, the lines around path:a-b at the tip, in
                                             commit n of the plan, or in the base, or each place
                                             a name is defined at the tip with the commit it
                                             lands in
