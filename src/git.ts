@@ -1,16 +1,19 @@
 import { execFile } from "node:child_process";
 import { link, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { isSha, neededBlobs, parseDiff } from "./diff.ts";
+import { isRepoPath, isSha, neededBlobs, parseDiff } from "./diff.ts";
 import type { ValidPlan } from "./plan.ts";
-import type { Diff, Sha, TreeChange } from "./types.ts";
+import type { Diff, RepoPath, Sha, TreeChange } from "./types.ts";
 
 export class GitError extends Error {
   override readonly name = "GitError";
   readonly args: readonly string[];
-  constructor(args: readonly string[], stderr: string) {
+  /** git's exit status, or null when it did not run or was killed. */
+  readonly status: number | null;
+  constructor(args: readonly string[], stderr: string, status: number | null = null) {
     super(`git ${args.join(" ")}: ${stderr}`);
     this.args = args;
+    this.status = status;
   }
 }
 
@@ -28,8 +31,10 @@ function git(repo: string, args: readonly string[], opts: RunOptions = {}): Prom
         env: { ...process.env, ...opts.env },
       },
       (error, stdout, stderr) => {
-        if (error) reject(new GitError(args, stderr.toString("utf8").trim() || error.message));
-        else resolve(stdout);
+        if (error) {
+          const status = typeof error.code === "number" ? error.code : null;
+          reject(new GitError(args, stderr.toString("utf8").trim() || error.message, status));
+        } else resolve(stdout);
       },
     );
     // git can exit before reading its input (a bad ref, a missing repo). On Linux the
@@ -119,23 +124,88 @@ export async function defaultBaseRef(repo: string): Promise<string> {
   throw new Error("neither main nor master exists; pass --base <ref>");
 }
 
-async function catBlobs(repo: string, shas: readonly Sha[]): Promise<Map<Sha, string>> {
-  const blobs = new Map<Sha, string>();
-  if (shas.length === 0) return blobs;
-  const out = await git(repo, ["cat-file", "--batch"], { input: `${shas.join("\n")}\n` });
+/** The blob named by each object spec, in order, as latin1; throws when one is not a blob. */
+async function catBatch(repo: string, specs: readonly string[]): Promise<string[]> {
+  if (specs.length === 0) return [];
+  const input = Buffer.from(`${specs.join("\n")}\n`, "latin1");
+  const out = await git(repo, ["cat-file", "--batch"], { input });
+  const blobs: string[] = [];
   let at = 0;
-  for (const sha of shas) {
+  for (const spec of specs) {
     const nl = out.indexOf(0x0a, at);
     const header = out.subarray(at, nl).toString("latin1");
     const m = /^([0-9a-f]+) blob (\d+)$/.exec(header);
-    if (nl === -1 || m === null || m[1] !== sha) {
-      throw new Error(`cat-file returned "${header}" for ${sha}`);
+    if (nl === -1 || m === null || (isSha(spec) && m[1] !== spec)) {
+      throw new Error(`cat-file returned "${header}" for ${spec}`);
     }
     const size = Number(m[2]);
-    blobs.set(sha, out.subarray(nl + 1, nl + 1 + size).toString("latin1"));
+    blobs.push(out.subarray(nl + 1, nl + 1 + size).toString("latin1"));
     at = nl + 1 + size + 1;
   }
   return blobs;
+}
+
+async function catBlobs(repo: string, shas: readonly Sha[]): Promise<Map<Sha, string>> {
+  const blobs = await catBatch(repo, shas);
+  return new Map(shas.map((sha, i) => [sha, blobs[i] ?? ""]));
+}
+
+/** Each path's bytes at the commit, as latin1. */
+export async function blobsAt(
+  repo: string,
+  commit: Sha,
+  paths: readonly RepoPath[],
+): Promise<Map<RepoPath, string>> {
+  const blobs = await catBatch(
+    repo,
+    paths.map((p) => `${commit}:${p}`),
+  );
+  return new Map(paths.map((p, i) => [p, blobs[i] ?? ""]));
+}
+
+export type GrepMatch = { readonly path: RepoPath; readonly line: number; readonly text: string };
+
+/**
+ * Lines of the commit's tree, not the working tree, that match any of the POSIX extended
+ * patterns, in files matching the pathspecs. Binary files are skipped.
+ */
+export async function grepTip(
+  repo: string,
+  commit: Sha,
+  patterns: readonly string[],
+  pathspecs: readonly string[],
+): Promise<GrepMatch[]> {
+  const args = [
+    "grep",
+    "-n",
+    "-E",
+    "-I",
+    "-z",
+    "--no-color",
+    "--no-column",
+    ...patterns.flatMap((p) => ["-e", p]),
+    commit,
+    "--",
+    ...pathspecs,
+  ];
+  let out: Buffer;
+  try {
+    out = await git(repo, args);
+  } catch (error) {
+    // grep exits 1 when nothing matched.
+    if (error instanceof GitError && error.status === 1) return [];
+    throw error;
+  }
+  const prefix = `${commit}:`;
+  return out
+    .toString("latin1")
+    .split("\n")
+    .flatMap((record) => {
+      const [name = "", line = "", ...text] = record.split("\0");
+      const path = name.slice(prefix.length);
+      if (!name.startsWith(prefix) || !isRepoPath(path) || !/^\d+$/.test(line)) return [];
+      return [{ path, line: Number(line), text: text.join("\0") }];
+    });
 }
 
 const DIFF_FLAGS = ["--no-renames", "--full-index", "--no-color", "--no-ext-diff", "--no-textconv"];

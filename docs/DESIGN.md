@@ -225,6 +225,25 @@ every line's look is a pure function of the position (`ui/playback.js`), so seek
 re-rendering never disagree. Speech uses the browser's `speechSynthesis`; muting keeps the timing
 without audio, and a timeout bounds engines that never report the end of an utterance.
 
+## Definitions
+
+`GET /s/<id>/api/definition?name=&from=` answers `{ candidates }`, where `Candidate` is in
+`src/types.ts`. `name` must be an ASCII identifier, else 400. `src/definition.ts` holds one table of
+definition patterns per language, chosen by file extension: JS and TS, Python, Go, Rust, Java and
+Kotlin, Ruby, C and C++. Each pattern is written in the subset that JS regexes and POSIX ERE read
+alike, so the same text is the `-e` of one `git grep -n -E -I -z` over the tip commit (never the
+working tree) and the filter that keeps a match only when a pattern of its own file's language
+matches it. A few patterns also carry a JS-only `reject` for statements that look like a definition
+without lookahead, such as `return parse(s)` in Java.
+
+A match whose tip line is a row of one of the plan's hunks gets that `unit`, the body `row`, and the
+0-based `commit` that writes the row; for a context row that is the first commit taking the unit.
+Anything else gets nulls and a `preview` of up to 8 tip lines, read with `cat-file --batch`. The page
+reads an in-plan definition from its hunk, so the server sends its preview empty; `follow-me show`
+prints it either way. Candidates rank by the asking file, then its directory, then the rest, in grep
+order, at most 10. Matches are cached per name and file lines per path in the hosted view, which a
+version swap replaces, so the cache never outlives its tip.
+
 ## Interactive loop
 
 A review is a conversation, so the agent talks to the review server, not to files. The server

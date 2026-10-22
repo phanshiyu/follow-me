@@ -12,11 +12,14 @@ import {
   parseNewDecision,
   parseNewReply,
 } from "./comments.ts";
+import { type DefinitionIndex, definitionIndex, isIdentifier } from "./definition.ts";
+import { isRepoPath } from "./diff.ts";
 import { carryConcerns, carrySession } from "./evolve.ts";
 import { isConcernId, isPlanVersion } from "./plan.ts";
 import { type Earlier, renderReport, reportItems } from "./prompt.ts";
 import { isLockToken } from "./session.ts";
 import type {
+  Candidate,
   CarriedComment,
   CarriedConcern,
   CarriedRef,
@@ -386,6 +389,8 @@ type View = {
   /** Body length of each hunk, the bound for an anchor's row offsets. */
   readonly hunkRows: ReadonlyMap<string, number>;
   readonly concernIds: ReadonlySet<string>;
+  /** Where names are defined at this version's tip; replaced with the view, so a swap clears it. */
+  readonly definitions: DefinitionIndex;
   readonly draftFile: string;
   readonly reviewFile: string;
 };
@@ -415,6 +420,12 @@ function viewOf(
       ),
     ),
     concernIds: new Set(state.commits.flatMap((c) => (c.concerns ?? []).map((k) => k.id))),
+    definitions: definitionIndex(
+      loaded.repo,
+      state.anchor.tip,
+      new Map(state.units.map((u): [UnitId, Unit] => [u.id, u])),
+      state.commits,
+    ),
     draftFile: draftPath(reviewsDir, state.version),
     reviewFile: join(reviewsDir, `v${state.version}.json`),
   };
@@ -735,6 +746,14 @@ function hostSession(
       return waitForEvents(since, timeoutMs, signal);
     },
     report: () => report(review()),
+    /** The page reads a definition the plan shows from its hunk, so only others carry a preview. */
+    define: async (name: string, from: string | null): Promise<readonly Candidate[]> => {
+      const found = await view.definitions.lookup(
+        name,
+        from !== null && isRepoPath(from) ? from : null,
+      );
+      return found.map((c) => (c.unit === null ? c : { ...c, preview: [] }));
+    },
     reportItems: () => reportItems(review(), view.loaded.state.commits, unitsOf(), reportOptions()),
     add: async (raw: unknown): Promise<CommentId> => {
       open();
@@ -1173,6 +1192,12 @@ export function startServer(opts: HostOptions): Promise<Host> {
       const since = queryInt(url, "since", 0, Number.MAX_SAFE_INTEGER, 0);
       const timeout = queryInt(url, "timeout", 0, MAX_POLL_MS, DEFAULT_POLL_MS);
       return sendJson(res, 200, await session.poll(since, timeout, abort.signal));
+    }
+    if (method === "GET" && rest === "/api/definition") {
+      const name = url.searchParams.get("name") ?? "";
+      if (!isIdentifier(name)) throw new HttpError(400, "name must be an identifier");
+      const candidates = await session.define(name, url.searchParams.get("from"));
+      return sendJson(res, 200, { candidates });
     }
     if (method === "GET" && rest === "/api/report" && url.searchParams.get("format") === "json") {
       return sendJson(res, 200, session.reportItems());

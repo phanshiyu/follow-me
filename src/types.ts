@@ -10,6 +10,8 @@
  *   session.ts  the .follow-me/<slug>/ layout: session anchor, plans, reviews, draft.
  *   comments.ts the wire formats of review state: comments, replies, concern decisions, the
  *               review file, the autosaved draft and the server's events. Pure parsers.
+ *   definition.ts where an identifier is defined at the branch tip, and where that lands in the
+ *               plan: per-language patterns, ranking, placement and a per-tip cache.
  *   prompt.ts   the planner prompt for an agent, the feedback and the consolidated report.
  *   server.ts   the review server: a registry of hosted sessions, their JSON API, and ui/.
  *   host.ts     the one server per user: its record in the state dir, attach, start, stop.
@@ -499,4 +501,22 @@ export type HostedSummary = {
   readonly comments: number;
   /** ISO time this session was registered; with the id it names one event log. */
   readonly openedAt: string;
+};
+
+export type DefinitionKind = "function" | "class" | "type" | "const" | "method" | "other";
+
+/**
+ * One place an identifier is defined at the branch tip; GET api/definition answers a list. newLine
+ * is 1-based. unit and row are the hunk and its body row holding the line, and commit (0-based) the
+ * commit that writes the row, or for a context row the first commit showing the unit; all three
+ * are null outside the plan's hunks, and then preview holds up to 8 tip lines from the definition.
+ */
+export type Candidate = {
+  readonly path: RepoPath;
+  readonly newLine: number;
+  readonly kind: DefinitionKind;
+  readonly unit: UnitId | null;
+  readonly row: number | null;
+  readonly commit: number | null;
+  readonly preview: readonly string[];
 };
