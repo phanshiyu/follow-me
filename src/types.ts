@@ -334,6 +334,8 @@ export type Comment = {
   readonly author?: "agent";
   /** Mermaid source, only on an agent's comment (a reviewer's comment has none). */
   readonly diagram?: string;
+  /** The offer of the plan this reviewer's question accepts; only one comment accepts an offer. */
+  readonly offer?: OfferId;
 };
 
 /** The reviewer's verdict on one of the agent's concerns; severity overrides the agent's. */
@@ -374,6 +376,8 @@ export type Review = {
   readonly carried?: readonly CarriedRef[];
   /** Concerns kept on an earlier version of the same open review that this plan no longer has. */
   readonly carriedConcerns?: readonly CarriedConcern[];
+  /** Offers the reviewer waved away during this review, on this version or an earlier one. */
+  readonly dismissedOffers?: readonly OfferId[];
 };
 
 /** Comments and agent concerns kept out of the report's main list and of `report --json`. */
@@ -392,6 +396,7 @@ export type ReviewDraft = {
   /** Null when the review began on this version; see Review.carried. */
   readonly carried: readonly CarriedRef[] | null;
   readonly carriedConcerns: readonly CarriedConcern[];
+  readonly dismissedOffers: readonly OfferId[];
 };
 
 /** The version before a swap or a fresh open: its comments and what the new plan answered. */
@@ -495,6 +500,8 @@ export type ServerEvent = { readonly seq: number } & (
       readonly decidedAt?: string;
     }
   | { readonly type: "resolved"; readonly commentId: CommentId; readonly resolved: boolean }
+  /** The reviewer dismissed an offer; it never shows again in this review. */
+  | { readonly type: "offer-dismissed"; readonly offer: OfferId }
   | {
       readonly type: "version";
       readonly version: PlanVersion;

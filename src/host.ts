@@ -43,7 +43,9 @@ import {
 import type {
   CarriedComment,
   Comment,
+  CommentId,
   HostedSummary,
+  OfferId,
   PlanVersion,
   ServerEvent,
   ServerRecord,
@@ -387,6 +389,35 @@ export async function fetchComments(
     out.push({ version: previous["version"], comments: parse(previous["comments"]) });
   }
   return out;
+}
+
+/** An offer the reviewer accepted, by the comment that accepted it. */
+export type AcceptedOffer = { readonly offer: OfferId; readonly comment: CommentId };
+
+/**
+ * Offers accepted during the hosted review, on this version or a carried one, whose comment has no
+ * reply from the agent yet, oldest first.
+ */
+export async function fetchWaitingOffers(
+  port: number,
+  summary: HostedSummary,
+): Promise<readonly AcceptedOffer[]> {
+  const state = await call(port, "GET", `${summary.url}api/state`);
+  if (!isFields(state)) throw new RegistrationError("the server sent no state");
+  const comments = Array.isArray(state["comments"]) ? state["comments"] : [];
+  const carried = Array.isArray(state["carried"]) ? state["carried"] : [];
+  const said = [
+    ...comments.map((raw: unknown) => parseComment(raw)),
+    ...carried.map((raw: unknown) => {
+      const c = parseCarried(raw);
+      return typeof c === "string" ? c : c.comment;
+    }),
+  ];
+  return said
+    .flatMap((c) => (typeof c === "string" ? [] : [c]))
+    .filter((c) => !(c.replies ?? []).some((r) => r.author === "agent"))
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .flatMap((c) => (c.offer === undefined ? [] : [{ offer: c.offer, comment: c.id }]));
 }
 
 /** One long poll of the session's event log: what happened after `since`, or nothing at timeout. */

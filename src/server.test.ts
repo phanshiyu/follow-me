@@ -551,7 +551,7 @@ function stateWithConcern(): ReviewState {
 }
 
 /** A loader whose state follows the registered version, as the real one's does. */
-function versionedLoader(released: string[], refuse = 0): Loader {
+function versionedLoader(released: string[], refuse = 0, base = twoCommitState): Loader {
   return async (r, held) => {
     if (r.version === refuse) throw new RegistrationError(`plan v${r.version} no longer fits`);
     // JSON.parse is the only brand-free way to build branded literals without a cast.
@@ -590,7 +590,7 @@ function versionedLoader(released: string[], refuse = 0): Loader {
     return {
       repo: "/repo",
       reviewsDir: join(r.dir, "reviews"),
-      state: { ...twoCommitState(), version: r.version, planHash: r.hash },
+      state: { ...base(), version: r.version, planHash: r.hash },
       release: held ?? (() => released.push(r.dir)),
       previous,
       carried,
@@ -599,10 +599,10 @@ function versionedLoader(released: string[], refuse = 0): Loader {
   };
 }
 
-async function startVersioned(t: TestContext, refuse = 0) {
+async function startVersioned(t: TestContext, refuse = 0, base = twoCommitState) {
   const dir = await tempDir(t);
   const released: string[] = [];
-  const host = await serve(t, versionedLoader(released, refuse));
+  const host = await serve(t, versionedLoader(released, refuse, base));
   const { summary, done } = await host.register(registration(dir));
   const url = new URL(summary.url, host.url).href;
   return { url, dir, reviews: join(dir, "reviews"), host, done, released };
@@ -1252,4 +1252,134 @@ test("api/coverage serves the agent's run from disk, 404 before it, and its even
   const again = await restarted.register(registration(dir));
   const served = await fetch(new URL("api/coverage", new URL(again.summary.url, restarted.url)));
   assert.deepEqual(await jsonOf(served), { ...atTip, stale: [] });
+});
+
+const UNIT_OFFER = "o_0a1b2c3d";
+const COMMIT_OFFER = "o_4e5f6a7b";
+
+/** The two-commit state with a state-machine offer above HUNK_A and a sequence under commit 2. */
+function stateWithOffers(): ReviewState {
+  const state = twoCommitState();
+  const offers = [
+    [
+      {
+        id: UNIT_OFFER,
+        kind: "state-machine",
+        label: "Draw the parser as a state machine",
+        unit: HUNK_A,
+      },
+    ],
+    [{ id: COMMIT_OFFER, kind: "sequence", label: "Draw how use reaches the parser" }],
+  ];
+  return JSON.parse(
+    JSON.stringify({
+      ...state,
+      commits: state.commits.map((c, i) => ({ ...c, offers: offers[i] })),
+    }),
+  );
+}
+
+const accepting = (offer: string) => ({
+  kind: "question",
+  offer,
+  body: "Draw the parser as a state machine",
+  anchor: { kind: "hunk", unit: HUNK_A, commit: 0, changes: null },
+  context: { commitMessage: "add parser", path: "src/a.ts" },
+});
+
+test("a question accepts an offer once, and a dismissed offer stays dismissed in the review", async (t) => {
+  const run = await start(t, stateWithOffers());
+  const accepted = await post(run.url, "api/comments", accepting(UNIT_OFFER));
+  assert.equal(accepted.status, 201);
+  const { id } = await jsonOf(accepted);
+  const state = await jsonOf(await fetch(new URL("api/state", run.url)));
+  assert.equal(state.comments[0].offer, UNIT_OFFER);
+  assert.deepEqual(state.dismissedOffers, []);
+
+  const refusals = [
+    [accepting(UNIT_OFFER), `offer ${UNIT_OFFER} is already accepted by ${id}`],
+    [accepting("o_ffffffff"), "offer o_ffffffff is not in plan v3"],
+    [
+      { ...accepting(COMMIT_OFFER), kind: undefined },
+      "malformed comment: offer is only for a reviewer's question",
+    ],
+    [
+      { ...accepting(COMMIT_OFFER), offer: "upload" },
+      "malformed comment: offer is not an offer id",
+    ],
+  ];
+  for (const [body, error] of refusals) {
+    const res = await post(run.url, "api/comments", body);
+    assert.deepEqual([res.status, await jsonOf(res)], [400, { error }]);
+  }
+
+  const dismiss = (offer: string) => post(run.url, `api/offers/${offer}/dismiss`, {});
+  assert.equal((await dismiss("o_ffffffff")).status, 404);
+  const taken = await dismiss(UNIT_OFFER);
+  assert.deepEqual(
+    [taken.status, await jsonOf(taken)],
+    [400, { error: `offer ${UNIT_OFFER} is already accepted by ${id}` }],
+  );
+  const waved = await dismiss(COMMIT_OFFER);
+  assert.deepEqual([waved.status, await jsonOf(waved)], [200, { dismissedOffers: [COMMIT_OFFER] }]);
+  assert.equal((await dismiss(COMMIT_OFFER)).status, 200, "dismissing again changes nothing");
+  const late = await post(run.url, "api/comments", accepting(COMMIT_OFFER));
+  assert.deepEqual(await jsonOf(late), { error: `offer ${COMMIT_OFFER} was dismissed` });
+
+  const events = await eventsOf(run.url, 0, 10);
+  assert.deepEqual(
+    events.events.map((e: { type: string; offer?: string }) => [e.type, e.offer ?? null]),
+    [
+      ["comment", null],
+      ["offer-dismissed", COMMIT_OFFER],
+    ],
+  );
+  assert.deepEqual((await jsonOf(await fetch(new URL("api/state", run.url)))).dismissedOffers, [
+    COMMIT_OFFER,
+  ]);
+  const draft = JSON.parse(await readFile(join(run.dir, "v3.draft.json"), "utf8"));
+  assert.deepEqual(draft.dismissedOffers, [COMMIT_OFFER]);
+
+  // The page's edit of the accepting comment cannot move it to another offer.
+  const [saved] = (await jsonOf(await fetch(new URL("api/state", run.url)))).comments;
+  const moved = await fetch(new URL(`api/comments/${id}`, run.url), {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ...saved, offer: COMMIT_OFFER }),
+  });
+  assert.equal(moved.status, 400);
+
+  await post(run.url, "api/end", {});
+  const review = await run.done;
+  assert.deepEqual(review?.dismissedOffers, [COMMIT_OFFER]);
+  const onDisk = JSON.parse(await readFile(join(run.dir, "v3.json"), "utf8"));
+  assert.deepEqual(
+    [onDisk.comments[0].offer, onDisk.dismissedOffers],
+    [UNIT_OFFER, [COMMIT_OFFER]],
+  );
+});
+
+test("after a swap an accepted or dismissed offer is never offered again", async (t) => {
+  const run = await startVersioned(t, 0, stateWithOffers);
+  const { id } = await jsonOf(await post(run.url, "api/comments", accepting(UNIT_OFFER)));
+  await post(run.url, `api/offers/${COMMIT_OFFER}/dismiss`, {});
+  assert.equal(
+    (await post(run.url, "api/version", { version: 4, hash: "hash-of-v4" })).status,
+    200,
+  );
+
+  const state = await jsonOf(await fetch(new URL("api/state", run.url)));
+  assert.equal(state.version, 4);
+  assert.deepEqual(state.dismissedOffers, [COMMIT_OFFER]);
+  const carried = state.carried.find((c: { comment: { id: string } }) => c.comment.id === id);
+  assert.equal(carried?.comment.offer, UNIT_OFFER);
+  const again = await post(run.url, "api/comments", accepting(UNIT_OFFER));
+  assert.deepEqual(
+    [again.status, await jsonOf(again)],
+    [400, { error: `offer ${UNIT_OFFER} is already accepted by ${id}` }],
+  );
+  const dismissed = await post(run.url, "api/comments", accepting(COMMIT_OFFER));
+  assert.deepEqual(await jsonOf(dismissed), { error: `offer ${COMMIT_OFFER} was dismissed` });
+  const draft = JSON.parse(await readFile(join(run.reviews, "v4.draft.json"), "utf8"));
+  assert.deepEqual(draft.dismissedOffers, [COMMIT_OFFER]);
 });

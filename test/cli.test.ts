@@ -21,6 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { tipStartOf } from "../src/diff.ts";
 import { loadDiff } from "../src/git.ts";
 import { makeFixtureRepo, signWithSsh, sshSigningUnavailable } from "./fixture-repo.ts";
 
@@ -2011,4 +2012,85 @@ test("show <name> prints each definition at the tip with the commit it lands in"
     ].join("\n"),
   );
   assert.equal(run(repo.dir, "show", "nowhere").out, "no definition of nowhere at the tip\n");
+});
+
+test("an accepted offer reaches watch and the entry as one line, and next: names it until answered", async (t) => {
+  const cli = cliIn(t);
+  const { run } = cli;
+  const repo = makeFixtureRepo();
+  t.after(repo.cleanup);
+  assert.equal(run(repo.dir, "extract").code, 0);
+  const diff = await loadDiff(repo.dir, "main", "feature");
+  const lib = [...diff.units.values()].filter((u) => u.path === "src/lib.js")[1];
+  assert.ok(lib?.kind === "hunk");
+  const machine = { kind: "state-machine", label: "Draw div as a state machine" };
+  const flow = { kind: "sequence", label: "Draw how the rest calls div." };
+  const commits = [
+    { message: "feat: guard div", units: [{ unit: lib.id, offers: [machine] }] },
+    {
+      message: "feat: the rest",
+      offers: [flow],
+      units: [...diff.units.keys()].filter((id) => id !== lib.id),
+    },
+  ];
+  writeFileSync(
+    join(repo.dir, ".follow-me", "feature", "draft.json"),
+    JSON.stringify({
+      schema: "follow-me/plan@1",
+      base: repo.base,
+      tip: repo.branch,
+      commits,
+      responses: [],
+    }),
+  );
+  const opened = run(repo.dir, "--no-open", "--wait", "0");
+  assert.equal(opened.code, 0, opened.out + opened.err);
+  const [, url = ""] = SESSION_URL.exec(opened.out) ?? [];
+  const state = JSON.parse(await (await fetch(new URL("api/state", url))).text());
+  const unitOffer = state.commits[0].offers[0].id;
+  const commitOffer = state.commits[1].offers[0].id;
+
+  const accept = async (offer: string, anchor: object, body: string) => {
+    const res = await postJson(url, "api/comments", {
+      kind: "question",
+      offer,
+      body,
+      anchor,
+      context: { commitMessage: "", path: null },
+    });
+    assert.equal(res.status, 201);
+    return JSON.parse(await res.text()).id;
+  };
+  const first = await accept(
+    unitOffer,
+    { kind: "hunk", unit: lib.id, commit: 0, changes: null },
+    machine.label,
+  );
+  const second = await accept(commitOffer, { kind: "message", commit: 1 }, flow.label);
+
+  const from = tipStartOf(lib, diff.units);
+  const to = from + lib.body.filter((row) => row.op !== "-").length - 1;
+  const lines = [
+    `Reviewer accepted offer ${unitOffer} on src/lib.js:${from}-${to} (commit 1): Draw div as a state machine. Reply with follow-me reply ${first} --diagram <file> [--map <file>].`,
+    `Reviewer accepted offer ${commitOffer} on commit 2: Draw how the rest calls div. Reply with follow-me reply ${second} --diagram <file> [--map <file>].`,
+  ];
+  const watched = run(repo.dir, "watch", "--since", "0");
+  assert.equal(watched.code, 0, watched.err);
+  assert.equal(watched.out.split("\nnext:")[0], lines.join("\n"));
+
+  const waits = (offer: string, comment: string) =>
+    `next: the reviewer is still working; offer ${offer} waits for your diagram: follow-me reply ${comment} --diagram <file> [--map <file>], then run follow-me again\n`;
+  const heard = run(repo.dir, "--wait", "0");
+  assert.equal(heard.out, `${lines.join("\n")}\n${waits(unitOffer, first)}`);
+
+  const diagram = join(repo.dir, "machine.mmd");
+  writeFileSync(diagram, "stateDiagram-v2\n  Idle --> Dividing\n");
+  assert.equal(run(repo.dir, "reply", first, "--diagram", diagram).code, 0);
+  assert.equal(run(repo.dir, "--wait", "0").out, waits(commitOffer, second));
+  assert.equal(run(repo.dir, "reply", second, "--diagram", diagram, "--body", "Here.").code, 0);
+  assert.equal(
+    run(repo.dir, "--wait", "0").out,
+    "next: the reviewer is still working; run follow-me again to keep listening\n",
+  );
+  await fetch(new URL("api/end", url), { method: "POST" });
 });

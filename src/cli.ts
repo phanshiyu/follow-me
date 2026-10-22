@@ -34,6 +34,7 @@ import {
   fetchCarried,
   fetchComments,
   fetchReport,
+  fetchWaitingOffers,
   findServer,
   followEvents,
   idleMs,
@@ -1274,6 +1275,13 @@ function waitOf(args: Args): number {
 const ENTRY_WAIT_SECONDS = 90;
 const MAX_ENTRY_WAIT_SECONDS = 300;
 
+/** The step that names the oldest accepted offer the agent has not answered, or null. */
+async function offerStep(port: number, summary: HostedSummary): Promise<string | null> {
+  const [first] = await fetchWaitingOffers(port, summary);
+  if (first === undefined) return null;
+  return `${STILL_WORKING}; offer ${first.offer} waits for your diagram: follow-me reply ${first.comment} --diagram <file> [--map <file>], then run follow-me again`;
+}
+
 /**
  * Listens to the hosted review for up to --wait seconds and prints what the reviewer did. It
  * returns at once with news, and with the report when the reviewer submitted or ended the review.
@@ -1328,12 +1336,16 @@ async function listen(session: Session, open: Open, args: Args): Promise<number>
         return 0;
       }
       next(
-        `${STILL_WORKING}; answer with follow-me reply <id> --body "<markdown>" [--diagram file], then run follow-me again`,
+        (await offerStep(port, summary)) ??
+          `${STILL_WORKING}; answer with follow-me reply <id> --body "<markdown>" [--diagram file], then run follow-me again`,
       );
       return 0;
     }
     if (left <= 0) {
-      next(`${STILL_WORKING}; run follow-me again to keep listening`);
+      next(
+        (await offerStep(port, summary)) ??
+          `${STILL_WORKING}; run follow-me again to keep listening`,
+      );
       return 0;
     }
   }
@@ -1612,10 +1624,11 @@ function isCommentEvent(event: ServerEvent): boolean {
 
 /**
  * Events the reviewer caused; the agent's own replies, explanations, version swaps and coverage
- * are not news.
+ * are not news, and neither is a dismissed offer, which asks nothing of the agent.
  */
 function isNews(event: ServerEvent): boolean {
   if (event.type === "version" || event.type === "coverage") return false;
+  if (event.type === "offer-dismissed") return false;
   if (event.type === "comment" || event.type === "comment-updated") {
     return event.comment.author !== "agent";
   }
@@ -1692,11 +1705,14 @@ async function watch(cwd: string, args: Args): Promise<number> {
 /** Posts the agent's answer under a comment on the hosted page. */
 async function reply(cwd: string, args: Args): Promise<number> {
   const [commentId, extra] = args.positionals;
-  const body = args.values.get("body");
-  if (commentId === undefined || extra !== undefined || body === undefined) {
-    throw new UsageError("usage: follow-me reply <commentId> --body <text> [--diagram <file>]");
-  }
   const diagram = diagramOf(args);
+  // A diagram can be the whole answer, as when it answers an accepted offer.
+  const body = args.values.get("body") ?? (diagram === undefined ? undefined : "");
+  if (commentId === undefined || extra !== undefined || body === undefined) {
+    throw new UsageError(
+      "usage: follow-me reply <commentId> --body <text> [--diagram <file>]\n       follow-me reply <commentId> --diagram <file> [--body <text>]",
+    );
+  }
   const session = await openSession(cwd, sessionOpts(args));
   const open = await openOnServer(session, null);
   if (open === null) return notOpen(session);

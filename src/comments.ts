@@ -5,6 +5,7 @@ import {
   isCommentId,
   isConcernId,
   isFields,
+  isOfferId,
   isPlanVersion,
   isSeverity,
   parsePlacedConcern,
@@ -100,12 +101,18 @@ export type NewReply = {
   readonly diagram?: string;
 };
 
-/** The body of POST .../replies: who speaks, what, and an optional Mermaid diagram. */
+/**
+ * The body of POST .../replies: who speaks, what, and an optional Mermaid diagram. The body may be
+ * empty only when the diagram is the answer.
+ */
 export function parseNewReply(v: unknown): NewReply | string {
   if (!isFields<"author" | "body" | "diagram">(v)) return "the reply is not an object";
   if (v.author !== "agent" && v.author !== "reviewer") return 'author is not "agent" or "reviewer"';
-  if (typeof v.body !== "string" || v.body.trim() === "") return "body is not a non-empty string";
-  if (v.diagram === undefined) return { author: v.author, body: v.body };
+  if (typeof v.body !== "string") return "body is not a string";
+  if (v.diagram === undefined) {
+    if (v.body.trim() === "") return "body is empty; a reply needs words or a diagram";
+    return { author: v.author, body: v.body };
+  }
   if (typeof v.diagram !== "string") return "diagram is not a string";
   const problem = diagramProblem(v.diagram);
   if (problem !== null) return `diagram: ${problem}`;
@@ -127,7 +134,8 @@ type CommentFields =
   | "severity"
   | "replies"
   | "author"
-  | "diagram";
+  | "diagram"
+  | "offer";
 
 /** Boundary parse of a comment, from a file or a request. Returns the reason when it is not one. */
 export function parseComment(v: unknown): Comment | string {
@@ -164,6 +172,13 @@ export function parseComment(v: unknown): Comment | string {
   }
   const severity = v.severity;
   if (severity !== undefined && !isSeverity(severity)) return "severity is unknown";
+  const offer = v.offer;
+  if (offer !== undefined) {
+    if (!isOfferId(offer)) return "offer is not an offer id";
+    if (v.kind !== "question" || v.author !== undefined) {
+      return "offer is only for a reviewer's question";
+    }
+  }
   const replies = parseList(v.replies, parseReply, "replies");
   if (typeof replies === "string") return replies;
   return {
@@ -182,6 +197,7 @@ export function parseComment(v: unknown): Comment | string {
     ...(replies.length === 0 ? {} : { replies }),
     ...(v.author === "agent" ? { author: "agent" } : {}),
     ...(v.diagram === undefined ? {} : { diagram: v.diagram }),
+    ...(offer === undefined ? {} : { offer }),
   };
 }
 
@@ -371,6 +387,7 @@ export function parseReview(v: unknown): Review | string {
       | "earlierReplies"
       | "carried"
       | "carriedConcerns"
+      | "dismissedOffers"
     >(v)
   ) {
     return "not an object";
@@ -398,6 +415,8 @@ export function parseReview(v: unknown): Review | string {
   if (typeof carried === "string") return carried;
   const concernsCarried = parseList(v.carriedConcerns, parseCarriedConcern, "carriedConcerns");
   if (typeof concernsCarried === "string") return concernsCarried;
+  const dismissed = parseIds(v.dismissedOffers, isOfferId, "dismissedOffers", "offer");
+  if (typeof dismissed === "string") return dismissed;
   return {
     schema: v.schema,
     mode,
@@ -411,6 +430,7 @@ export function parseReview(v: unknown): Review | string {
     ...(earlier.length === 0 ? {} : { earlierReplies: earlier }),
     ...(carried === null ? {} : { carried }),
     ...(concernsCarried.length === 0 ? {} : { carriedConcerns: concernsCarried }),
+    ...(dismissed.length === 0 ? {} : { dismissedOffers: dismissed }),
   };
 }
 
@@ -434,7 +454,8 @@ export function parseDraft(v: unknown): ReviewDraft | string {
     | "excluded"
     | "earlierReplies"
     | "carried"
-    | "carriedConcerns";
+    | "carriedConcerns"
+    | "dismissedOffers";
   if (!isFields<Fields>(v) || !isArray(v.comments)) {
     return "not a review draft";
   }
@@ -447,6 +468,7 @@ export function parseDraft(v: unknown): ReviewDraft | string {
     earlierReplies: lenient(v.earlierReplies, parseEarlierReplies),
     carried: v.carried === undefined ? null : lenient(v.carried, parseCarriedRef),
     carriedConcerns: lenient(v.carriedConcerns, parseCarriedConcern),
+    dismissedOffers: lenientIds(v.dismissedOffers, isOfferId),
   };
 }
 
@@ -468,6 +490,7 @@ type EventFields =
   | "carried"
   | "tip"
   | "takenAt"
+  | "offer"
   | "review";
 
 export function parseEvent(v: unknown): ServerEvent | string {
@@ -504,6 +527,10 @@ export function parseEvent(v: unknown): ServerEvent | string {
       }
       return { seq, type: v.type, commentId: id, resolved: v.resolved };
     }
+    case "offer-dismissed":
+      return isOfferId(v.offer)
+        ? { seq, type: v.type, offer: v.offer }
+        : "offer is not an offer id";
     case "version": {
       if (!isPlanVersion(v.version) || typeof v.hash !== "string") return "malformed version event";
       const carried = parseList(v.carried, parseCarried, "carried");

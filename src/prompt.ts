@@ -9,6 +9,7 @@ import type {
   CommentResponse,
   Diff,
   FileCoverage,
+  OfferId,
   PlacedConcern,
   PlanFile,
   PlanVersion,
@@ -417,7 +418,7 @@ export function renderPrompt(input: PromptInput): string {
 }
 
 /** What the report needs of a commit; a ProjectedCommit has it, and so does a test fixture. */
-export type ReportCommit = Pick<ProjectedCommit, "message" | "refs" | "concerns">;
+export type ReportCommit = Pick<ProjectedCommit, "message" | "refs" | "concerns" | "offers">;
 
 /** The owning commit of each change line of a hunk, or null when the plan leaves it out. */
 function ownersOf(commits: readonly ReportCommit[], hunk: TextHunk): (number | null)[] {
@@ -1289,6 +1290,30 @@ function said(head: string, body: string): string[] {
 }
 
 /**
+ * The one line that tells the agent a reviewer accepted an offer: where it sits, as the tip lines
+ * of its hunk or its commit, its label, and the command that answers it.
+ */
+export function acceptedOfferLine(c: Comment, offer: OfferId, ctx: Context | null): string {
+  const found = (ctx?.commits ?? []).flatMap((commit, k) =>
+    (commit.offers ?? []).flatMap((o) => (o.id === offer ? [{ o, k }] : [])),
+  )[0];
+  let place = describeAnchor(c.anchor, ctx);
+  if (found !== undefined && found.o.unit === undefined) place = `commit ${found.k + 1}`;
+  else if (found?.o.unit !== undefined) {
+    const unit = ctx?.units.get(found.o.unit);
+    let where: string = unit?.path ?? found.o.unit;
+    if (unit?.kind === "hunk" && ctx !== null) {
+      const from = tipStartOf(unit, ctx.units);
+      const kept = unit.body.filter((row) => row.op !== "-").length;
+      where = `${unit.path}:${from}-${from + Math.max(kept, 1) - 1}`;
+    }
+    place = `${where} (commit ${found.k + 1})`;
+  }
+  const label = (found?.o.label ?? c.body).trim().replace(/\.+$/, "");
+  return `Reviewer accepted offer ${offer} on ${place}: ${label}. Reply with follow-me reply ${c.id} --diagram <file> [--map <file>].`;
+}
+
+/**
  * A new comment carries its short quote, since the agent has not seen it; everything else is one
  * line naming its id, because the agent already has the comment it refers to.
  */
@@ -1296,6 +1321,7 @@ function renderEvent(event: ServerEvent, ctx: Context | null): string[] {
   switch (event.type) {
     case "comment": {
       const { comment: c } = event;
+      if (c.offer !== undefined) return [acceptedOfferLine(c, c.offer, ctx)];
       const what = c.kind === "question" ? "question" : (c.severity ?? "comment");
       const lines = [`- ${c.id} ${what} on ${describeAnchor(c.anchor, ctx)}`];
       if (c.follows) lines.push(`  asks again after ${c.follows}`);
@@ -1316,6 +1342,8 @@ function renderEvent(event: ServerEvent, ctx: Context | null): string[] {
     }
     case "resolved":
       return [`- ${event.commentId} ${event.resolved ? "resolved" : "reopened"}`];
+    case "offer-dismissed":
+      return [`- the reviewer dismissed offer ${event.offer}`];
     case "version":
       return [`- plan v${event.version} is open`];
     case "coverage":

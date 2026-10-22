@@ -16,7 +16,7 @@ import { type CoverageJson, serializeCoverage, staleFiles } from "./coverage.ts"
 import { type DefinitionIndex, definitionIndex, isIdentifier } from "./definition.ts";
 import { isRepoPath } from "./diff.ts";
 import { carryConcerns, carrySession } from "./evolve.ts";
-import { isConcernId, isPlanVersion } from "./plan.ts";
+import { isConcernId, isOfferId, isPlanVersion } from "./plan.ts";
 import { type Earlier, renderReport, reportItems } from "./prompt.ts";
 import { coverageAt, isLockToken, readCoverageIn, SessionFileError } from "./session.ts";
 import type {
@@ -31,6 +31,8 @@ import type {
   Excluded,
   HostedSummary,
   LockToken,
+  OfferId,
+  PlacedOffer,
   PlanVersion,
   PreviousVersion,
   ProjectedCommit,
@@ -209,6 +211,7 @@ export async function loadDraft(reviewsDir: string, version: PlanVersion): Promi
         earlierReplies: [],
         carried: null,
         carriedConcerns: [],
+        dismissedOffers: [],
       };
     }
     throw error;
@@ -390,6 +393,10 @@ type View = {
   /** Body length of each hunk, the bound for an anchor's row offsets. */
   readonly hunkRows: ReadonlyMap<string, number>;
   readonly concernIds: ReadonlySet<string>;
+  /** This plan's offers by id, with the 0-based commit that carries each. */
+  readonly offers: ReadonlyMap<string, { readonly offer: PlacedOffer; readonly commit: number }>;
+  /** Offers dismissed during this review, on any of its versions. */
+  readonly dismissedOffers: Set<OfferId>;
   /** Where names are defined at this version's tip; replaced with the view, so a swap clears it. */
   readonly definitions: DefinitionIndex;
   readonly draftFile: string;
@@ -421,6 +428,12 @@ function viewOf(
       ),
     ),
     concernIds: new Set(state.commits.flatMap((c) => (c.concerns ?? []).map((k) => k.id))),
+    offers: new Map(
+      state.commits.flatMap((c) =>
+        (c.offers ?? []).map((offer) => [offer.id, { offer, commit: c.index }]),
+      ),
+    ),
+    dismissedOffers: new Set(draft.dismissedOffers),
     definitions: definitionIndex(
       loaded.repo,
       state.anchor.tip,
@@ -487,6 +500,22 @@ function findSaid(view: View, id: unknown): Comment | undefined {
     view.loaded.previous?.comments.find((c) => c.id === id) ??
     view.earlier?.find((c) => c.comment.id === id)?.comment
   );
+}
+
+/** The comment of this review, on this version or an earlier one, that accepted the offer. */
+function acceptedBy(view: View, offer: OfferId): Comment | undefined {
+  const said = [...view.comments.values(), ...(view.earlier ?? []).map((c) => c.comment)];
+  return said.find((c) => c.offer === offer);
+}
+
+/** Why a comment may not accept this offer, or null when it may. */
+function offerProblem(view: View, offer: OfferId): string | null {
+  if (!view.offers.has(offer)) {
+    return `offer ${offer} is not in plan v${view.loaded.state.version}`;
+  }
+  const by = acceptedBy(view, offer);
+  if (by !== undefined) return `offer ${offer} is already accepted by ${by.id}`;
+  return view.dismissedOffers.has(offer) ? `offer ${offer} was dismissed` : null;
 }
 
 function earlierOf(view: View) {
@@ -597,6 +626,7 @@ function hostSession(
     const resolved = [...view.resolved];
     const excluded = excludedOf();
     const earlierReplies = earlierOf(view);
+    const dismissedOffers = [...view.dismissedOffers];
     const snapshot = JSON.stringify(
       {
         schema: "follow-me/review-draft@1",
@@ -607,6 +637,7 @@ function hostSession(
         ...(excluded === null ? {} : { excluded }),
         ...(earlierReplies.length === 0 ? {} : { earlierReplies }),
         ...carriedRefs(view),
+        ...(dismissedOffers.length === 0 ? {} : { dismissedOffers }),
       },
       null,
       2,
@@ -644,6 +675,7 @@ function hostSession(
     const resolved = [...view.resolved];
     const excluded = excludedOf();
     const earlierReplies = earlierOf(view);
+    const dismissedOffers = [...view.dismissedOffers];
     return {
       schema: "follow-me/review@1",
       mode: view.loaded.state.mode,
@@ -656,6 +688,7 @@ function hostSession(
       ...(excluded === null ? {} : { excluded }),
       ...(earlierReplies.length === 0 ? {} : { earlierReplies }),
       ...carriedRefs(view),
+      ...(dismissedOffers.length === 0 ? {} : { dismissedOffers }),
     };
   };
 
@@ -701,7 +734,10 @@ function hostSession(
   };
 
   const hasWork = (): boolean =>
-    view.comments.size > 0 || view.decisions.size > 0 || view.earlierReplies.size > 0;
+    view.comments.size > 0 ||
+    view.decisions.size > 0 ||
+    view.earlierReplies.size > 0 ||
+    view.dismissedOffers.size > 0;
 
   return {
     id,
@@ -726,6 +762,7 @@ function hostSession(
       concerns: [...view.decisions.values()],
       resolved: [...view.resolved],
       excluded: { comments: [...view.excludedComments], concerns: [...view.excludedConcerns] },
+      dismissedOffers: [...view.dismissedOffers],
       seq: events.length,
       previous: previousOf(view),
       carried: carriedOf(view),
@@ -801,6 +838,8 @@ function hostSession(
         accept(parseComment({ ...raw, id: commentId, createdAt: new Date().toISOString() })),
         undefined,
       );
+      const problem = comment.offer === undefined ? null : offerProblem(view, comment.offer);
+      if (problem !== null) throw new HttpError(400, problem);
       view.comments.set(commentId, comment);
       emit({ type: "comment", comment });
       await saveDraft();
@@ -810,6 +849,14 @@ function hostSession(
       open();
       const parsed = withReplies(accept(parseComment(raw)), undefined);
       if (parsed.id !== target) throw new HttpError(400, "comment id does not match the URL");
+      const before = view.comments.get(target);
+      if (parsed.offer !== before?.offer) {
+        const problem =
+          before !== undefined || parsed.offer === undefined
+            ? "a comment keeps the offer it accepted"
+            : offerProblem(view, parsed.offer);
+        if (problem !== null) throw new HttpError(400, problem);
+      }
       // Replies belong to the conversation, not to the page's copy of the comment.
       const comment = withReplies(parsed, view.comments.get(target)?.replies);
       view.comments.set(comment.id, comment);
@@ -872,6 +919,25 @@ function hostSession(
       emit({ type: "concern", concernId, ...rest });
       await saveDraft();
       return decision;
+    },
+    /**
+     * Waves an offer of this plan away. It stays dismissed for the rest of the review, across
+     * versions; dismissing it again changes nothing, and an accepted offer cannot be dismissed.
+     */
+    dismissOffer: async (target: string): Promise<readonly OfferId[]> => {
+      open();
+      if (!isOfferId(target) || !view.offers.has(target)) {
+        throw new HttpError(404, "no such offer in this plan");
+      }
+      const by = acceptedBy(view, target);
+      if (by !== undefined)
+        throw new HttpError(400, `offer ${target} is already accepted by ${by.id}`);
+      if (!view.dismissedOffers.has(target)) {
+        view.dismissedOffers.add(target);
+        emit({ type: "offer-dismissed", offer: target });
+        await saveDraft();
+      }
+      return [...view.dismissedOffers];
     },
     /** Leaves a comment or an agent concern out of the hand-off, or puts it back. */
     exclude: async (raw: unknown): Promise<Excluded> => {
@@ -968,6 +1034,7 @@ function hostSession(
               comments: [...view.excludedComments],
               concerns: [...view.excludedConcerns].filter(stillNamed),
             },
+            dismissedOffers: [...view.dismissedOffers],
           },
           earlier,
         );
@@ -977,7 +1044,8 @@ function hostSession(
           view.decisions.size +
           view.resolved.size +
           view.excludedComments.size +
-          view.excludedConcerns.size;
+          view.excludedConcerns.size +
+          view.dismissedOffers.size;
         if (carrying > 0) await saveDraft();
         emit({ type: "version", version, hash, carried: carriedOf(view) });
       } finally {
@@ -1271,6 +1339,10 @@ export function startServer(opts: HostOptions): Promise<Host> {
     const replies = /^\/api\/comments\/([^/]+)\/replies$/.exec(rest ?? "")?.[1];
     if (replies !== undefined && method === "POST") {
       return sendJson(res, 201, { id: await session.reply(replies, await readJson(req)) });
+    }
+    const offer = /^\/api\/offers\/([^/]+)\/dismiss$/.exec(rest ?? "")?.[1];
+    if (offer !== undefined && method === "POST") {
+      return sendJson(res, 200, { dismissedOffers: await session.dismissOffer(offer) });
     }
     const concern = /^\/api\/concerns\/([^/]+)$/.exec(rest ?? "")?.[1];
     if (concern !== undefined && method === "POST") {
