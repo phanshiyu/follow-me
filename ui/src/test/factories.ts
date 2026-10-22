@@ -5,6 +5,7 @@ import type { Coverage } from "../lib/coverage.ts";
 import type {
   Candidate,
   HunkLine,
+  Offer,
   ProjectedCommit,
   Reply,
   ReportItem,
@@ -182,6 +183,18 @@ export function aCoverage(overrides: Partial<Coverage> = {}): Coverage {
       },
     },
     stale: [],
+    ...overrides,
+  });
+}
+
+export const OFFER = "o_1a2b3c4d";
+
+/** An offer to draw UploadButton, on the commit as a whole unless `unit` places it over a hunk. */
+export function anOffer(overrides: Partial<Offer> = {}): Offer {
+  return branded({
+    id: OFFER,
+    kind: "state-machine",
+    label: "Draw UploadButton as a state machine",
     ...overrides,
   });
 }

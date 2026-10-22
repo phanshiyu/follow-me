@@ -1,12 +1,14 @@
 // Dev only. `npm run ui:dev` proxies the page's API to a running follow-me server. A server older
-// than this page lacks submit, excluded and the JSON report; these stand in for them, so the whole
-// page can be driven before the server half lands. They answer only when the server says 404.
+// than this page lacks submit, excluded, the JSON report and offer dismissal; these stand in for
+// them, so the whole page can be driven before the server half lands. They answer only when the
+// server says 404.
 
 import type { Connect } from "vite";
 import { lineNumbers } from "../src/lib/rows.ts";
 import type { ReportItem, State } from "../src/lib/wire.ts";
 
 const excluded = new Set<string>();
+const dismissed = new Set<string>();
 
 function itemsOf(state: State): ReportItem[] {
   const numbers = lineNumbers(state.units);
@@ -64,9 +66,13 @@ async function readBody(req: Connect.IncomingMessage): Promise<unknown> {
 
 export function stubs(target: string): Connect.NextHandleFunction {
   return (req, res, next) => {
-    const match = /^(\/s\/[^/]+)\/api\/(submit|excluded|report)(\?.*)?$/.exec(req.url ?? "");
+    const match =
+      /^(\/s\/[^/]+)\/api\/(submit|excluded|report|state|offers\/[^/]+\/dismiss)(\?.*)?$/.exec(
+        req.url ?? "",
+      );
     if (match === null) return next();
     const [, session = "", route = "", query = ""] = match;
+    if (route === "state" && dismissed.size === 0) return next();
     if (route === "report" && !query.includes("format=json")) return next();
     void (async () => {
       const body = req.method === "POST" ? await readBody(req) : undefined;
@@ -76,9 +82,17 @@ export function stubs(target: string): Connect.NextHandleFunction {
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
       const isJson = real.headers.get("content-type")?.includes("json") ?? false;
+      if (route === "state") {
+        const state: State = await real.json();
+        return json(res, { ...state, dismissedOffers: state.dismissedOffers ?? [...dismissed] });
+      }
       if (real.status !== 404 && isJson) {
         res.statusCode = real.status;
         return json(res, await real.json());
+      }
+      if (route.startsWith("offers/")) {
+        dismissed.add(route.split("/")[1] ?? "");
+        return json(res, { dismissed: [...dismissed] });
       }
       if (route === "submit") return json(res, { released: 0 });
       if (route === "excluded") {

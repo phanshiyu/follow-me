@@ -12,6 +12,7 @@ import { api } from "../lib/api.ts";
 import { bodyOf, filesOf, noteOf, titleOf } from "../lib/commit.ts";
 import { type BoxKind, composeComment, type Draft } from "../lib/compose.ts";
 import { fileKey } from "../lib/coverage.ts";
+import { isOfferThread } from "../lib/offers.ts";
 import type { ProjectedCommit, Unit } from "../lib/wire.ts";
 import { useCoverage, usePage } from "../page.tsx";
 import { useAnswers, useDerived, usePlacements, useReview } from "../store.tsx";
@@ -22,6 +23,7 @@ import { CommentBox } from "./CommentBox.tsx";
 import { CommitCoverage, FileCoverage, FileStale } from "./Coverage.tsx";
 import { Diagram } from "./Diagram.tsx";
 import { boxActions, Hunk } from "./Hunk.tsx";
+import { Offers } from "./Offers.tsx";
 import { ThreadCard } from "./Thread.tsx";
 
 function describeUnit(unit: Exclude<Unit, { kind: "hunk" }>): string {
@@ -40,7 +42,8 @@ export function CommitSection({ commit }: { commit: ProjectedCommit }) {
   const said = state.comments.filter(
     (c) =>
       (c.anchor.kind === "message" || c.anchor.kind === "position") &&
-      c.anchor.commit === commit.index,
+      c.anchor.commit === commit.index &&
+      !isOfferThread(commit, c),
   );
   const post = (anchor: "message" | "position") => (draft: Draft) =>
     run(() =>
@@ -120,6 +123,7 @@ export function CommitSection({ commit }: { commit: ProjectedCommit }) {
           {commit.diagram?.trim() ? (
             <Diagram source={commit.diagram} title={`Diagram of commit ${commit.index + 1}`} />
           ) : null}
+          <Offers commit={commit} unit={null} />
           {cardsAt(answers, commit.index, null, shownUnits).map((card) => (
             <AnswerCard key={card.id} card={card} className="ml-0" />
           ))}
@@ -177,6 +181,7 @@ export function CommitSection({ commit }: { commit: ProjectedCommit }) {
                           {ref.diagram?.trim() ? (
                             <Diagram source={ref.diagram} title={`Diagram of ${unit.path}`} />
                           ) : null}
+                          <Offers commit={commit} unit={unit.id} />
                           {cardsAt(answers, commit.index, unit.id, shownUnits).map((card) => (
                             <AnswerCard key={card.id} card={card} className="ml-0" />
                           ))}

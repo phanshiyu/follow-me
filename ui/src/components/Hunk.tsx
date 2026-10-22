@@ -15,6 +15,7 @@ import { hunkHeader } from "../lib/commit.ts";
 import { type BoxKind, composeComment, type Draft } from "../lib/compose.ts";
 import { describeMark, missingTestDraft } from "../lib/coverage.ts";
 import type { Span } from "../lib/highlight.ts";
+import { isOfferThread } from "../lib/offers.ts";
 import { describeRows, type LineNumber, ownersOf, rowsOf, scopeOf } from "../lib/rows.ts";
 import {
   anchorFor,
@@ -128,6 +129,7 @@ export function Hunk({
     const { anchor } = comment;
     if (anchor.kind !== "hunk" || anchor.unit !== hunk.id || anchor.commit !== commit.index)
       continue;
+    if (isOfferThread(commit, comment)) continue;
     const card = <ThreadCard key={comment.id} comment={comment} />;
     const row = lastShown(rowsOfAnchor(anchor, hunk.body), shownSet);
     if (row === null) loose.push(card);

@@ -60,9 +60,12 @@ export function ThreadCard({
   className,
   chip,
   extra,
+  label,
 }: {
   comment: WireComment;
   className?: string;
+  /** The card's accessible name, when the kind of thread does not say enough. */
+  label?: string;
   /** A tag beside the author, such as "Code changed since you asked". */
   chip?: ReactNode;
   /** Shown under the opening words, above the replies. */
@@ -109,7 +112,7 @@ export function ThreadCard({
   }
   return (
     <Card
-      label={comment.kind === "question" ? "Question thread" : "Thread"}
+      label={label ?? (comment.kind === "question" ? "Question thread" : "Thread")}
       className={className}
       threadId={comment.id}
       open

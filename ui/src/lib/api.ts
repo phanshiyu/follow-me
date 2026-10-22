@@ -75,6 +75,9 @@ export const api = {
       [id.startsWith("k_") ? "concern" : "comment"]: id,
       excluded,
     }),
+  /** Waves an offer away; it stays dismissed across plan versions. */
+  dismissOffer: (id: string) =>
+    call<unknown>("POST", `/api/offers/${encodeURIComponent(id)}/dismiss`),
   report: () => call<readonly ReportItem[]>("GET", "/api/report?format=json"),
   end: () => call<{ saved: string }>("POST", "/api/end"),
   /** The last test run handed over for this branch, or null when there is none. */
