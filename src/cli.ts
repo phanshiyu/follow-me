@@ -2133,7 +2133,7 @@ async function showRef(cwd: string, args: Args): Promise<number> {
       throw new UsageError(`${ref} is not a unit of the branch now; its hunk changed`);
     }
     const commits = latest === undefined ? [] : projectedCommits(session, latest.version);
-    process.stdout.write(renderShownUnit(unit, commits));
+    process.stdout.write(renderShownUnit(unit, units, commits));
     return 0;
   }
   if (/^c_[a-z2-7]{6}$/.test(ref) && isCommentId(ref)) {

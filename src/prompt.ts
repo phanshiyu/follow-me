@@ -82,15 +82,40 @@ function stripEol(text: string): string {
   return text.replace(/\r?\n$/, "");
 }
 
-/** Under a "### path" heading the path is left out of each hunk's own line. */
-function renderHunk(hunk: TextHunk, withPath = true): string {
-  const lines = hunk.body.map((line) =>
-    line.op === " "
-      ? `    ${stripEol(line.text)}`
-      : `[${line.change}]${line.op} ${stripEol(line.text)}`,
-  );
-  const where = withPath ? `  ${hunk.path}` : "";
-  return [`${hunk.id}${where}  (${hunk.changeCount} change lines)`, ...lines].join("\n");
+/**
+ * Where a hunk's rows sit: "tip lines a-b", or "base lines a-b" when the tip keeps none of them.
+ * The header says it so `[n]`, a change index counted from 0, is not read as a line number.
+ */
+function hunkSpan(hunk: TextHunk, tipStart: number): string {
+  const kept = hunk.body.filter((line) => line.op !== "-").length;
+  const span = (side: string, from: number, count: number) =>
+    count === 1 ? `${side} line ${from}` : `${side} lines ${from}-${from + count - 1}`;
+  return kept > 0 ? span("tip", tipStart, kept) : span("base", hunk.oldStart + 1, hunk.body.length);
+}
+
+/**
+ * A hunk as `[n]+ text` and `[n]- text` rows, context indented. Under a "### path" heading the
+ * path is left out of the hunk's own line. With `gutter`, each row the tip keeps leads with its
+ * tip line number, which is what a `path:a-b` ref takes.
+ */
+function renderHunk(
+  hunk: TextHunk,
+  units: ReadonlyMap<UnitId, Unit>,
+  opts: { readonly withPath?: boolean; readonly gutter?: boolean } = {},
+): string {
+  const tipStart = tipStartOf(hunk, units);
+  let tipLine = tipStart;
+  const lines = hunk.body.map((line) => {
+    const row =
+      line.op === " "
+        ? `    ${stripEol(line.text)}`
+        : `[${line.change}]${line.op} ${stripEol(line.text)}`;
+    if (!opts.gutter) return row;
+    const number = line.op === "-" ? "" : `${tipLine++}`;
+    return `${number.padStart(5)}  ${row}`;
+  });
+  const where = opts.withPath === false ? "" : `  ${hunk.path}`;
+  return [`${hunk.id}${where}  ${hunkSpan(hunk, tipStart)}`, ...lines].join("\n");
 }
 
 function renderOtherUnit(unit: Exclude<Unit, TextHunk>): string {
@@ -106,9 +131,11 @@ function renderUnits(diff: Diff): string {
   for (const unit of diff.units.values()) {
     byPath.set(unit.path, [...(byPath.get(unit.path) ?? []), unit]);
   }
-  const files = [...byPath].map(([path, units]) => {
-    const rendered = units.map((unit) =>
-      unit.kind === "hunk" ? renderHunk(unit, false) : renderOtherUnit(unit),
+  const files = [...byPath].map(([path, ofPath]) => {
+    const rendered = ofPath.map((unit) =>
+      unit.kind === "hunk"
+        ? renderHunk(unit, diff.units, { withPath: false })
+        : renderOtherUnit(unit),
     );
     return [`### ${path}`, ...rendered].join("\n\n");
   });
@@ -290,8 +317,8 @@ function sessionLines(input: PromptInput): string {
   ].join("\n");
 }
 
-function renderUnit(unit: Unit): string {
-  return unit.kind === "hunk" ? renderHunk(unit) : renderOtherUnit(unit);
+function renderUnit(unit: Unit, units: ReadonlyMap<UnitId, Unit>, gutter = false): string {
+  return unit.kind === "hunk" ? renderHunk(unit, units, { gutter }) : renderOtherUnit(unit);
 }
 
 const QUOTE_LINES = 6;
@@ -355,7 +382,9 @@ function renderMoved(input: PromptInput, changes: Changes, head: string): string
     );
   }
   if (added.length > 0) {
-    sections.push(`## New units, in no commit yet\n\n${added.map(renderUnit).join("\n\n")}`);
+    sections.push(
+      `## New units, in no commit yet\n\n${added.map((u) => renderUnit(u, units)).join("\n\n")}`,
+    );
   }
   const kept = draft.commits.flatMap((commit, k) =>
     commit.units.map((ref) => {
@@ -1367,14 +1396,18 @@ export function renderEvents(events: readonly ServerEvent[], ctx: Context | null
 }
 
 /** A unit as prompt.md prints it, and which commits of the plan take its lines. */
-export function renderShownUnit(unit: Unit, commits: readonly ReportCommit[]): string {
+export function renderShownUnit(
+  unit: Unit,
+  units: ReadonlyMap<UnitId, Unit>,
+  commits: readonly ReportCommit[],
+): string {
   const taken = commits.flatMap((commit, k) =>
     commit.refs
       .filter((ref) => ref.unit === unit.id)
       .map((ref) => `commit ${k + 1} takes ${formatSelection(ref.unit, ref.select)}`),
   );
   const where = taken.length === 0 ? "in no commit of the plan" : taken.join("; ");
-  return `${renderUnit(unit)}\n${where}\n`;
+  return `${renderUnit(unit, units, true)}\n${where}\n`;
 }
 
 /** A comment with every row it was made on, its words and the whole thread under it. */

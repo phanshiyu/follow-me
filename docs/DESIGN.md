@@ -449,7 +449,10 @@ top-down order, the question protocol and the concern guidance, and `porting.md`
 posting steps, read only when asked. `prompt.md` keeps session data (draft path, base, tip, check
 command, units, open comments) and one line naming that section and the skill file. Anything the agent
 already read travels as a ref (`h_`, `c_`, `k_`, `path:line@n`) that `follow-me show` expands, as the
-split writes it rather than as the tip does. A comment the agent has not seen keeps a quote of at most
+split writes it rather than as the tip does. Each hunk's line names where its rows sit (`tip lines a-b`, or
+`base lines a-b` when the tip keeps none) instead of a change count, so `[n]`, a change index from 0,
+is not read as a line number; `follow-me show h_…` also leads each row the tip keeps with its tip
+line, the number a `path:a-b` ref takes. A comment the agent has not seen keeps a quote of at most
 six rows of 160 characters, because without it the agent reads a file, and may read the tip instead of
 the commit. `scripts/measure-tokens.ts` drives a whole session on the fixture and on a pinned real
 branch and prints bytes and estimated tokens per step; `docs/token-budget.md` has the numbers before

@@ -142,21 +142,21 @@ const first = {
   checkCommand: "follow-me check",
 } satisfies PromptInput;
 
-test("the prompt dumps units grouped by path with indexed change lines", () => {
+test("the prompt dumps units grouped by path, each hunk naming its tip lines over its [n] change indices", () => {
   const text = renderPrompt(first);
   assert.ok(
     text.includes(
       [
         "### src/a.ts",
         "",
-        "h_aaaaaaaaaaaa  (4 change lines)",
+        "h_aaaaaaaaaaaa  tip lines 1-3",
         "[0]- old1",
         "[1]+ new1",
         "    same",
         "[2]- old2",
         "[3]+ new2",
         "",
-        "h_bbbbbbbbbbbb  (1 change lines)",
+        "h_bbbbbbbbbbbb  tip line 21",
         "[0]+ tail",
         "",
         "### logo.png",
@@ -169,6 +169,28 @@ test("the prompt dumps units grouped by path with indexed change lines", () => {
       ].join("\n"),
     ),
   );
+});
+
+test("a hunk the tip keeps no row of names its base lines instead", () => {
+  const diff = fixtureDiff();
+  const gone: Diff["units"] extends ReadonlyMap<infer K, infer V> ? [K, V] : never = JSON.parse(
+    JSON.stringify([
+      "h_eeeeeeeeeeee",
+      {
+        kind: "hunk",
+        id: "h_eeeeeeeeeeee",
+        path: "src/b.ts",
+        oldStart: 4,
+        changeCount: 2,
+        body: [
+          { op: "-", text: "x\n", change: 0 },
+          { op: "-", text: "y\n", change: 1 },
+        ],
+      },
+    ]),
+  );
+  const text = renderPrompt({ ...first, diff: { ...diff, units: new Map([...diff.units, gone]) } });
+  assert.ok(text.includes("### src/b.ts\n\nh_eeeeeeeeeeee  base lines 5-6\n[0]- x\n[1]- y"));
 });
 
 test("the prompt names the session and the skill section, and leaves the rules to the skill", () => {

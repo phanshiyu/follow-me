@@ -10,7 +10,7 @@ The user never types a follow-me command. If `follow-me` is not on PATH, tell th
 1. From the repo root run `follow-me`. It does the next missing thing, prints what happened, and ends with a `next:` line. Do what it says, then run `follow-me` again.
 2. When it says to write `.follow-me/<slug>/draft.json` from `prompt.md`, read the prompt, write the draft as "Writing the draft" below says, and run `follow-me` (it checks the draft, prints every issue, and applies when valid).
 3. When it prints the review page URL, tell the user once and keep running `follow-me`. Each call listens up to 90 seconds and prints what the user flagged or asked, with comment ids, the moment they post it.
-4. Answer a question in place with `follow-me reply <id> --body "<markdown>" [--diagram file]` (Mermaid source for a picture). Start a thread yourself with `follow-me explain [--commit n] [--unit id] [--lines a-b] --body "..."`. To point at code, write `path:a-b` (tip lines) or `path:a-b@3` in backticks: the page makes each a chip that highlights and jumps, and a numbered list with one per item a walkthrough.
+4. Answer a question in place with `follow-me reply <id> --body "<markdown>" [--diagram file]` (Mermaid source for a picture). Start a thread yourself with `follow-me explain [--commit n] [--unit id] [--lines a-b] --body "..."`. To point at code, write `path:a-b` (tip lines, as `show` numbers them, not `[n]`) or `path:a-b@3` in backticks: the page makes each a chip that highlights and jumps, and a numbered list with one per item a walkthrough.
 5. When the user asks for a code change, make it on the original branch and commit it there. Then run `follow-me`. It carries the plan over, asks you to place any new units in the draft, and swaps the open page to the new code with the thread kept. Then `follow-me reply <id>` on that comment saying what changed and where (file and line), and run `follow-me` again.
 6. Repeat until it prints the report and `next: done`. Fix each issue in the code, or say why you decline. On someone else's branch you only report.
 7. Never run `git rebase` or `reset` for this, and never touch the `-split` branch. The only commits you make are the requested fixes on the original branch.
@@ -65,7 +65,7 @@ Write the plan as JSON to the draft path in prompt.md, with its base and tip. Wr
 ### Rules
 - A unit is "h_…" (a text hunk), "f_…" (a whole file) or "m_…" (a mode change).
 - Change lines are shown as `[n]+ text` or `[n]- text`. Indented lines without a bracket are context and cannot be selected.
-- "h_x:0-3,7" takes change lines 0, 1, 2, 3 and 7 of hunk h_x. Indices are the [n] shown in prompt.md.
+- "h_x:0-3,7" takes change lines 0, 1, 2, 3 and 7 of hunk h_x. Indices are the [n] in prompt.md, not line numbers.
 - A bare "h_x" takes every change line of that hunk that no other commit claimed.
 - Every change line must be used exactly once across all commits. Never repeat a line.
 - Use the unit ids exactly as printed. Do not invent ids.
