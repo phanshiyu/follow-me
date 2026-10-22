@@ -2,10 +2,10 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { commitKey } from "../lib/commit.ts";
 import { HEADER_PX, PageProvider, scrollToCommit, usePage } from "../page.tsx";
-import { useReview } from "../store.tsx";
+import { useCoverageData, useReview } from "../store.tsx";
 import { AskBranch, BranchSummary } from "./Branch.tsx";
 import { CommitSection } from "./CommitSection.tsx";
-import { BranchCoverage } from "./Coverage.tsx";
+import { BranchCoverage, CoverageToggle, useUncoveredSteps } from "./Coverage.tsx";
 import { useDefinitions } from "./Definition.tsx";
 import { focusIndex, Index } from "./Index.tsx";
 import { KeySheet } from "./KeySheet.tsx";
@@ -32,8 +32,20 @@ function nextUnresolved(): void {
 
 function usePageKeys(openStack: () => void, openSheet: () => void, openSubmit: () => void) {
   const { state } = useReview();
-  const { current, isViewed, setViewed, pick, setPick, setBox, indexOpen, setIndexOpen } =
-    usePage();
+  const {
+    current,
+    isViewed,
+    setViewed,
+    pick,
+    setPick,
+    setBox,
+    indexOpen,
+    setIndexOpen,
+    coverageOn,
+    setCoverageOn,
+  } = usePage();
+  const stepUncovered = useUncoveredSteps();
+  const hasCoverage = useCoverageData() !== null;
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Enter" && event.shiftKey && (event.metaKey || event.ctrlKey)) {
@@ -54,8 +66,15 @@ function usePageKeys(openStack: () => void, openSheet: () => void, openSubmit: (
           scrollToCommit(Math.min(last, current + 1));
           break;
         case "k":
-        case "x":
           scrollToCommit(Math.max(0, current - 1));
+          break;
+        case "x":
+        case "X":
+          stepUncovered(event.key === "x" ? 1 : -1);
+          break;
+        case "g":
+          if (!hasCoverage) return;
+          setCoverageOn(!coverageOn);
           break;
         case "n": {
           const next = state.commits.find((c) => c.index > current && !isViewed(c));
@@ -103,6 +122,10 @@ function usePageKeys(openStack: () => void, openSheet: () => void, openSubmit: (
     setBox,
     indexOpen,
     setIndexOpen,
+    stepUncovered,
+    coverageOn,
+    setCoverageOn,
+    hasCoverage,
   ]);
 }
 
@@ -135,6 +158,7 @@ function Page() {
           </div>
           <div className="flex items-center justify-end gap-2">
             <BranchCoverage />
+            <CoverageToggle />
             <UnreadMenu />
             <AskBranch />
             <Button size="sm" onClick={() => setSubmitOpen(true)}>

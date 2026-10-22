@@ -2,7 +2,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 
 const KEYS: readonly (readonly [string, string])[] = [
   ["j or c", "Next commit"],
-  ["k or x", "Previous commit"],
+  ["k", "Previous commit"],
   ["n", "Next unviewed commit"],
   ["v", "Toggle Viewed on the commit at the top"],
   ["s", "Open the stack, or move to the index when it is open"],
@@ -15,6 +15,8 @@ const KEYS: readonly (readonly [string, string])[] = [
   ["a", "Ask about the picked rows"],
   ["Escape", "Clear the pick or close a box"],
   ["u", "Next unresolved thread"],
+  ["x, Shift+X", "Next or previous added line the tests did not run"],
+  ["g", "Show or hide coverage"],
   ["⌘ hover, ⌘ click", "Go to the definition of a name (Ctrl off macOS)"],
   ["Alt ←", "Back to where the jump started"],
   ["⌘ Enter", "Save the box"],

@@ -171,3 +171,20 @@ export function pageCoverage(
     stale: new Set(coverage.stale),
   };
 }
+
+/** Where a target sits against the reading line. */
+export type Place = "above" | "at" | "below";
+
+/**
+ * The target x (1) or X (-1) goes to: the first below the reading line, or the last above it, and
+ * round to the other end when there is none. The one sitting on the line is where we are.
+ */
+export function stepUncovered(places: readonly Place[], dir: 1 | -1): number | null {
+  if (places.length === 0) return null;
+  if (dir === 1) {
+    const next = places.indexOf("below");
+    return next === -1 ? 0 : next;
+  }
+  const previous = places.lastIndexOf("above");
+  return previous === -1 ? places.length - 1 : previous;
+}

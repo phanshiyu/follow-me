@@ -1,6 +1,13 @@
 import { expect, test } from "vitest";
 import { aCommit, aCoverage, aHunk, aState } from "../test/factories.ts";
-import { describeMark, markOf, pageCoverage, percentOf, toneOf } from "./coverage.ts";
+import {
+  describeMark,
+  markOf,
+  pageCoverage,
+  percentOf,
+  stepUncovered,
+  toneOf,
+} from "./coverage.ts";
 import { lineNumbers, ownership } from "./rows.ts";
 import type { State, Unit, UnitId } from "./wire.ts";
 
@@ -92,4 +99,12 @@ test("the percentage rounds down, and the tone is red before amber", () => {
   expect(toneOf({ total: 3, run: 2, partly: 1 })).toBe("uncovered");
   expect(toneOf({ total: 3, run: 3, partly: 1 })).toBe("partly");
   expect(toneOf({ total: 3, run: 3, partly: 0 })).toBe("covered");
+});
+
+test("x goes to the first row below the reading line and X to the last above, round the ends", () => {
+  expect(stepUncovered(["above", "at", "below", "below"], 1)).toBe(2);
+  expect(stepUncovered(["above", "at", "below"], -1)).toBe(0);
+  expect(stepUncovered(["above", "above"], 1)).toBe(0);
+  expect(stepUncovered(["at", "below"], -1)).toBe(1);
+  expect(stepUncovered([], 1)).toBeNull();
 });

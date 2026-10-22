@@ -49,6 +49,9 @@ type Page = {
    */
   isRevealed(commit: number, path?: string): boolean;
   reveal(commit: number, path: string): void;
+  /** Coverage marks and figures, on unless the reviewer hid them in this session. */
+  readonly coverageOn: boolean;
+  setCoverageOn(on: boolean): void;
 };
 
 const PageContext = createContext<Page | null>(null);
@@ -59,9 +62,10 @@ export function usePage(): Page {
   return page;
 }
 
-/** The run's marks and tallies as the page shows them, or null when there are none to show. */
+/** The run's marks and tallies as the page shows them, or null when there are none or they are hidden. */
 export function useCoverage(): PageCoverage | null {
-  return useCoverageData();
+  const data = useCoverageData();
+  return usePage().coverageOn ? data : null;
 }
 
 export const HEADER_PX = 44;
@@ -149,6 +153,11 @@ export function PageProvider({ children }: { children: ReactNode }) {
     setIndexOpenState(open);
     saveSet("index", new Set([open ? "open" : "closed"]));
   }, []);
+  const [coverageOn, setCoverageOnState] = useState(() => !loadSet("coverage").has("off"));
+  const setCoverageOn = useCallback((on: boolean) => {
+    setCoverageOnState(on);
+    saveSet("coverage", new Set(on ? [] : ["off"]));
+  }, []);
   const [revealed, setRevealed] = useState<ReadonlySet<string>>(new Set());
   const reveal = useCallback(
     (commit: number, path: string) =>
@@ -205,6 +214,8 @@ export function PageProvider({ children }: { children: ReactNode }) {
       isRevealed: (commit, path) =>
         revealed.has(path === undefined ? `${commit}` : `${commit}|${path}`),
       reveal,
+      coverageOn,
+      setCoverageOn,
     };
   }, [
     current,
@@ -223,6 +234,8 @@ export function PageProvider({ children }: { children: ReactNode }) {
     setIndexOpen,
     revealed,
     reveal,
+    coverageOn,
+    setCoverageOn,
   ]);
 
   return <PageContext value={page}>{children}</PageContext>;
