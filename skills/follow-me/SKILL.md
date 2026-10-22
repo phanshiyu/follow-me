@@ -15,6 +15,8 @@ The user never types a follow-me command. If `follow-me` is not on PATH, tell th
 6. Repeat until it prints the report and `next: done`. Fix each issue in the code, or say why you decline. On someone else's branch you only report.
 7. Never run `git rebase` or `reset` for this, and never touch the `-split` branch. The only commits you make are the requested fixes on the original branch.
 8. To see code or a thread follow-me names by ref (`h_…`, `c_…`, `k_…`, `path:line`, `path:line@3` for commit 3, `path:line@base`), run `follow-me show <ref>` instead of reading files. `follow-me show <name>` prints where a function or type is defined and the commit it lands in. A file in the working tree is the tip, not the commit the reviewer is reading.
+## Coverage
+When a review opens and the project has a test command, run it with coverage at the tip and pass the lcov to `follow-me coverage`. Add per-test detail when the tool gives it cheaply, then pass `--test` and `--at` so tests in the branch are linkable. Do this again after the tip moves.
 ## Writing the draft
 prompt.md holds the session: the draft path, base and tip, the check command, the units, and the comments to answer. This section is how to write the draft from it. Commits are numbered from 1 everywhere.
 Author mode ("plan the commits"): You are reordering a finished branch into a series of commits that a reader can follow as the author's thought process. The final tree is fixed. You only decide how its change lines are grouped and ordered.

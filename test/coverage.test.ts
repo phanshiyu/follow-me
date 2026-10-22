@@ -253,7 +253,7 @@ test("a plain run replaces the last; --test runs add up until the next plain run
   });
 });
 
-test("follow-me coverage records the run at the tip and counts the changed lines it ran", (t) => {
+test("follow-me coverage records the run at the tip and counts the changed lines it ran", async (t) => {
   const run = cliIn(t);
   const repo = makeFixtureRepo();
   t.after(repo.cleanup);
@@ -351,6 +351,14 @@ test("follow-me coverage records the run at the tip and counts the changed lines
     run(repo.dir, "coverage", one, "--at", "src/lib.js:3").err,
     "follow-me: --at needs --test\nusage: follow-me coverage <lcov> [--test <id> [--at <path:line>]]\n",
   );
+
+  // With a run on record, launching the review does not ask for one.
+  execFileSync("git", ["checkout", "--", "src/guard.js"], { cwd: repo.dir });
+  const units = [...(await loadDiff(repo.dir, "main", "feature")).units.keys()];
+  writeDraft(repo.dir, repo.base, tip, [{ message: "feat: everything", units }]);
+  const opened = run(repo.dir, "--no-open", "--wait", "0");
+  assert.match(opened.out, /^follow-me review: http/m, opened.err);
+  assert.equal(opened.out.includes("follow-me coverage"), false);
 });
 
 test("on an open review the run reaches the page, outlives a re-plan and goes stale only where the tip moved", async (t) => {
@@ -368,6 +376,10 @@ test("on an open review the run reaches the page, outlives a re-plan and goes st
   assert.equal(opened.code, 0, opened.err);
   const url = /^follow-me review: (\S+)$/m.exec(opened.out)?.[1];
   assert.ok(url, opened.out);
+  assert.match(
+    opened.out,
+    /^next: if the project has tests, run them with coverage at the tip and pass the lcov to follow-me coverage$/m,
+  );
   assert.equal((await getJson(url, "api/coverage")).status, 404);
 
   const file = lcov(
@@ -390,6 +402,33 @@ test("on an open review the run reaches the page, outlives a re-plan and goes st
     { seq: 1, type: "coverage", tip: repo.branch, takenAt: taken.takenAt },
   ]);
   assert.deepEqual((await getJson(url, "api/coverage")).body, { ...taken, stale: [] });
+  const add = [...before.units.values()].find(
+    (u) => u.kind === "hunk" && u.body.some((r) => r.text === "  assertNumber(b);\n"),
+  );
+  assert.ok(add?.kind === "hunk");
+  const row = add.body.findIndex((r) => r.text === "  assertNumber(b);\n");
+  const picked = add.body[row];
+  assert.ok(picked !== undefined && picked.op === "+");
+  const flagged = await fetch(new URL("api/comments", url), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      anchor: { kind: "hunk", unit: add.id, commit: 0, changes: [picked.change], offsets: [row] },
+      context: { commitMessage: "feat: everything", path: "src/lib.js" },
+      body: "check b too",
+      severity: "major",
+    }),
+  });
+  const { id } = JSON.parse(await flagged.text());
+  const covered = async () =>
+    (await getJson(url, "api/report?format=json")).body.map(
+      (i: { id: string; covered?: boolean }) => [i.id, i.covered],
+    );
+  assert.deepEqual(await covered(), [[id, false]]);
+  const markdown = async () => (await fetch(new URL("api/report", url))).text();
+  assert.match(await markdown(), /## src\/lib\.js\n\ncoverage: 1 of 2 changed lines\n/);
+  run(repo.dir, "--wait", "0");
+
   // The agent's own run is not news for the agent.
   assert.equal(
     run(repo.dir, "--wait", "0").out,
@@ -422,4 +461,7 @@ test("on an open review the run reaches the page, outlives a re-plan and goes st
   const swapped = run(repo.dir, "--wait", "0");
   assert.match(swapped.out, /swapped the open page to plan v3/, swapped.err);
   assert.deepEqual((await getJson(url, "api/coverage")).body, { ...taken, stale: ["src/lib.js"] });
+  // A stale file gives no counts and no verdicts.
+  assert.deepEqual(await covered(), [[id, undefined]]);
+  assert.equal((await markdown()).includes("coverage:"), false);
 });

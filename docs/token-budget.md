@@ -3,9 +3,10 @@
 What a coding agent reads from follow-me in one session, measured by
 `node scripts/measure-tokens.ts` (add `--out <dir>` to keep each step's text). The script drives a
 whole session without a model: the skill, the first `follow-me`, prompt.md, a draft and its check,
-the launch, a batch with a comment on changed lines, a comment on a context line and a question, a
-reply round (the agent's reply, a reviewer reply, an edited comment, a concern decision), one idle
-call, a commit that edits one hunk with the re-plan prompt and the swap, and the final report.
+the launch, a coverage run, a batch with a comment on changed lines, a comment on a context line
+and a question, a reply round (the agent's reply, a reviewer reply, an edited comment, a concern
+decision), one idle call, a commit that edits one hunk with the re-plan prompt and the swap, and
+the final report.
 
 It runs on two inputs. The fixture is `test/fixture-repo.ts`. The real branch is this repo's 20
 commits up to `8acfcfc` (v0.4.1), pinned so every row below measures the same input. Its draft is
@@ -52,6 +53,7 @@ final build are in the last table.
 | e2. trims the measurements showed | 18633 | 4658 | 247413 | 61853 | final report 746 to 489 and 1277 to 589 (comments that the report quotes are not also printed as events; the context-row rule lives in the skill); the unit dump drops the path repeated under each `### path` (prompt.md 221847 to 218202); `reply` and `explain` now say `next: run follow-me again; the reviewer is still working` instead of `follow-me watch` (+35 bytes each, kept on purpose) |
 | f. commit sections | 20066 | 5017 | 250683 | 62671 | skill 11016 to 11255 (+239, read once) for the `section` lines; measured from `8e5ef70`, whose totals are 19827 and 250444 because the final report grew after e2 |
 | g. `follow-me show <name>` | 20161 | 5040 | 250778 | 62695 | skill 11255 to 11350 (+95); a definition costs one call that prints its place, its commit and 8 lines, instead of a search and a file read of the tip |
+| h. coverage while reading | 20630 | 5158 | 251247 | 62812 | skill 11350 to 11647 (+297) for the "Coverage" section; launch 409 to 515 (+106) for one `next:` line, printed only while the session has no coverage.json; the agent's `follow-me coverage` call is one line (66 bytes); the report adds one line per file only when a run still fits it. Measured from `80b31b1` with the coverage step added to the script, whose totals are 20227 and 250844 |
 
 ## Before and after, per step
 

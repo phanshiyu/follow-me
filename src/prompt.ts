@@ -1,3 +1,4 @@
+import { changedLines, type Tally } from "./coverage.ts";
 import { tipStartOf } from "./diff.ts";
 import { anchorOn, concernOn, type Evolution } from "./evolve.ts";
 import type {
@@ -7,10 +8,12 @@ import type {
   Comment,
   CommentResponse,
   Diff,
+  FileCoverage,
   PlacedConcern,
   PlanFile,
   PlanVersion,
   ProjectedCommit,
+  RepoPath,
   Review,
   Selection,
   ServerEvent,
@@ -517,6 +520,8 @@ export type Context = {
   readonly units: ReadonlyMap<UnitId, Unit>;
   /** Comments and concerns of earlier versions whose code changed since, by id. */
   readonly marks?: ReadonlyMap<string, Mark>;
+  /** The test run's files that still describe this tip; absent without a run. */
+  readonly coverage?: ReadonlyMap<RepoPath, FileCoverage>;
 };
 
 /** The code an earlier version's comment or concern was on changed after v<since>, or is gone. */
@@ -734,24 +739,34 @@ function itemHeading(item: Item, level: number): string {
   return `${"#".repeat(level)} ${parts.join(" · ")}`;
 }
 
-function renderItems(items: readonly Item[], units: ReadonlyMap<UnitId, Unit>, level: number) {
+function renderItems(
+  items: readonly Item[],
+  units: ReadonlyMap<UnitId, Unit>,
+  level: number,
+  tallies: ReadonlyMap<string, Tally>,
+) {
   const out: string[] = [];
   const sorted = sortItems(items, units);
   const paths = [...new Set(sorted.flatMap((i) => (i.where.path === null ? [] : [i.where.path])))];
-  const group = (title: string, members: readonly Item[]): void => {
+  const group = (title: string, members: readonly Item[], lead: readonly string[] = []): void => {
     if (members.length === 0) return;
-    out.push(`${"#".repeat(level)} ${title}`, "");
+    out.push(`${"#".repeat(level)} ${title}`, "", ...lead);
     for (const item of members) {
       out.push(itemHeading(item, level + 1), "", ...quoteBlock(item.where.quote));
       if (item.where.quote.length > 0) out.push("");
       out.push(...voices(item), "");
     }
   };
-  for (const path of paths)
+  for (const path of paths) {
+    const tally = tallies.get(path);
     group(
       path,
       sorted.filter((i) => i.where.path === path),
+      tally === undefined
+        ? []
+        : [`coverage: ${tally.covered} of ${tally.executable} changed lines`, ""],
     );
+  }
   group(
     "General",
     sorted.filter((i) => i.where.path === null),
@@ -894,34 +909,47 @@ function spanOf(rows: readonly NumberedRow[]): Span {
   };
 }
 
-function commentSpan(ctx: Context, c: Comment): Span {
+/** The rows an item points at, in the hunk that holds them. */
+type Rows = { readonly path: RepoPath; readonly rows: readonly NumberedRow[] };
+
+function commentRows(ctx: Context, c: Comment): Rows | null {
   const { anchor } = c;
-  if (anchor.kind !== "hunk") return NO_SPAN;
+  if (anchor.kind !== "hunk") return null;
   const hunk = ctx.units.get(anchor.unit);
-  if (hunk?.kind !== "hunk") return NO_SPAN;
+  if (hunk?.kind !== "hunk") return null;
   const { offsets, changes } = anchor;
-  if (offsets !== undefined)
-    return spanOf(numberedRows(hunk, ctx.units, (i) => offsets.includes(i)));
-  return spanOf(
-    numberedRows(
-      hunk,
-      ctx.units,
-      (_, n) => n !== null && (changes === null || changes.includes(n)),
-    ),
-  );
+  const want =
+    offsets !== undefined
+      ? (i: number) => offsets.includes(i)
+      : (_: number, n: number | null) => n !== null && (changes === null || changes.includes(n));
+  return { path: hunk.path, rows: numberedRows(hunk, ctx.units, want) };
 }
 
-function concernSpan(ctx: Context, concern: PlacedConcern): Span {
+function concernRows(ctx: Context, concern: PlacedConcern): Rows | null {
   const hunk = concern.unit === undefined ? undefined : ctx.units.get(concern.unit);
-  if (hunk?.kind !== "hunk") return NO_SPAN;
+  if (hunk?.kind !== "hunk") return null;
   const lines = concern.lines;
-  return spanOf(
-    numberedRows(
-      hunk,
-      ctx.units,
-      (_, n) => n !== null && (lines === undefined || lines.includes(n)),
-    ),
-  );
+  const want = (_: number, n: number | null) =>
+    n !== null && (lines === undefined || lines.includes(n));
+  return { path: hunk.path, rows: numberedRows(hunk, ctx.units, want) };
+}
+
+function spanAt(at: Rows | null): Span {
+  return at === null ? NO_SPAN : spanOf(at.rows);
+}
+
+/**
+ * Whether the test run ran every executable added row the item points at. Absent without a run
+ * that still fits the file, when it picks no such row, or when its code changed after it was said.
+ */
+function coveredOf(ctx: Context, id: string, at: Rows | null): Pick<ReportItem, "covered"> {
+  const file = at === null ? undefined : ctx.coverage?.get(at.path);
+  if (at === null || file === undefined || ctx.marks?.has(id)) return {};
+  const hits = at.rows.flatMap((r) => {
+    const n = r.op === "+" ? file.lines.get(r.tip) : undefined;
+    return n === undefined ? [] : [n];
+  });
+  return hits.length === 0 ? {} : { covered: hits.every((n) => n > 0) };
 }
 
 export type ReportThreadEntry = { readonly author: "agent" | "reviewer"; readonly body: string };
@@ -940,6 +968,8 @@ export type ReportItem = Span & {
   readonly excluded: boolean;
   /** Present when the code changed after v<since> (or is gone): the lines are its carried place. */
   readonly changed?: { readonly since: PlanVersion; readonly gone: boolean };
+  /** On a flag or concern over added rows, when a test run covers them: whether all of them ran. */
+  readonly covered?: boolean;
 };
 
 /** The item with the label the markdown uses to point at it. */
@@ -975,6 +1005,7 @@ function collectItems(
     const { kept } = it;
     const first = it.comments[0];
     if (kept !== null) {
+      const at = concernRows(ctx, kept.concern);
       const note = kept.note === null ? "" : `\n\nReviewer: ${kept.note}`;
       const thread = it.comments.flatMap((c): ReportThreadEntry[] => [
         { author: "reviewer", body: c.body },
@@ -984,7 +1015,7 @@ function collectItems(
         where: it.where,
         item: {
           id: kept.concern.id,
-          ...concernSpan(ctx, kept.concern),
+          ...spanAt(at),
           path: it.where.path,
           oldPath: it.where.path,
           severity: it.severity,
@@ -994,15 +1025,17 @@ function collectItems(
           resolved: false,
           excluded: noConcerns.has(kept.concern.id),
           ...changedOf(ctx, kept.concern.id),
+          ...coveredOf(ctx, kept.concern.id, at),
         },
       };
     }
     if (first === undefined) throw new Error("an item with neither a concern nor a comment");
+    const at = commentRows(ctx, first);
     return {
       where: it.where,
       item: {
         id: first.id,
-        ...commentSpan(ctx, first),
+        ...spanAt(at),
         path: it.where.path,
         oldPath: it.where.path,
         severity: it.severity,
@@ -1012,6 +1045,7 @@ function collectItems(
         resolved: resolved.has(first.id),
         excluded: noComments.has(first.id),
         ...changedOf(ctx, first.id),
+        ...coveredOf(ctx, first.id, at),
       },
     };
   });
@@ -1026,7 +1060,7 @@ function collectItems(
       where,
       item: {
         id: q.id,
-        ...commentSpan(ctx, q),
+        ...spanAt(commentRows(ctx, q)),
         path: where.path,
         oldPath: where.path,
         severity: q.severity ?? null,
@@ -1052,7 +1086,7 @@ export function reportItems(
   units: ReadonlyMap<UnitId, Unit>,
   opts: ReportOptions,
 ): ReportItem[] {
-  const session = folded(review, commits, units, opts.earlier);
+  const session = folded(review, commits, units, opts);
   return collectItems(session.review, session.ctx, opts.responses).map((c) => c.item);
 }
 
@@ -1078,6 +1112,8 @@ export type ReportOptions = {
   readonly responses: readonly CommentResponse[];
   /** What earlier versions of the same open review said, placed on this version's diff. */
   readonly earlier?: Earlier;
+  /** The test run's files that still describe this tip; absent without a run. */
+  readonly coverage?: ReadonlyMap<RepoPath, FileCoverage>;
 };
 
 export type Earlier = {
@@ -1095,9 +1131,11 @@ function folded(
   review: Review,
   commits: readonly ReportCommit[],
   units: ReadonlyMap<UnitId, Unit>,
-  earlier: Earlier | undefined,
+  opts: ReportOptions,
 ): { readonly review: Review; readonly ctx: Context } {
-  if (earlier === undefined) return { review, ctx: { commits, units } };
+  const { earlier } = opts;
+  const coverage = opts.coverage === undefined ? {} : { coverage: opts.coverage };
+  if (earlier === undefined) return { review, ctx: { commits, units, ...coverage } };
   const marks = new Map<string, Mark>();
   const mark = (id: string, at: SessionComment | CarriedConcern): void => {
     if (at.since !== null)
@@ -1133,6 +1171,7 @@ function folded(
     ctx: {
       units,
       marks,
+      ...coverage,
       commits: commits.map((commit, k) => {
         const mine = lost.filter((c) => owner(c.unit, c.commit) === k);
         if (mine.length === 0) return commit;
@@ -1158,7 +1197,7 @@ export function renderReport(
   units: ReadonlyMap<UnitId, Unit>,
   opts: ReportOptions,
 ): string {
-  const session = folded(full, commits, units, opts.earlier);
+  const session = folded(full, commits, units, opts);
   const { ctx } = session;
   const excluded = session.review.excluded;
   if (excluded === undefined) return renderIncluded(session.review, ctx, opts);
@@ -1187,6 +1226,10 @@ function renderIncluded(review: Review, ctx: Context, opts: ReportOptions): stri
   const issues = walk ? rest : rest.filter((c) => c.severity !== undefined);
   const feedback = walk ? [] : rest.filter((c) => c.severity === undefined);
   const items = buildItems(ctx, keptConcerns(review, commits), issues);
+  // Keyed by path as the items name it, so a file's heading finds its count.
+  const tallies = new Map<string, Tally>(
+    ctx.coverage === undefined ? [] : changedLines(units, ctx.coverage),
+  );
   const out: string[] = [];
   if (walk) {
     out.push(
@@ -1195,7 +1238,7 @@ function renderIncluded(review: Review, ctx: Context, opts: ReportOptions): stri
     );
     if (items.length === 0 && questions.length === 0)
       out.push("The reviewer raised no issues.", "");
-    out.push(...renderItems(items, units, 2));
+    out.push(...renderItems(items, units, 2, tallies));
   } else {
     out.push(`# Review of plan v${review.planVersion}`, "");
     if (
@@ -1209,7 +1252,11 @@ function renderIncluded(review: Review, ctx: Context, opts: ReportOptions): stri
     }
     out.push(...renderPlanFeedback(ctx, feedback));
     if (items.length > 0) {
-      out.push(`## Code issues (${summarizeIssues(items)})`, "", ...renderItems(items, units, 3));
+      out.push(
+        `## Code issues (${summarizeIssues(items)})`,
+        "",
+        ...renderItems(items, units, 3, tallies),
+      );
     }
   }
   if (questions.length > 0) out.push(...renderQuestions(ctx, questions, opts.responses));

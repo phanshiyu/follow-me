@@ -169,6 +169,11 @@ async function session(input: string, dir: string): Promise<Run> {
     const launched = take("launch", fm("--no-open", "--wait", "0"));
     const url = /^follow-me review: (\S+)$/m.exec(launched)?.[1];
     if (url === undefined) throw new Error(`no page URL in:\n${launched}`);
+    // The skill asks for a test run at the tip once the page is open; one covered line will do.
+    const lcov = join(work, "lcov.info");
+    const covered = tipLineOf(flag.hunk, diff, flag.row);
+    writeFileSync(lcov, `SF:${flag.hunk.path}\nDA:${covered},1\nend_of_record\n`);
+    take("coverage", fm("coverage", lcov));
 
     const state = record(await api(url, "api/state", "GET"));
     const commits = list(state["commits"]).map(record);

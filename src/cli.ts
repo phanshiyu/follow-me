@@ -89,6 +89,7 @@ import { type Registration, RegistrationError, sessionIdOf } from "./server.ts";
 import {
   BranchMovedError,
   cleanSessions,
+  coverageAt,
   extractSession,
   type HeldLock,
   type LockState,
@@ -1104,8 +1105,8 @@ function reviewedPlan(session: Session): StoredReview | null {
 }
 
 /** Prints the finished review's report, which is what the agent works from from here on. */
-function finished(session: Session, stored: StoredReview): number {
-  const text = renderStored(session, stored);
+async function finished(session: Session, stored: StoredReview): Promise<number> {
+  const text = await renderStored(session, stored);
   if (text === null) return 1;
   // A review that swapped versions holds what its earlier versions said too.
   const said = stored.review.comments.length + (stored.review.carried?.length ?? 0);
@@ -1388,6 +1389,11 @@ async function entry(cwd: string, args: Args): Promise<number> {
   const detached = { ...args, flags: new Set([...args.flags, "detach"]) };
   const result = await hostReview(session, mode, detached, async () => prep, reportSaved);
   if (result.kind !== "elsewhere") return exitCode(result);
+  if (session.coverage() === null) {
+    next(
+      "if the project has tests, run them with coverage at the tip and pass the lcov to follow-me coverage",
+    );
+  }
   say("follow-me is interactive: keep running it until it prints the report");
   return listen(session, result, args);
 }
@@ -1445,11 +1451,11 @@ async function walkPlan(session: Session, args: Args): Promise<Prepared | null> 
 }
 
 /** The consolidated report of a saved review, or null after saying why it cannot be rendered. */
-function renderStored(
+async function renderStored(
   session: Session,
   stored: StoredReview,
   format: "markdown" | "json" = "markdown",
-): string | null {
+): Promise<string | null> {
   const plan = session.plans().find((p) => p.version === stored.version);
   if (plan === undefined) {
     console.error(`follow-me: review v${stored.version} refers to a plan that is missing`);
@@ -1478,7 +1484,13 @@ function renderStored(
             concerns: stored.review.carriedConcerns ?? [],
           },
         };
-  const opts = { branch: session.anchor.branch, responses, ...earlier };
+  const coverage = await coverageAt(session.root, session.dir, session.anchor.tip);
+  const opts = {
+    branch: session.anchor.branch,
+    responses,
+    ...earlier,
+    ...(coverage === null ? {} : { coverage }),
+  };
   if (format === "json") {
     const items = reportItems(stored.review, verdict.plan.commits, session.diff.units, opts);
     return `${JSON.stringify(items, null, 2)}\n`;
@@ -1513,7 +1525,7 @@ async function report(cwd: string, args: Args, walkOnly = false): Promise<number
     console.error("follow-me: no review is open and none has ended; run `follow-me review` first");
     return 1;
   }
-  const text = renderStored(session, stored, format);
+  const text = await renderStored(session, stored, format);
   if (text === null) return 1;
   process.stdout.write(text);
   return 0;

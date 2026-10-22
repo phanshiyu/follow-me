@@ -12,7 +12,7 @@ import {
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { parseDraft, parseReview } from "./comments.ts";
-import { parseCoverage, serializeCoverage } from "./coverage.ts";
+import { freshFiles, parseCoverage, serializeCoverage, staleFiles } from "./coverage.ts";
 import { isSha } from "./diff.ts";
 import { type Evolution, evolvePlan } from "./evolve.ts";
 import {
@@ -39,9 +39,11 @@ import type {
   CarriedRef,
   Coverage,
   Diff,
+  FileCoverage,
   LockToken,
   PlanFile,
   PlanVersion,
+  RepoPath,
   Review,
   ReviewMode,
   SessionAnchor,
@@ -319,6 +321,25 @@ export function readCoverageIn(dir: string): Coverage | null {
   const coverage = parseCoverage(raw);
   if (typeof coverage === "string") throw new SessionFileError(`${path}: ${coverage}`);
   return coverage;
+}
+
+/**
+ * What the report counts: the files of the session's test run that still describe `tip`. Null
+ * without a run, and when coverage.json cannot be read, so a report never fails on it.
+ */
+export async function coverageAt(
+  repo: string,
+  dir: string,
+  tip: Sha,
+): Promise<ReadonlyMap<RepoPath, FileCoverage> | null> {
+  let coverage: Coverage | null;
+  try {
+    coverage = readCoverageIn(dir);
+  } catch (error) {
+    if (error instanceof SessionFileError) return null;
+    throw error;
+  }
+  return coverage === null ? null : freshFiles(coverage, await staleFiles(repo, coverage, tip));
 }
 
 function makeSession(root: string, dir: string, anchor: SessionAnchor, diff: Diff): Session {

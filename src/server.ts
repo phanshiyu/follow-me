@@ -18,7 +18,7 @@ import { isRepoPath } from "./diff.ts";
 import { carryConcerns, carrySession } from "./evolve.ts";
 import { isConcernId, isPlanVersion } from "./plan.ts";
 import { type Earlier, renderReport, reportItems } from "./prompt.ts";
-import { isLockToken, readCoverageIn, SessionFileError } from "./session.ts";
+import { coverageAt, isLockToken, readCoverageIn, SessionFileError } from "./session.ts";
 import type {
   Candidate,
   CarriedComment,
@@ -659,25 +659,28 @@ function hostSession(
     };
   };
 
-  const reportOptions = () => {
+  const reportOptions = async () => {
     const comments = sessionOf(view);
+    const { repo, state } = view.loaded;
+    const coverage = await coverageAt(repo, view.registration.dir, state.anchor.tip);
     return {
-      branch: view.loaded.state.anchor.branch,
+      branch: state.anchor.branch,
       responses: [],
       ...(comments === null ? {} : { earlier: { comments, concerns: view.earlierConcerns } }),
+      ...(coverage === null ? {} : { coverage }),
     };
   };
   const unitsOf = (): Map<UnitId, Unit> =>
     new Map(view.loaded.state.units.map((u): [UnitId, Unit] => [u.id, u]));
-  const report = (finished: Review): string =>
-    renderReport(finished, view.loaded.state.commits, unitsOf(), reportOptions());
+  const report = async (finished: Review): Promise<string> =>
+    renderReport(finished, view.loaded.state.commits, unitsOf(), await reportOptions());
 
   /** Writes reviews/vN.json and its report once, and removes the autosave. */
   const writeReview = async (finished: Review): Promise<string> => {
     await writes;
     await mkdir(view.loaded.reviewsDir, { recursive: true });
     await writeAtomic(view.reviewFile, `${JSON.stringify(finished, null, 2)}\n`);
-    await writeAtomic(view.reviewFile.replace(/\.json$/, ".md"), report(finished));
+    await writeAtomic(view.reviewFile.replace(/\.json$/, ".md"), await report(finished));
     await rm(view.draftFile, { force: true });
     return view.reviewFile;
   };
@@ -786,7 +789,8 @@ function hostSession(
       );
       return found.map((c) => (c.unit === null ? c : { ...c, preview: [] }));
     },
-    reportItems: () => reportItems(review(), view.loaded.state.commits, unitsOf(), reportOptions()),
+    reportItems: async () =>
+      reportItems(review(), view.loaded.state.commits, unitsOf(), await reportOptions()),
     add: async (raw: unknown): Promise<CommentId> => {
       open();
       if (!isRecord(raw)) throw new HttpError(400, "malformed comment");
@@ -1238,11 +1242,11 @@ export function startServer(opts: HostOptions): Promise<Host> {
       return sendJson(res, 200, session.coverageTaken());
     }
     if (method === "GET" && rest === "/api/report" && url.searchParams.get("format") === "json") {
-      return sendJson(res, 200, session.reportItems());
+      return sendJson(res, 200, await session.reportItems());
     }
     if (method === "GET" && rest === "/api/report") {
       res.writeHead(200, { "content-type": "text/markdown; charset=utf-8" });
-      res.end(session.report());
+      res.end(await session.report());
       return;
     }
     if (method === "POST" && rest === "/api/version") {

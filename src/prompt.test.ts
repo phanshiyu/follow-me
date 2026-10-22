@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type PromptInput, type ReportCommit, renderPrompt, renderReport } from "./prompt.ts";
-import type { Diff, PlanFile, Review } from "./types.ts";
+import { isRepoPath } from "./diff.ts";
+import {
+  type PromptInput,
+  type ReportCommit,
+  renderPrompt,
+  renderReport,
+  reportItems,
+} from "./prompt.ts";
+import type { Diff, FileCoverage, PlanFile, RepoPath, Review } from "./types.ts";
 
 // The plan as validation projects it: explicit lines per unit, in commit order.
 function fixtureCommits(): ReportCommit[] {
@@ -495,4 +502,32 @@ test("questions are listed apart from change requests, with their lines and repl
   assert.ok(text.slice(questions, changes).includes("    +new1"));
   assert.ok(!text.slice(changes).includes("c_whyyyy"));
   assert.ok(text.slice(changes).includes("- c_fixthx"));
+});
+
+test("with a test run, each file says how many changed lines ran and each flag whether its rows did", () => {
+  const { review, commits } = reportFixture();
+  const path = "src/a.ts";
+  assert.ok(isRepoPath(path));
+  // src/a.ts at the tip: new1 is line 1, same 2, new2 3, tail 21. Line 2 is context.
+  const lines = new Map([
+    [1, 2],
+    [2, 2],
+    [3, 0],
+    [21, 5],
+  ]);
+  const coverage = new Map<RepoPath, FileCoverage>([[path, { lines, branches: new Map() }]]);
+  const opts = { branch: "feature", responses: [], coverage };
+  const units = fixtureDiff().units;
+  assert.deepEqual(
+    reportItems(review, commits, units, opts).map((i) => [i.id, i.kind, i.covered]),
+    [
+      ["c_whydro", "question", undefined],
+      ["k_0a1b2c3d", "concern", false],
+      ["c_tailzz", "flag", true],
+      ["c_mnopqr", "flag", undefined],
+    ],
+  );
+  const report = renderReport(review, commits, units, opts).split("\n");
+  assert.deepEqual(report.slice(2, 6), ["## src/a.ts", "", "coverage: 2 of 3 changed lines", ""]);
+  assert.equal(renderReport(review, commits, units, REPORT).includes("coverage:"), false);
 });

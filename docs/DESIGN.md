@@ -244,6 +244,47 @@ prints it either way. Candidates rank by the asking file, then its directory, th
 order, at most 10. Matches are cached per name and file lines per path in the hosted view, which a
 version swap replaces, so the cache never outlives its tip.
 
+## Coverage
+
+follow-me never runs tests. The agent runs the project's suite with coverage at the branch tip and
+hands the lcov over with `follow-me coverage <lcov> [--test <id> [--at <path:line>]]`, which writes
+`.follow-me/<slug>/coverage.json` atomically:
+`{ tip, takenAt, files: { <path>: { lines: { <n>: hits }, branches?: { <n>: [taken, total] } } },
+tests?: { <id>: { at?: Loc, lines: { <path>: number[] } } } }`, with `Loc = { path, start, end }` in
+tip lines. `src/coverage.ts` holds the parser, the merge and the counts; `session.ts` owns the file.
+
+- **Parsing.** `TN`, `SF`, `DA`, `BRDA` and `end_of_record` are read; every other `KEY:` record is
+  skipped. A line that is not a record, a bad `DA` or `BRDA`, a hit before any `SF` and a file with
+  no `SF` are errors that name the line. Records of one file are summed, and a branch counts as taken
+  when any record took it, so `[taken, total]` is per line over distinct branch ids.
+- **Paths.** An `SF` path is absolute, else relative to the cwd and failing that to the repo root,
+  with symlinks resolved, then made repo-relative. A path outside the repo, or one the tip's tree
+  lacks (generated files, node internals), is dropped. When nothing is left the command refuses and
+  says to run it from where the tests ran.
+- **The tip check.** Lines are only tip lines if the files were the tip's when the tests ran, so a run
+  is refused with "coverage must be taken on the tip; these files differ: …" when any covered path
+  differs between the working tree (or index) and the tip, by `git diff --name-only <tip>`.
+- **Runs.** A plain run replaces the whole file; its `TN:` blocks, when named, become `tests`. A
+  `--test` run adds one test (its lines with a hit, `at` from `--at`) and folds its hits into `files`
+  by the larger count, so a per-test run never inflates an aggregate one and repeating it changes
+  nothing. A `--test` run against another tip starts over.
+- **Changed lines.** The summary line counts the branch's added rows that the run calls executable,
+  that is rows with a `DA` record, and how many were hit: "coverage for N files at <tip>; M of K
+  changed lines covered".
+
+The server serves the file at `GET api/coverage` (404 before the first run), read from disk on every
+request so a restarted server has it, plus `stale`: the covered paths whose content differs between
+`coverage.tip` and the hosted tip (all of them when that commit is gone). A new plan version for the
+same tip reorders commits but changes no line, so it stales nothing, and a swap never touches the file.
+When the session is hosted, `follow-me coverage` posts `api/coverage` and the server emits
+`{ type: "coverage", tip, takenAt }`; the page reloads its marks from `api/coverage`, and `api/state`
+stays small. The event is the agent's own act, so `watch` and the entry do not print it.
+
+The bare entry mentions coverage once: its launch output says to run the tests with coverage when the
+session has no `coverage.json`. The report uses only files that are not stale: the markdown adds
+"coverage: M of K changed lines" under each file heading, and `report --json` gives each flag and kept
+concern over added rows `covered`, true when every executable added row it points at ran.
+
 ## Interactive loop
 
 A review is a conversation, so the agent talks to the review server, not to files. The server
@@ -255,7 +296,7 @@ files stay the durable record written as it goes (`reviews/vN.draft.json`) and a
   else `{ seq, events: [] }` at the timeout. `GET api/events/stream` serves the same log as
   Server-Sent Events: it replays after `since` (or `Last-Event-ID`), pushes each new event, pings every
   15 s and closes after `ended`. Every mutation emits one event: `comment`, `comment-updated`,
-  `comment-deleted`, `reply`, `concern`, `resolved`, `version`, `submitted`, `ended`. `since` beyond the log is a 409,
+  `comment-deleted`, `reply`, `concern`, `resolved`, `version`, `coverage`, `submitted`, `ended`. `since` beyond the log is a 409,
   because a restarted server restarts the count. `api/state` carries the current `seq`, so a page
   that reads state and then polls from it misses nothing.
 - **No held flags.** Every comment reaches the agent the moment the page posts it: `watch`, the bare
@@ -427,7 +468,8 @@ decides what leaves: `Review.excluded` lists the comment and concern ids to keep
 `api/state`). `follow-me report --json` (and `GET api/report?format=json`) prints every item as
 `{ id, path, oldPath, newLine, oldLine, startNewLine, startOldLine, severity, kind, body, thread,
 resolved, excluded }` in file order, plus `changed: { since, gone }` on an item said on an earlier
-version whose code changed after v`since` (or is gone, with no lines). `id` names the comment or
+version whose code changed after v`since` (or is gone, with no lines), and `covered` on a flag or
+concern over added rows when a test run still fits its file. `id` names the comment or
 concern, so the page toggles a carried item like any other. Line numbers are the original branch's: the tip's for an added or context
 row, the base's for a removed one, computed from the hunk and the projected commit as the quoting code
 does. The split's last tree equals the tip, so the numbers are the ones a merge request shows for the
