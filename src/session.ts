@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { parseDraft, parseReview } from "./comments.ts";
+import { parseCoverage, serializeCoverage } from "./coverage.ts";
 import { isSha } from "./diff.ts";
 import { type Evolution, evolvePlan } from "./evolve.ts";
 import {
@@ -36,6 +37,7 @@ import {
 import type {
   Applied,
   CarriedRef,
+  Coverage,
   Diff,
   LockToken,
   PlanFile,
@@ -229,6 +231,9 @@ export type Session = {
   /** Writes plans/vN.json unless the latest plan has the same hash. */
   freeze(plan: ValidPlan): PlanVersion;
   applied(): Applied | null;
+  /** coverage.json, the agent's last test run at the tip, or null before the first. */
+  coverage(): Coverage | null;
+  writeCoverage(coverage: Coverage): void;
   /** Serializes apply and review on this session; throws SessionLockedError when busy. */
   lock(command: string): HeldLock;
   /** Takes over the lock a live process holds with this token, so exactly one process owns it. */
@@ -300,6 +305,20 @@ function parseApplied(v: unknown): Applied | null {
   if (hash !== null && typeof hash !== "string") return null;
   if (signed !== null && typeof signed !== "boolean") return null;
   return { schema, version, branch, head, hash, signed };
+}
+
+function coveragePath(dir: string): string {
+  return join(dir, "coverage.json");
+}
+
+/** The coverage.json of the session in `dir`, or null when there is none. */
+export function readCoverageIn(dir: string): Coverage | null {
+  const path = coveragePath(dir);
+  const raw = readJson(path);
+  if (raw === undefined) return null;
+  const coverage = parseCoverage(raw);
+  if (typeof coverage === "string") throw new SessionFileError(`${path}: ${coverage}`);
+  return coverage;
 }
 
 function makeSession(root: string, dir: string, anchor: SessionAnchor, diff: Diff): Session {
@@ -412,6 +431,8 @@ function makeSession(root: string, dir: string, anchor: SessionAnchor, diff: Dif
       writeJson(join(plansDir, `v${version}.json`), serializePlanFile(plan.file));
       return version;
     },
+    coverage: () => readCoverageIn(dir),
+    writeCoverage: (coverage) => writeJson(coveragePath(dir), serializeCoverage(coverage)),
     lock: (command) => acquireLock(dir, anchor.branch, command),
     adoptLock: (from, command) => adoptLock(dir, from, command),
     lockState: () => readLock(join(dir, "lock")),

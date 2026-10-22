@@ -1,8 +1,19 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  changedLines,
+  LcovError,
+  type NamedTest,
+  parseLcov,
+  parseLocArg,
+  recordRun,
+  runOf,
+  tipPlacer,
+  totalOf,
+} from "./coverage.ts";
 import { definitionIndex, isIdentifier } from "./definition.ts";
 import { DiffParseError, formatUnitRef, isUnitId } from "./diff.ts";
 import {
@@ -10,6 +21,8 @@ import {
   branchHead,
   GitError,
   isOwnWork,
+  pathsAt,
+  pathsChanged,
   type Signing,
   type SignMode,
   signing,
@@ -109,6 +122,11 @@ class UsageError extends Error {
   override readonly name = "UsageError";
 }
 
+/** A test run follow-me will not record, with the reason the agent can act on. */
+class CoverageError extends Error {
+  override readonly name = "CoverageError";
+}
+
 const SHORT_USAGE = `usage: follow-me [--wait <seconds>] [--branch <name>]
 
 Run follow-me with no command. Each call does the next thing that is missing and returns: it
@@ -129,6 +147,8 @@ Other commands:
                                             is defined, instead of reading files
   report [--json] [--markdown]              print the report of the latest review; --json lists
                                             the items to post to a merge request
+  coverage <lcov> [--test <id> [--at <path:line>]]
+                                            record a test run taken at the tip for the page
 
 help --all lists every command.`;
 
@@ -193,6 +213,11 @@ Interactive loop (while the review page is open):
                                             line in both voices, then questions with answers;
                                             --json lists the items to post to a merge request
                                             (path, lines, severity, body, thread, excluded)
+  coverage <lcov> [--test <id> [--at <path:line>]] [--branch <name>]
+                                            record the lcov of a test run at the branch tip;
+                                            refuses when a covered file in the working tree
+                                            differs from the tip. A plain run replaces the last;
+                                            --test runs add one test each, --at is where it is
   apply, while the page is open, swaps it to the new plan version in place, same URL.
 
 Old names, still working:
@@ -1493,6 +1518,65 @@ async function report(cwd: string, args: Args, walkOnly = false): Promise<number
   return 0;
 }
 
+const COVERAGE_USAGE = "usage: follow-me coverage <lcov> [--test <id> [--at <path:line>]]";
+
+/**
+ * Records the lcov of a test run the agent made at the tip in the session's coverage.json and
+ * prints how much of the branch's changed code it ran. follow-me never runs the tests itself.
+ */
+async function coverage(cwd: string, args: Args): Promise<number> {
+  const [file, extra] = args.positionals;
+  const id = args.values.get("test");
+  const atArg = args.values.get("at");
+  if (file === undefined || extra !== undefined) throw new UsageError(COVERAGE_USAGE);
+  if (atArg !== undefined && id === undefined) {
+    throw new UsageError(`--at needs --test\n${COVERAGE_USAGE}`);
+  }
+  let text: string;
+  try {
+    text = readFileSync(resolve(cwd, file), "utf8");
+  } catch {
+    throw new UsageError(`cannot read ${file}`);
+  }
+  const records = parseLcov(text);
+  const session = await openFresh(cwd, args);
+  const { tip } = session.anchor;
+  const place = tipPlacer(session.root, cwd, await pathsAt(session.root, tip));
+  const run = runOf(records, place);
+  if (run.files.size === 0) {
+    throw new CoverageError(
+      `none of the ${plural(new Set(records.map((r) => r.path)).size, "file")} in ${file} is in ${session.anchor.branch} at the tip; run follow-me coverage from the directory the tests ran in`,
+    );
+  }
+  const changed = await pathsChanged(session.root, tip, null);
+  const differ = [...run.files.keys()].filter((p) => changed.has(p));
+  if (differ.length > 0) {
+    throw new CoverageError(
+      `coverage must be taken on the tip; these files differ: ${differ.map(show).join(", ")}`,
+    );
+  }
+  let test: NamedTest | undefined;
+  if (id !== undefined) {
+    const at = atArg === undefined ? undefined : parseLocArg(atArg, place);
+    if (typeof at === "string") throw new UsageError(at);
+    test = { id, ...(at === undefined ? {} : { at }) };
+  }
+  const takenAt = new Date().toISOString();
+  const recorded = recordRun(session.coverage(), run, {
+    tip,
+    takenAt,
+    ...(test === undefined ? {} : { test }),
+  });
+  session.writeCoverage(recorded);
+  const { covered, executable } = totalOf(
+    changedLines(session.diff.units, recorded.files).values(),
+  );
+  say(
+    `coverage for ${plural(recorded.files.size, "file")} at ${short(tip)}; ${covered} of ${executable} changed lines covered`,
+  );
+  return 0;
+}
+
 /** The old name of report. */
 async function feedback(cwd: string, args: Args): Promise<number> {
   console.error("follow-me: feedback is now report; printing the same");
@@ -2096,6 +2180,8 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
       }
       case "show":
         return await showRef(cwd, parseArgs(rest, { values: ["branch"] }));
+      case "coverage":
+        return await coverage(cwd, parseArgs(rest, { values: ["test", "at", "branch"] }));
       case "report":
         return await report(
           cwd,
@@ -2142,6 +2228,8 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
   } catch (error) {
     const known = [
       UsageError,
+      CoverageError,
+      LcovError,
       BranchMovedError,
       BranchRefusedError,
       SessionFileError,

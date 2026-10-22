@@ -12,6 +12,8 @@
  *               review file, the autosaved draft and the server's events. Pure parsers.
  *   definition.ts where an identifier is defined at the branch tip, and where that lands in the
  *               plan: per-language patterns, ranking, placement and a per-tip cache.
+ *   coverage.ts lcov from the agent's test run: parse, place at the tip, merge runs, count the
+ *               changed lines covered, and which files went stale since.
  *   prompt.ts   the planner prompt for an agent, the feedback and the consolidated report.
  *   server.ts   the review server: a registry of hosted sessions, their JSON API, and ui/.
  *   host.ts     the one server per user: its record in the state dir, attach, start, stop.
@@ -424,6 +426,36 @@ export type CarriedConcern = Placement & {
 
 /** Replies posted during this review to a comment of an earlier version. */
 export type EarlierReplies = { readonly comment: CommentId; readonly replies: readonly Reply[] };
+
+/** A range of lines at the branch tip, 1-based and inclusive. */
+export type Loc = { readonly path: RepoPath; readonly start: number; readonly end: number };
+
+/** lcov's branch hits on one line: how many of its branches ran, of how many. */
+export type BranchHits = readonly [taken: number, total: number];
+
+/** One file of a test run at the tip. A line without an entry is not executable. */
+export type FileCoverage = {
+  /** Tip line to hit count. */
+  readonly lines: ReadonlyMap<number, number>;
+  readonly branches: ReadonlyMap<number, BranchHits>;
+};
+
+/** What one test ran: its tip lines with at least one hit, per file. at is where the test is. */
+export type TestCoverage = {
+  readonly at?: Loc;
+  readonly lines: ReadonlyMap<RepoPath, readonly number[]>;
+};
+
+/**
+ * <session>/coverage.json: a test run the agent made at `tip` and handed over as lcov. Only files
+ * present at the tip are kept. tests is empty without per-test detail.
+ */
+export type Coverage = {
+  readonly tip: Sha;
+  readonly takenAt: string;
+  readonly files: ReadonlyMap<RepoPath, FileCoverage>;
+  readonly tests: ReadonlyMap<string, TestCoverage>;
+};
 
 /** One entry of the hosted session's append-only log. seq starts at 1 and never repeats. */
 export type ServerEvent = { readonly seq: number } & (

@@ -163,6 +163,35 @@ export async function blobsAt(
   return new Map(paths.map((p, i) => [p, blobs[i] ?? ""]));
 }
 
+function pathList(out: Buffer): Set<RepoPath> {
+  return new Set(
+    out
+      .toString("latin1")
+      .split("\0")
+      .filter((p) => isRepoPath(p)),
+  );
+}
+
+/** Every file path in the commit's tree. */
+export async function pathsAt(repo: string, commit: Sha): Promise<Set<RepoPath>> {
+  return pathList(await git(repo, ["ls-tree", "-r", "-z", "--name-only", commit]));
+}
+
+/**
+ * Paths whose content differs between the commit and `to`: another commit, or with null the
+ * working tree and index. Untracked files are not listed.
+ */
+export async function pathsChanged(
+  repo: string,
+  from: Sha,
+  to: Sha | null,
+): Promise<Set<RepoPath>> {
+  const target = to === null ? [] : [to];
+  return pathList(
+    await git(repo, ["diff", "--name-only", "-z", ...DIFF_FLAGS, from, ...target, "--"]),
+  );
+}
+
 export type GrepMatch = { readonly path: RepoPath; readonly line: number; readonly text: string };
 
 /**
