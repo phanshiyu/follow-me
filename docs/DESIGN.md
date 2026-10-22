@@ -339,7 +339,10 @@ commit or a unit ref, with kind one of `state-machine`, `sequence`, `diagram`.
   runs a test takes it when that test ran every executable line there, and the edge is green with
   the count of such tests or red and dashed with ✕ when none does; with an aggregate run only, green
   when every line ran, else red, with no test names; grey (Mermaid's own) with no lines, no run, or
-  a stale file. Edges are found in Mermaid's SVG by the states nearest their two ends, then by label;
+  a stale file. Because an edge's tests are those that ran every line of its `at`, the skill maps a
+  transition to the line that performs it, never its guard (which every test runs), a self-loop to the
+  line only that path runs (its `return`), and a state to the code that runs in it, else the line that
+  enters it. Edges are found in Mermaid's SVG by the states nearest their two ends, then by label;
   the transition table, with its Tests column, stays the way to every transition.
 - **Not driven by any one test.** With per-test runs, the page lists sequences from the initial
   state (`[*] -->`, else the map's first state) to a final one (`--> [*]`, or a state nothing

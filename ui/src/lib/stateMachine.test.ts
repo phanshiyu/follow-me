@@ -217,6 +217,37 @@ test("a sequence each step of which has a test, but no test takes whole, is not 
   ).toEqual([]);
 });
 
+test("a self-loop mapped to the line only its path runs names the test that loops", () => {
+  // Line 4 is the guard every test runs; line 6 is the retry's return; line 3 the paid assignment.
+  const run = aCoverage({
+    tests: {
+      pays: { lines: { "src/lib.js": [1, 3, 4] } },
+      retries: { lines: { "src/lib.js": [1, 4, 6] } },
+    },
+  });
+  const source = "stateDiagram-v2\n[*] --> Pay\nPay --> Pay: decline\nPaid --> [*]\n";
+  const mapWith = (loop: Loc[]): StateMap =>
+    JSON.parse(
+      JSON.stringify({
+        states: { Pay: [lib(1)], Paid: [lib(3)] },
+        transitions: [
+          { from: "Pay", to: "Paid", at: [lib(3)] },
+          { from: "Pay", to: "Pay", event: "decline", at: loop },
+        ],
+      }),
+    );
+  const marksOf = (map: StateMap) => (map.transitions ?? []).map((t) => markOfEdge(run, t.at));
+  const atReturn = mapWith([lib(6)]);
+  expect(marksOf(atReturn)[1]?.tests).toEqual(["retries"]);
+  expect(notDriven(atReturn, source, marksOf(atReturn)).map((s) => s.states.join(" → "))).toEqual([
+    "Pay → Pay → Paid",
+  ]);
+  // Mapped to the guard, the loop claims every test, and the gap disappears.
+  const atGuard = mapWith([lib(4)]);
+  expect(marksOf(atGuard)[1]?.tests).toEqual(["pays", "retries"]);
+  expect(notDriven(atGuard, source, marksOf(atGuard))).toEqual([]);
+});
+
 test("a mark reads as words with its line count", () => {
   expect(describeStateMark({ kind: "partly", run: 3, total: 5, tests: [] })).toBe(
     "partly covered, 3 of 5 lines",

@@ -145,11 +145,16 @@ test("the fixture's prompt and the skill tell the agent to put the guard calls b
   assert.ok(!rules.includes("Scaffolding and types come before"));
 });
 
-test("the skill asks for one coverage run per test and maps a transition to the line that performs it", () => {
+test("the skill asks for one coverage run per test and maps states, transitions and self-loops", () => {
   // When: once a reply carries a map; follow-me prints the command, with lcov kept out of the repo.
   assert.ok(
     section("Coverage").includes("Once you reply with a `--map`, also run each test alone"),
   );
   assert.ok(section("Coverage").includes("lcov into the directory `follow-me` names"));
-  assert.ok(section("Offers").includes("Map a transition to the line that performs it"));
+  const offers = section("Offers");
+  assert.ok(
+    offers.includes("Map a state to the code that runs in it, else the line that enters it"),
+  );
+  assert.ok(offers.includes("a transition to the line that performs it"));
+  assert.ok(offers.includes("a self-loop to the line only that path runs"));
 });
