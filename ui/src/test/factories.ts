@@ -1,6 +1,7 @@
 // Test data shared by the logic and page tests. Every call returns fresh objects.
 // JSON.parse is the one brand-free way to build branded ids without a cast.
 
+import type { Coverage } from "../lib/coverage.ts";
 import type {
   Candidate,
   HunkLine,
@@ -164,4 +165,23 @@ export function aCandidate(
     ],
     ...overrides,
   });
+}
+
+/**
+ * A run over aState's src/lib.js at the tip. The import ran, the blank line is not executable,
+ * assertNumber(a) ran with one of its two branches, assertNumber(b) never ran.
+ */
+export function aCoverage(overrides: Partial<Coverage> = {}): Coverage {
+  return {
+    tip: "b164dd3".padEnd(40, "0"),
+    takenAt: "2026-10-22T06:05:00.000Z",
+    files: {
+      "src/lib.js": {
+        lines: { "1": 1, "3": 1, "4": 14, "5": 0, "6": 14 },
+        branches: { "4": [1, 2] },
+      },
+    },
+    stale: [],
+    ...overrides,
+  };
 }

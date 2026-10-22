@@ -1,0 +1,173 @@
+// Coverage while reading: what each shown row's tip line did in the suite, the tallies the headers
+// show, and the uncovered added rows x and X step through. Pure.
+
+import { filesOf } from "./commit.ts";
+import { type LineNumber, ownersOf, rowsOf } from "./rows.ts";
+import type { ProjectedCommit, Unit, UnitId } from "./wire.ts";
+
+/** Tip lines of one file, both ends included. */
+export type Loc = { readonly path: string; readonly start: number; readonly end: number };
+
+/** GET api/coverage. Line numbers are tip lines; `stale` lists paths changed since `tip`. */
+export type Coverage = {
+  readonly tip: string;
+  readonly takenAt: string;
+  readonly files: Readonly<
+    Record<
+      string,
+      {
+        readonly lines: Readonly<Record<string, number>>;
+        readonly branches?: Readonly<Record<string, readonly [number, number]>>;
+      }
+    >
+  >;
+  readonly tests?: Readonly<
+    Record<
+      string,
+      { readonly at?: Loc; readonly lines: Readonly<Record<string, readonly number[]>> }
+    >
+  >;
+  readonly stale: readonly string[];
+};
+
+export type MarkKind = "covered" | "partly" | "uncovered";
+
+export type Mark = {
+  readonly kind: MarkKind;
+  readonly hits: number;
+  /** Branches taken and branches in all, when the run recorded them for this line. */
+  readonly branches: readonly [number, number] | null;
+  /** The file changed after the run, so the mark may sit on the wrong line. */
+  readonly stale: boolean;
+};
+
+/** A tip line's mark, or null for a line the run did not record: it is not executable. */
+export function markOf(coverage: Coverage, path: string, line: number): Mark | null {
+  const file = coverage.files[path];
+  const hits = file?.lines[line];
+  if (file === undefined || hits === undefined) return null;
+  const branches = file.branches?.[line] ?? null;
+  const kind: MarkKind =
+    hits === 0
+      ? "uncovered"
+      : branches !== null && branches[0] < branches[1]
+        ? "partly"
+        : "covered";
+  return { kind, hits, branches, stale: coverage.stale.includes(path) };
+}
+
+const times = (n: number) => (n === 1 ? "1 hit" : `${n} hits`);
+
+/** What a screen reader hears for a mark: "covered, 14 hits". */
+export function describeMark(mark: Mark): string {
+  const what =
+    mark.kind === "uncovered"
+      ? "not covered"
+      : mark.kind === "partly"
+        ? `partly covered, ${times(mark.hits)}, ${mark.branches?.[0]} of ${mark.branches?.[1]} branches`
+        : `covered, ${times(mark.hits)}`;
+  return mark.stale ? `${what}, coverage is stale` : what;
+}
+
+/** Executable added rows: how many there are, how many the suite ran, how many of those only in part. */
+export type Tally = { readonly total: number; readonly run: number; readonly partly: number };
+
+const EMPTY: Tally = { total: 0, run: 0, partly: 0 };
+
+function add(tally: Tally, mark: Mark): Tally {
+  return {
+    total: tally.total + 1,
+    run: tally.run + (mark.kind === "uncovered" ? 0 : 1),
+    partly: tally.partly + (mark.kind === "partly" ? 1 : 0),
+  };
+}
+
+/** Rounded down, so one missed line never reads as 100%. */
+export function percentOf(tally: Tally): number {
+  return tally.total === 0 ? 100 : Math.floor((100 * tally.run) / tally.total);
+}
+
+/** Red when anything was not run, amber when something ran only in part. */
+export function toneOf(tally: Tally): MarkKind {
+  return tally.run < tally.total ? "uncovered" : tally.partly > 0 ? "partly" : "covered";
+}
+
+/** An added row the suite did not run, in document order. */
+export type Target = {
+  readonly commit: number;
+  readonly path: string;
+  readonly unit: UnitId;
+  readonly row: number;
+};
+
+export type PageCoverage = {
+  readonly tip: string;
+  readonly takenAt: string;
+  /** Every row with a tip line the run recorded, per hunk and body index, whatever commit shows it. */
+  readonly marks: ReadonlyMap<UnitId, ReadonlyMap<number, Mark>>;
+  readonly commits: readonly Tally[];
+  /** Keyed by `${commit}|${path}`. */
+  readonly files: ReadonlyMap<string, Tally>;
+  readonly branch: Tally;
+  readonly uncovered: readonly Target[];
+  readonly stale: ReadonlySet<string>;
+};
+
+export const fileKey = (commit: number, path: string) => `${commit}|${path}`;
+
+/**
+ * The run laid over the page. A row maps through its tip number, so base-only rows (removed lines,
+ * and context a later commit removes) get no mark. Tallies count only the rows a commit adds,
+ * which is Codecov's "patch" idea: context belongs to whichever commit added it.
+ */
+export function pageCoverage(
+  coverage: Coverage,
+  commits: readonly ProjectedCommit[],
+  units: ReadonlyMap<UnitId, Unit>,
+  owners: ReadonlyMap<UnitId, ReadonlyMap<number, number>>,
+  numbers: ReadonlyMap<UnitId, readonly LineNumber[]>,
+): PageCoverage {
+  const marks = new Map<UnitId, Map<number, Mark>>();
+  for (const unit of units.values()) {
+    if (unit.kind !== "hunk") continue;
+    const byRow = new Map<number, Mark>();
+    (numbers.get(unit.id) ?? []).forEach((n, row) => {
+      const mark = n.new === null ? null : markOf(coverage, unit.path, n.new);
+      if (mark !== null) byRow.set(row, mark);
+    });
+    if (byRow.size > 0) marks.set(unit.id, byRow);
+  }
+  const files = new Map<string, Tally>();
+  const uncovered: Target[] = [];
+  let branch = EMPTY;
+  const perCommit = commits.map((commit) => {
+    let tally = EMPTY;
+    for (const file of filesOf(commit, units)) {
+      for (const { unit } of file.parts) {
+        if (unit.kind !== "hunk") continue;
+        for (const row of rowsOf(unit.body, ownersOf(unit, owners), commit.index)) {
+          if (row.kind !== "line" || !row.mine || unit.body[row.line]?.op !== "+") continue;
+          const mark = marks.get(unit.id)?.get(row.line);
+          if (mark === undefined) continue;
+          tally = add(tally, mark);
+          branch = add(branch, mark);
+          const key = fileKey(commit.index, file.path);
+          files.set(key, add(files.get(key) ?? EMPTY, mark));
+          if (mark.kind === "uncovered")
+            uncovered.push({ commit: commit.index, path: file.path, unit: unit.id, row: row.line });
+        }
+      }
+    }
+    return tally;
+  });
+  return {
+    tip: coverage.tip,
+    takenAt: coverage.takenAt,
+    marks,
+    commits: perCommit,
+    files,
+    branch,
+    uncovered,
+    stale: new Set(coverage.stale),
+  };
+}

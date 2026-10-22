@@ -1,3 +1,4 @@
+import type { Coverage } from "./coverage.ts";
 import type { Candidate, NewComment, ReportItem, Severity, State } from "./wire.ts";
 
 /** "/s/<id>": every session API sits under it, and the page is served at its root. */
@@ -76,6 +77,12 @@ export const api = {
     }),
   report: () => call<readonly ReportItem[]>("GET", "/api/report?format=json"),
   end: () => call<{ saved: string }>("POST", "/api/end"),
+  /** The last test run handed over for this branch, or null when there is none. */
+  coverage: () =>
+    call<Coverage>("GET", "/api/coverage").catch((failure: unknown) => {
+      if (failure instanceof ApiError && failure.status === 404) return null;
+      throw failure;
+    }),
   /** Where a name is defined, ranked for the file it is used in. */
   definition: (name: string, from: string) =>
     call<{ readonly candidates: readonly Candidate[] }>(

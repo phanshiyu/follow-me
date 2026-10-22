@@ -3,16 +3,19 @@ import { type KeyboardEvent, useEffect, useMemo, useRef } from "react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { filesOf, sectionLabel, titleOf } from "../lib/commit.ts";
+import { percentOf, toneOf } from "../lib/coverage.ts";
 import { describeEntry, groupsOf, type Marks, progressOf, unreadByCommit } from "../lib/outline.ts";
 import { badgesOf } from "../lib/stack.ts";
-import { scrollToCommit, usePage } from "../page.tsx";
+import { scrollToCommit, useCoverage, usePage } from "../page.tsx";
 import { useDerived, usePlacements, useReview } from "../store.tsx";
+import { TONE } from "./Coverage.tsx";
 
 /** The marks of every commit, by index. */
 function useMarks(): readonly Marks[] {
   const { state, unread } = useReview();
   const { isViewed, resolved } = usePage();
   const placements = usePlacements();
+  const coverage = useCoverage();
   return useMemo(() => {
     const commitOf = new Map<string, number>();
     for (const c of state.comments)
@@ -21,7 +24,9 @@ function useMarks(): readonly Marks[] {
     const unreadAt = unreadByCommit(unread, commitOf);
     return state.commits.map((commit) => {
       const badges = badgesOf(commit, state.comments, state.concerns, resolved);
+      const tally = coverage?.commits[commit.index];
       return {
+        ...(tally === undefined ? {} : { coverage: tally }),
         viewed: isViewed(commit),
         open: badges.open,
         waiting: badges.waiting,
@@ -29,7 +34,16 @@ function useMarks(): readonly Marks[] {
         undecided: badges.undecided,
       };
     });
-  }, [state.commits, state.comments, state.concerns, resolved, unread, placements, isViewed]);
+  }, [
+    state.commits,
+    state.comments,
+    state.concerns,
+    resolved,
+    unread,
+    placements,
+    isViewed,
+    coverage,
+  ]);
 }
 
 /** Up, Down, Home and End move between the index's commits; only the current one is a tab stop. */
@@ -93,6 +107,11 @@ function EntryMarks({ marks }: { marks: Marks }) {
       ) : null}
       {marks.unread > 0 ? <Dot tone="unread" /> : null}
       {marks.undecided > 0 ? <Dot tone="concern" /> : null}
+      {marks.coverage !== undefined && marks.coverage.total > 0 ? (
+        <span className={cn("rounded px-1 tabular-nums leading-4", TONE[toneOf(marks.coverage)])}>
+          {percentOf(marks.coverage)}%
+        </span>
+      ) : null}
     </span>
   );
 }
@@ -280,6 +299,16 @@ function IndexRail() {
                             ) : null}
                             {mine !== undefined && mine.undecided > 0 ? (
                               <span className="size-1.5 rounded-full bg-amber-500" />
+                            ) : null}
+                            {mine?.coverage !== undefined && toneOf(mine.coverage) !== "covered" ? (
+                              <span
+                                className={cn(
+                                  "size-1.5 rounded-sm",
+                                  toneOf(mine.coverage) === "uncovered"
+                                    ? "bg-[var(--cov-uncovered)]"
+                                    : "bg-[var(--cov-partly)]",
+                                )}
+                              />
                             ) : null}
                           </span>
                         </button>

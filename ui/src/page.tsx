@@ -9,6 +9,7 @@ import {
 } from "react";
 import { commitKey } from "./lib/commit.ts";
 import type { BoxKind } from "./lib/compose.ts";
+import type { PageCoverage } from "./lib/coverage.ts";
 import type { Spot } from "./lib/history.ts";
 import { indexOpenAtStart } from "./lib/outline.ts";
 import type { Pick } from "./lib/selection.ts";
@@ -18,7 +19,7 @@ import type { ProjectedCommit, UnitId } from "./lib/wire.ts";
 /** Rows picked in one hunk of one commit. Only one pick exists on the page at a time. */
 export type PagePick = Pick & { readonly commit: number; readonly unit: UnitId };
 
-import { useReview } from "./store.tsx";
+import { useCoverageData, useReview } from "./store.tsx";
 
 type Page = {
   /** The commit at the top of the viewport. */
@@ -56,6 +57,11 @@ export function usePage(): Page {
   const page = useContext(PageContext);
   if (page === null) throw new Error("usePage outside PageProvider");
   return page;
+}
+
+/** The run's marks and tallies as the page shows them, or null when there are none to show. */
+export function useCoverage(): PageCoverage | null {
+  return useCoverageData();
 }
 
 export const HEADER_PX = 44;

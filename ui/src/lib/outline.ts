@@ -2,6 +2,7 @@
 // progress line under them. Pure.
 
 import { sectionOf, titleOf } from "./commit.ts";
+import { percentOf, type Tally } from "./coverage.ts";
 import type { Notice } from "./unread.ts";
 import type { ProjectedCommit, Section } from "./wire.ts";
 
@@ -36,11 +37,16 @@ export type Marks = {
   readonly unread: number;
   /** Agent concerns not yet kept or dismissed. */
   readonly undecided: number;
+  /** The commit's executable added lines and how many the last test run ran. */
+  readonly coverage?: Tally;
 };
 
 const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
-/** "4 · Guard add · viewed · 2 open threads · 1 agent concern": a row's name and its tooltip. */
+/**
+ * "4 · Guard add · viewed · 2 open threads · 1 agent concern · 67% of new lines covered": a row's
+ * name and its tooltip.
+ */
 export function describeEntry(commit: ProjectedCommit, marks: Marks): string {
   const parts = [`${commit.index + 1}`, titleOf(commit.message)];
   if (marks.viewed) parts.push("viewed");
@@ -48,6 +54,8 @@ export function describeEntry(commit: ProjectedCommit, marks: Marks): string {
   if (marks.unread > 0)
     parts.push(count(marks.unread, "unread agent reply", "unread agent replies"));
   if (marks.undecided > 0) parts.push(count(marks.undecided, "agent concern", "agent concerns"));
+  if (marks.coverage !== undefined && marks.coverage.total > 0)
+    parts.push(`${percentOf(marks.coverage)}% of new lines covered`);
   return parts.join(" · ");
 }
 

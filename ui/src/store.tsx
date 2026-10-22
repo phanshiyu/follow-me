@@ -13,6 +13,7 @@ import { type AnswerCard, answerCards } from "./lib/answers.ts";
 import { ApiError, api, sessionPrefix } from "./lib/api.ts";
 import { arrival, type Placement, placeCarried } from "./lib/carried.ts";
 import { titleOf } from "./lib/commit.ts";
+import { type Coverage, type PageCoverage, pageCoverage } from "./lib/coverage.ts";
 import { applyEvent } from "./lib/live.ts";
 import { type LineNumber, lineNumbers, ownership } from "./lib/rows.ts";
 import { type Notice, noticeOf, unreadOf } from "./lib/unread.ts";
@@ -35,6 +36,8 @@ type Store = {
   /** What the agent said that the reviewer has not looked at yet. */
   readonly unread: readonly Notice[];
   markSeen(keys: readonly string[]): void;
+  /** The last test run handed over, null until one arrives. */
+  readonly coverage: Coverage | null;
 };
 
 const ReviewContext = createContext<Store | null>(null);
@@ -86,6 +89,16 @@ export function ReviewProvider({ initial, children }: { initial: State; children
   const latest = useRef(state);
   latest.current = state;
   const keep = useRef<{ title: string; offset: number } | null>(null);
+
+  const [coverage, setCoverage] = useState<Coverage | null>(null);
+  const loadCoverage = useCallback(() => {
+    // Without coverage the page reads as before, so a failed fetch only leaves the marks off.
+    api
+      .coverage()
+      .then(setCoverage)
+      .catch(() => undefined);
+  }, []);
+  useEffect(loadCoverage, [loadCoverage]);
 
   const refresh = useCallback(async () => {
     const fresh = await api.state();
@@ -178,8 +191,9 @@ export function ReviewProvider({ initial, children }: { initial: State; children
       events,
       unread,
       markSeen,
+      coverage,
     }),
-    [state, ended, error, reconnecting, run, refresh, arrived, events, unread, markSeen],
+    [state, ended, error, reconnecting, run, refresh, arrived, events, unread, markSeen, coverage],
   );
   return <ReviewContext value={store}>{children}</ReviewContext>;
 }
@@ -201,6 +215,17 @@ export function useDerived(): Derived {
       numbers: lineNumbers(units),
     }),
     [units, commits],
+  );
+}
+
+/** The run laid over the page, or null when there is none. */
+export function useCoverageData(): PageCoverage | null {
+  const { state, coverage } = useReview();
+  const { units, owners, numbers } = useDerived();
+  return useMemo(
+    () =>
+      coverage === null ? null : pageCoverage(coverage, state.commits, units, owners, numbers),
+    [coverage, state.commits, units, owners, numbers],
   );
 }
 

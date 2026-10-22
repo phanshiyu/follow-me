@@ -5,6 +5,7 @@ import { HEADER_PX, PageProvider, scrollToCommit, usePage } from "../page.tsx";
 import { useReview } from "../store.tsx";
 import { AskBranch, BranchSummary } from "./Branch.tsx";
 import { CommitSection } from "./CommitSection.tsx";
+import { BranchCoverage } from "./Coverage.tsx";
 import { useDefinitions } from "./Definition.tsx";
 import { focusIndex, Index } from "./Index.tsx";
 import { KeySheet } from "./KeySheet.tsx";
@@ -133,6 +134,7 @@ function Page() {
             {definitions.back}
           </div>
           <div className="flex items-center justify-end gap-2">
+            <BranchCoverage />
             <UnreadMenu />
             <AskBranch />
             <Button size="sm" onClick={() => setSubmitOpen(true)}>

@@ -14,10 +14,11 @@ afterEach(() => {
   localStorage.clear();
 });
 
-/** The review page over a fake server holding this state. */
-export async function renderReview(state: State) {
+/** The review page over a fake server holding this state; `routes` answers more before it loads. */
+export async function renderReview(state: State, routes?: (server: FakeServer) => void) {
   const server = fakeServer(state);
   current = server;
+  routes?.(server);
   const screen = await render(
     <ReviewProvider initial={state}>
       <ReviewPage />

@@ -11,13 +11,15 @@ import { cardsAt } from "../lib/answers.ts";
 import { api } from "../lib/api.ts";
 import { bodyOf, filesOf, noteOf, titleOf } from "../lib/commit.ts";
 import { type BoxKind, composeComment, type Draft } from "../lib/compose.ts";
+import { fileKey } from "../lib/coverage.ts";
 import type { ProjectedCommit, Unit } from "../lib/wire.ts";
-import { usePage } from "../page.tsx";
+import { useCoverage, usePage } from "../page.tsx";
 import { useAnswers, useDerived, usePlacements, useReview } from "../store.tsx";
 import { AnswerCard, ConcernCard } from "./Cards.tsx";
 import { CarriedCard } from "./Carried.tsx";
 import { Check } from "./Check.tsx";
 import { CommentBox } from "./CommentBox.tsx";
+import { CommitCoverage, FileCoverage } from "./Coverage.tsx";
 import { Diagram } from "./Diagram.tsx";
 import { boxActions, Hunk } from "./Hunk.tsx";
 import { ThreadCard } from "./Thread.tsx";
@@ -57,6 +59,7 @@ export function CommitSection({ commit }: { commit: ProjectedCommit }) {
   const body = bodyOf(commit.message);
   const note = noteOf(commit);
   const files = filesOf(commit, units);
+  const coverage = useCoverage();
   return (
     <section
       id={label}
@@ -72,6 +75,7 @@ export function CommitSection({ commit }: { commit: ProjectedCommit }) {
         <h2 id={`commit-${commit.index + 1}-title`} className="min-w-0 truncate font-semibold">
           {titleOf(commit.message)}
         </h2>
+        <CommitCoverage commit={commit.index} />
         <Check
           className="ml-auto"
           checked={viewed}
@@ -149,6 +153,7 @@ export function CommitSection({ commit }: { commit: ProjectedCommit }) {
               <div key={file.path} className="space-y-2">
                 <div className="flex items-center gap-2 pt-2 text-sm">
                   <span className="font-medium font-mono">{file.path}</span>
+                  <FileCoverage tally={coverage?.files.get(fileKey(commit.index, file.path))} />
                   <Check
                     className="ml-auto"
                     checked={fileViewed}

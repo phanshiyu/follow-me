@@ -894,3 +894,36 @@
   text-underline-offset: 2px;
   color: var(--tok-function);
 }
+
+/*
+ * Coverage marks, a 3px bar at the left of the gutter. Each kind differs in shape as well as hue,
+ * so it reads for colour-blind readers and in dark mode: covered is solid, partly covered fills
+ * only the upper half, not covered is a dashed bar. Every hue keeps 3:1 against its gutter.
+ */
+:root {
+  --cov-covered: #059669;
+  --cov-partly: #d97706;
+  --cov-uncovered: #e11d48;
+}
+.dark {
+  --cov-covered: #10b981;
+  --cov-partly: #f59e0b;
+  --cov-uncovered: #f43f5e;
+}
+.cov-bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 4px;
+  width: 3px;
+}
+[data-coverage="covered"] > .cov-bar {
+  background: var(--cov-covered);
+}
+[data-coverage="partly"] > .cov-bar {
+  bottom: 50%;
+  background: var(--cov-partly);
+}
+[data-coverage="uncovered"] > .cov-bar {
+  background: repeating-linear-gradient(to bottom, var(--cov-uncovered) 0 3px, transparent 3px 5px);
+}

@@ -1,7 +1,9 @@
 // Dev only. `npm run ui:dev` proxies the page's API to a running follow-me server. A server older
 // than this page lacks submit, excluded and the JSON report; these stand in for them, so the whole
 // page can be driven before the server half lands. They answer only when the server says 404.
+// FOLLOW_ME_COVERAGE=<coverage.json> serves that file as api/coverage.
 
+import { readFileSync } from "node:fs";
 import type { Connect } from "vite";
 import { lineNumbers } from "../src/lib/rows.ts";
 import type { ReportItem, State } from "../src/lib/wire.ts";
@@ -64,7 +66,9 @@ async function readBody(req: Connect.IncomingMessage): Promise<unknown> {
 
 export function stubs(target: string): Connect.NextHandleFunction {
   return (req, res, next) => {
-    const match = /^(\/s\/[^/]+)\/api\/(submit|excluded|report)(\?.*)?$/.exec(req.url ?? "");
+    const match = /^(\/s\/[^/]+)\/api\/(submit|excluded|report|coverage)(\?.*)?$/.exec(
+      req.url ?? "",
+    );
     if (match === null) return next();
     const [, session = "", route = "", query = ""] = match;
     if (route === "report" && !query.includes("format=json")) return next();
@@ -81,6 +85,12 @@ export function stubs(target: string): Connect.NextHandleFunction {
         return json(res, await real.json());
       }
       if (route === "submit") return json(res, { released: 0 });
+      if (route === "coverage") {
+        const file = process.env["FOLLOW_ME_COVERAGE"];
+        if (file !== undefined) return json(res, JSON.parse(readFileSync(file, "utf8")));
+        res.statusCode = 404;
+        return json(res, { error: "no coverage" });
+      }
       if (route === "excluded") {
         const fields = typeof body === "object" && body !== null ? Object.entries(body) : [];
         const id = fields.find(([k]) => k === "comment" || k === "concern")?.[1];

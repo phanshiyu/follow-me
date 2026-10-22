@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 import { api } from "../lib/api.ts";
 import { hunkHeader } from "../lib/commit.ts";
 import { type BoxKind, composeComment, type Draft } from "../lib/compose.ts";
+import { describeMark } from "../lib/coverage.ts";
 import type { Span } from "../lib/highlight.ts";
 import { describeRows, type LineNumber, ownersOf, rowsOf, scopeOf } from "../lib/rows.ts";
 import {
@@ -26,7 +27,7 @@ import {
 } from "../lib/selection.ts";
 import { useSpans } from "../lib/useSpans.ts";
 import type { HunkLine, ProjectedCommit, TextHunk } from "../lib/wire.ts";
-import { scrollToCommit, usePage } from "../page.tsx";
+import { scrollToCommit, useCoverage, usePage } from "../page.tsx";
 import { useDerived, usePlacements, useReview } from "../store.tsx";
 import { ConcernCard } from "./Cards.tsx";
 import { CarriedCard } from "./Carried.tsx";
@@ -93,6 +94,8 @@ export function Hunk({
   const placements = usePlacements();
   const { pick: pagePick, setPick, box, setBox } = usePage();
   const spans = useSpans(hunk);
+  const coverage = useCoverage();
+  const covered = coverage?.marks.get(hunk.id);
   const own = ownersOf(hunk, owners);
   const rows = rowsOf(hunk.body, own, commit.index);
   const visible = rows.flatMap((r) => (r.kind === "line" ? [r.line] : []));
@@ -254,12 +257,13 @@ export function Hunk({
           const op = row.mine ? line.op : " ";
           const picked = range?.has(row.line) ?? pick?.lines.includes(row.line) ?? false;
           const what = op === "+" ? "Added" : op === "-" ? "Removed" : "Context";
+          const mark = covered?.get(row.line);
           return (
             <div key={row.line}>
               <div
                 role="option"
                 aria-selected={picked}
-                aria-label={`${what} ${n?.new ?? n?.old ?? ""}: ${line.text.trim() || "blank line"}`}
+                aria-label={`${what} ${n?.new ?? n?.old ?? ""}: ${line.text.trim() || "blank line"}${mark === undefined ? "" : ` · ${describeMark(mark)}`}`}
                 tabIndex={row.line === tabStop ? 0 : -1}
                 data-row={row.line}
                 onKeyDown={(event) => onRowKey(event, row.line)}
@@ -278,6 +282,15 @@ export function Hunk({
                   picked && "bg-sky-500/20 shadow-[inset_3px_0_0] shadow-sky-500",
                 )}
               >
+                {coverage === null ? null : (
+                  <span
+                    aria-hidden
+                    data-coverage={mark?.kind}
+                    className="relative w-2 shrink-0 select-none"
+                  >
+                    {mark === undefined ? null : <span className="cov-bar" />}
+                  </span>
+                )}
                 <span
                   data-gutter
                   className="flex shrink-0 cursor-pointer select-none text-muted-foreground/70"
