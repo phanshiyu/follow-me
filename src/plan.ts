@@ -3,6 +3,7 @@ import { formatUnitRef, isSha, isUnitId, parseUnitRef, projectFile } from "./dif
 import type {
   CommentId,
   CommentResponse,
+  CommitSection,
   Concern,
   ConcernId,
   ConcernKind,
@@ -63,6 +64,11 @@ export function isPlanVersion(n: unknown): n is PlanVersion {
 const STATUSES: readonly ResponseStatus[] = ["addressed", "declined", "deferred", "answered"];
 function isResponseStatus(s: unknown): s is ResponseStatus {
   return STATUSES.some((x) => x === s);
+}
+
+const SECTIONS: readonly CommitSection[] = ["story", "steps", "details", "wiring"];
+function isCommitSection(s: unknown): s is CommitSection {
+  return SECTIONS.some((x) => x === s);
 }
 
 const SEVERITIES: readonly Severity[] = ["blocker", "major", "minor"];
@@ -280,11 +286,15 @@ export function parsePlanFile(draft: unknown): PlanFile | PlanIssue[] {
   else {
     for (const [i, c] of draft.commits.entries()) {
       const at = `$.commits[${i}]`;
-      if (!isFields<"message" | "narration" | "diagram" | "concerns" | "units">(c)) {
+      if (!isFields<"message" | "section" | "narration" | "diagram" | "concerns" | "units">(c)) {
         bad(at, "expected an object");
         continue;
       }
       if (typeof c.message !== "string") bad(`${at}.message`, "expected a string");
+      const section = c.section ?? null;
+      if (section !== null && !isCommitSection(section)) {
+        bad(`${at}.section`, `expected one of ${SECTIONS.join(", ")}`);
+      }
       const extras = parseExtras(c, false);
       if ("error" in extras) bad(`${at}.${extras.field}`, extras.error);
       const units: UnitRef[] = [];
@@ -297,7 +307,8 @@ export function parsePlanFile(draft: unknown): PlanFile | PlanIssue[] {
         }
       }
       if (typeof c.message === "string" && !("error" in extras)) {
-        commits.push({ message: c.message, ...extras, units });
+        const placed = isCommitSection(section) ? { section } : {};
+        commits.push({ message: c.message, ...placed, ...extras, units });
       }
     }
   }
@@ -341,6 +352,7 @@ export function serializePlanFile(file: PlanFile): unknown {
     tip: file.tip,
     commits: file.commits.map((c) => ({
       message: c.message,
+      ...(c.section === undefined ? {} : { section: c.section }),
       ...serializeExtras(c),
       units: c.units.map((ref) =>
         ref.narration === undefined && ref.diagram === undefined && ref.concerns === undefined
@@ -646,6 +658,7 @@ function project(
     return {
       index: k,
       message: commit.message,
+      ...(commit.section === undefined ? {} : { section: commit.section }),
       ...withText(commit.narration ?? null, commit.diagram ?? null),
       ...(mine.length === 0 ? {} : { concerns: mine }),
       refs,

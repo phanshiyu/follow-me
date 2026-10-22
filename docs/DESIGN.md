@@ -173,6 +173,11 @@ so older plans and their hashes are unchanged. Both prompts carry the same sessi
 same skill section; the section says what each mode is for, and reviewer mode adds a note only where
 it adds to the commit body, and concerns.
 
+A commit may carry `section`, one of `story`, `steps`, `details` or `wiring`, naming the top-down rule
+that put it there, so the page can group commits under it. Any other value is a `malformed` issue. It
+serializes right after `message` and only when present, so plans without it keep their hash, and
+validation copies it to `ProjectedCommit.section`.
+
 `Review.mode` is `split` or `walk` (the wire name of the reviewer's mode), and a file without it reads
 as `split`. A reviewer's review is a code review for the author, not plan feedback, so `lastReview`
 ignores it: its comments never reach the planner as comments to answer. Every review, of either kind,

@@ -50,6 +50,7 @@ final build are in the last table.
 | d. `follow-me show <ref>` | 20270 | 5068 | 253032 | 63258 | adds 354 bytes to the skill; every ref (h_, c_, k_, path:line@commit) now expands to the lines and thread as the split writes them, so the refs in b and c never cost a file read of the wrong version |
 | e1. porting steps in their own file | 18914 | 4729 | 251676 | 62919 | skill 12488 to 11016; `porting.md` installs beside it and is read only when the user asks to post (first output gains one `wrote` line, once) |
 | e2. trims the measurements showed | 18633 | 4658 | 247413 | 61853 | final report 746 to 489 and 1277 to 589 (comments that the report quotes are not also printed as events; the context-row rule lives in the skill); the unit dump drops the path repeated under each `### path` (prompt.md 221847 to 218202); `reply` and `explain` now say `next: run follow-me again; the reviewer is still working` instead of `follow-me watch` (+35 bytes each, kept on purpose) |
+| f. commit sections | 20066 | 5017 | 250683 | 62671 | skill 11016 to 11255 (+239, read once) for the `section` lines; measured from `8e5ef70`, whose totals are 19827 and 250444 because the final report grew after e2 |
 
 ## Before and after, per step
 

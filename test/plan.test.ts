@@ -627,3 +627,40 @@ test("an answered response must answer a question and point at an explanation", 
   assert.ok(addressed.ok);
   assert.deepEqual(addressed.warnings, [{ kind: "question-addressed", comment: "c_q" }]);
 });
+
+test("a section rides into the projected commit, round-trips, and stays out of plans without one", () => {
+  const lib = unitAt(diff, "src/lib.js", 1);
+  const sectioned = planWith([
+    { message: "feat: guard div", section: "story", units: [`${lib}:2`] },
+    { message: "feat: the rest", section: "details", units: everything(diff) },
+  ]);
+  const verdict = validatePlan(diff, sectioned);
+  assert.ok(verdict.ok, JSON.stringify(!verdict.ok && verdict.issues));
+  assert.deepEqual(
+    verdict.plan.commits.map((c) => c.section),
+    ["story", "details"],
+  );
+  const parsed = parsePlanFile(sectioned);
+  assert.ok(!Array.isArray(parsed));
+  assert.equal(JSON.stringify(serializePlanFile(parsed)), JSON.stringify(sectioned));
+
+  const plain = planWith([{ message: "a", units: everything(diff) }]);
+  const unsectioned = parsePlanFile(
+    planWith([{ message: "a", section: null, units: everything(diff) }]),
+  );
+  assert.ok(!Array.isArray(unsectioned));
+  assert.equal(JSON.stringify(serializePlanFile(unsectioned)), JSON.stringify(plain));
+});
+
+test("an unknown section is malformed and names the allowed ones", () => {
+  const issues = issuesOf(
+    validatePlan(diff, planWith([{ message: "a", section: "prologue", units: everything(diff) }])),
+  );
+  assert.deepEqual(issues, [
+    {
+      kind: "malformed",
+      at: "$.commits[0].section",
+      reason: "expected one of story, steps, details, wiring",
+    },
+  ]);
+});

@@ -140,11 +140,19 @@ export type PlacedConcern = Concern & {
 };
 
 /**
+ * Where a commit sits in the top-down order: story is renames plus the entry point and main flow,
+ * steps is what that calls in call order, details is helpers and edge cases, wiring is config,
+ * registration and lockfiles.
+ */
+export type CommitSection = "story" | "steps" | "details" | "wiring";
+
+/**
  * narration is the agent's note on why this commit exists, shown beside its message.
  * diagram is Mermaid source for the shape the commit builds, drawn under its header.
  */
 export type PlannedCommit = {
   readonly message: string;
+  readonly section?: CommitSection;
   readonly narration?: string;
   readonly diagram?: string;
   readonly concerns?: readonly Concern[];
@@ -185,6 +193,7 @@ export type TreeChange =
 export type ProjectedCommit = {
   readonly index: number;
   readonly message: string;
+  readonly section?: CommitSection;
   readonly narration?: string;
   readonly diagram?: string;
   /** Every concern of the commit: its own first, then those of its unit refs in order. */
