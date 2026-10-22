@@ -107,6 +107,8 @@ export type Walk = {
   readonly step: number;
   /** How many departures Back had once the walkthrough left the reply; fewer means Back was used. */
   readonly depth: number;
+  /** Commits and files the walkthrough opened, closed again when it ends. */
+  readonly opened: readonly { readonly commit: number; readonly path: string }[];
 };
 
 type RefsApi = {
@@ -115,7 +117,7 @@ type RefsApi = {
   /** Jumps to a ref the page shows, with Back to the reply; false when there is nowhere to go. */
   go(placed: PlacedRef, from: number): boolean;
   /** Leaves the reply, with one Back to it, and shows its ref at `step`. */
-  start(walk: Omit<Walk, "depth">, from: number): void;
+  start(walk: Omit<Walk, "depth" | "opened">, from: number): void;
 };
 
 const RefsContext = createContext<RefsApi | null>(null);
@@ -175,7 +177,26 @@ export function RefsProvider({ children }: { children: ReactNode }) {
   const [painted, setPainted] = useState<Painted | null>(null);
   const [walk, setWalk] = useState<Walk | null>(null);
   const { depart, departures } = useDepart();
+  const { isRevealed, conceal } = usePage();
   const show = useShow();
+
+  /** The Viewed commit a step is about to open, so the end of the walkthrough can close it. */
+  const opens = useCallback(
+    (placed: PlacedRef | undefined) => {
+      const target = placed === undefined ? null : landing(placed);
+      return target === null || placed === undefined || isRevealed(target.commit)
+        ? []
+        : [{ commit: target.commit, path: placed.ref.path }];
+    },
+    [isRevealed],
+  );
+  const finish = useCallback(
+    (ended: Walk) => {
+      for (const { commit, path } of ended.opened) conceal(commit, path);
+      setWalk(null);
+    },
+    [conceal],
+  );
 
   // A hovered reply shows its own refs; otherwise a walkthrough keeps its current step strong.
   useLayoutEffect(() => {
@@ -191,7 +212,10 @@ export function RefsProvider({ children }: { children: ReactNode }) {
     return paint(walk.placed, (n) => (n === current ? "strong" : "light"));
   }, [painted, walk]);
 
-  if (walk !== null && departures < walk.depth) setWalk(null);
+  // Back to the reply ends the walkthrough wherever it had got to.
+  useEffect(() => {
+    if (walk !== null && departures < walk.depth) finish(walk);
+  }, [walk, departures, finish]);
 
   const api = useMemo<RefsApi>(
     () => ({
@@ -207,12 +231,13 @@ export function RefsProvider({ children }: { children: ReactNode }) {
       start: (next, from) => {
         depart(from, "the reply");
         setPainted(null);
-        setWalk({ ...next, depth: Math.min(departures + 1, HISTORY_LIMIT) });
         const at = next.placed[next.step];
+        const depth = Math.min(departures + 1, HISTORY_LIMIT);
+        setWalk({ ...next, depth, opened: opens(at) });
         if (at !== undefined) show(at);
       },
     }),
-    [depart, departures, show],
+    [depart, departures, show, opens],
   );
 
   const walking = useMemo<Walking>(
@@ -222,13 +247,15 @@ export function RefsProvider({ children }: { children: ReactNode }) {
         if (walk === null) return;
         const step = Math.max(0, Math.min(walk.placed.length - 1, walk.step + by));
         if (step === walk.step) return;
-        setWalk({ ...walk, step });
         const at = walk.placed[step];
+        setWalk({ ...walk, step, opened: [...walk.opened, ...opens(at)] });
         if (at !== undefined) show(at);
       },
-      end: () => setWalk(null),
+      end: () => {
+        if (walk !== null) finish(walk);
+      },
     }),
-    [walk, show],
+    [walk, show, opens, finish],
   );
 
   const { move, end } = walking;

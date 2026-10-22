@@ -226,6 +226,35 @@ test("a chip starts the walkthrough at its step, opening a Viewed commit, and Ba
   await expect
     .poll(() => Math.abs(chip(2).element().getBoundingClientRect().top - before))
     .toBeLessThan(2);
+  // The Viewed commit the walkthrough opened is closed again.
+  await expect.poll(() => row(6, GUARD, 0)).toBeNull();
+});
+
+test("Esc closes the Viewed commit a step opened", async () => {
+  await renderReview(answered());
+  await page.getByRole("checkbox", { name: "Viewed commit 6" }).click();
+  await goToCommit(/^2 · Guard add/);
+  await chip(2).click();
+  await expect.poll(() => row(6, GUARD, 0)).not.toBeNull();
+  await userEvent.keyboard("{Escape}");
+  await expect.element(bar()).not.toBeInTheDocument();
+  expect(row(6, GUARD, 0)).toBeNull();
+});
+
+test("Back from a reply at the very top of the page returns to the top", async () => {
+  const branchWide = aComment({
+    anchor: { kind: "plan" },
+    context: { commitMessage: "", path: null },
+    body: "Why guard at all?",
+    replies: [aReply({ body: ANSWER, refs: REFS })],
+  });
+  await renderReview(aGuardedState({ comments: [branchWide] }));
+  await expect.element(chip(2)).toBeVisible();
+  expect(window.scrollY).toBe(0);
+  await chip(2).click();
+  await expect.poll(() => window.scrollY).toBeGreaterThan(0);
+  await userEvent.keyboard("{Alt>}{ArrowLeft}{/Alt}");
+  await expect.poll(() => window.scrollY).toBe(0);
 });
 
 test("a reply with one ref is no walkthrough", async () => {
