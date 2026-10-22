@@ -831,10 +831,42 @@ function answerProblem(file: PlanFile, r: CommentResponse, isQuestion: boolean):
  * Parses and checks a draft against the diff: every change line used exactly once, every
  * commit's tree valid, and the last commit equal to the tip. Collects all issues at once.
  */
+/**
+ * Sections read top-down: story, steps, details, wiring. A later section never comes back, so a
+ * commit whose section ranks below an earlier commit's must move ahead of the first such commit.
+ */
+function sectionOrder(file: PlanFile): PlanIssue[] {
+  const issues: PlanIssue[] = [];
+  const placed: {
+    readonly commit: number;
+    readonly rank: number;
+    readonly section: CommitSection;
+  }[] = [];
+  file.commits.forEach((c, commit) => {
+    if (c.section === undefined) return;
+    const rank = SECTIONS.indexOf(c.section);
+    const first = placed.find((p) => p.rank > rank);
+    if (first !== undefined) {
+      issues.push({
+        kind: "section-order",
+        commit,
+        section: c.section,
+        before: first.commit,
+        beforeSection: first.section,
+      });
+    } else placed.push({ commit, rank, section: c.section });
+  });
+  return issues;
+}
+
+/**
+ * Judges a draft against the diff. `frozen` re-checks a plan that already passed when it was
+ * frozen: section order is a rule for drafts, so a plan frozen before it was one still fits.
+ */
 export function validatePlan(
   diff: Diff,
   draft: unknown,
-  opts: { readonly lastReview?: Review | null } = {},
+  opts: { readonly lastReview?: Review | null; readonly frozen?: boolean } = {},
 ): Verdict {
   const parsed = parsePlanFile(draft);
   if (Array.isArray(parsed)) return { ok: false, issues: parsed };
@@ -855,6 +887,7 @@ export function validatePlan(
     if (c.units.length === 0) issues.push({ kind: "empty-commit", commit: k });
   });
   issues.push(...offerLimits(file));
+  if (opts.frozen !== true) issues.push(...sectionOrder(file));
 
   const assignment: PlanIssue[] = [];
   const claims = claim(diff, file, assignment);
@@ -877,14 +910,6 @@ export function validatePlan(
   file.commits.forEach((c, commit) => {
     const length = (c.message.split("\n")[0] ?? "").length;
     if (length > LONG_TITLE) warnings.push({ kind: "long-title", commit, length });
-  });
-  // Sections read top-down: story, steps, details, wiring. A later section never comes back.
-  let reached: CommitSection | null = null;
-  file.commits.forEach((c, commit) => {
-    if (c.section === undefined) return;
-    if (reached !== null && SECTIONS.indexOf(c.section) < SECTIONS.indexOf(reached)) {
-      warnings.push({ kind: "section-order", commit, section: c.section, after: reached });
-    } else reached = c.section;
   });
   const asked = new Map(review?.comments.map((c) => [c.id, c.kind === "question"]));
   for (const r of file.responses) {

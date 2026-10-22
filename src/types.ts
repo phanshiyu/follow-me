@@ -271,6 +271,17 @@ export type PlanIssue =
   | { readonly kind: "bad-offer"; readonly commit: number; readonly reason: string }
   /** More than one offer in a commit, or with commit null more than three in the plan. */
   | { readonly kind: "too-many-offers"; readonly commit: number | null; readonly count: number }
+  /**
+   * A commit whose section comes before an earlier commit's in top-down order; `before` is the
+   * first commit with a later section, which this one must move ahead of.
+   */
+  | {
+      readonly kind: "section-order";
+      readonly commit: number;
+      readonly section: CommitSection;
+      readonly before: number;
+      readonly beforeSection: CommitSection;
+    }
   | {
       readonly kind: "final-mismatch";
       readonly path: RepoPath;
@@ -283,14 +294,7 @@ export type PlanWarning =
   | { readonly kind: "unanswered"; readonly comment: CommentId; readonly review: PlanVersion }
   /** A title over LONG_TITLE characters; the page clamps titles, so long ones lose their end. */
   | { readonly kind: "long-title"; readonly commit: number; readonly length: number }
-  | { readonly kind: "question-addressed"; readonly comment: CommentId }
-  /** A commit whose section comes before the previous commit's in top-down order. */
-  | {
-      readonly kind: "section-order";
-      readonly commit: number;
-      readonly section: CommitSection;
-      readonly after: CommitSection;
-    };
+  | { readonly kind: "question-addressed"; readonly comment: CommentId };
 
 export type Anchor =
   | {

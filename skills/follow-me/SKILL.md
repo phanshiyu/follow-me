@@ -32,7 +32,7 @@ Order the commits top-down, like a newspaper: the top level says what happens, t
 5. A test goes with the behaviour it pins, right after it.
 6. Config, wiring and lockfiles last, unless the story needs them earlier.
 
-Give each commit the `section` its rule puts it in, and the page groups them under it: `"story"` for 1 and 2, `"steps"` for 3, `"details"` for 4, `"wiring"` for 6. A test takes the section of the behaviour it pins. `section` is optional.
+Give each commit the `section` its rule puts it in, and the page groups them under it: `"story"` for 1 and 2, `"steps"` for 3, `"details"` for 4, `"wiring"` for 6. A test takes the section of the behaviour it pins. `section` is optional; check refuses one that goes back.
 
 One idea per commit. Prefer many small commits over a few large ones. Split a new file by function across commits when the order needs it; units split per change line, so this is always possible. Commits do not need to compile or pass tests on their own, and a call to a function that does not exist yet still parses. The last commit must bring the tree to exactly the tip, which follows from covering every unit.
 

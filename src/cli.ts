@@ -474,6 +474,8 @@ function formatIssue(issue: PlanIssue): string {
       return `response to unknown comment ${issue.comment}`;
     case "bad-answer":
       return `response to ${issue.comment}: ${issue.reason}`;
+    case "section-order":
+      return `${commitName(issue.commit)}: section ${issue.section} comes after ${commitName(issue.before)} in ${issue.beforeSection}; sections read story, steps, details, wiring, so move ${commitName(issue.commit)} before ${commitName(issue.before)}, or change its section`;
     case "bad-concern":
       return `${commitName(issue.commit)}: concern: ${issue.reason}`;
     case "too-many-concerns":
@@ -498,9 +500,6 @@ function formatIssue(issue: PlanIssue): string {
 function formatWarning(w: PlanWarning): string {
   if (w.kind === "long-title") {
     return `warning: ${commitName(w.commit)}: title is ${w.length} characters; keep it to 50`;
-  }
-  if (w.kind === "section-order") {
-    return `warning: ${commitName(w.commit)}: section ${w.section} comes after ${w.after}; sections read story, steps, details, wiring`;
   }
   if (w.kind === "question-addressed") {
     return `warning: question ${w.comment} is marked addressed; explain it with "answered" and "at" unless answering it changed the plan`;
@@ -764,7 +763,7 @@ function skillFile(): { skillPath?: string } {
 function projectedCommits(session: Session, version: PlanVersion): readonly ProjectedCommit[] {
   const plan = session.plans().find((p) => p.version === version);
   if (plan === undefined) return [];
-  const verdict = validatePlan(session.diff, serializePlanFile(plan.file));
+  const verdict = validatePlan(session.diff, serializePlanFile(plan.file), { frozen: true });
   return verdict.ok ? verdict.plan.commits : [];
 }
 
@@ -1172,7 +1171,10 @@ function reviewedPlan(session: Session): StoredReview | null {
   const reviews = reviewsOf(session);
   for (const stored of reviews.toReversed()) {
     const plan = session.plans().find((p) => p.version === stored.version);
-    if (plan !== undefined && validatePlan(session.diff, serializePlanFile(plan.file)).ok) {
+    if (
+      plan !== undefined &&
+      validatePlan(session.diff, serializePlanFile(plan.file), { frozen: true }).ok
+    ) {
       return stored;
     }
   }
@@ -1538,7 +1540,10 @@ function walkablePlan(session: Session): Prepared | null {
   const lastReview = session.lastReview();
   const stored = session.plans().at(-1);
   if (stored !== undefined) {
-    const verdict = validatePlan(session.diff, serializePlanFile(stored.file), { lastReview });
+    const verdict = validatePlan(session.diff, serializePlanFile(stored.file), {
+      lastReview,
+      frozen: true,
+    });
     if (verdict.ok) return { version: stored.version, plan: verdict.plan };
   }
   let draft: unknown;
@@ -1581,7 +1586,7 @@ async function renderStored(
     console.error(`follow-me: review v${stored.version} refers to a plan that is missing`);
     return null;
   }
-  const verdict = validatePlan(session.diff, serializePlanFile(plan.file));
+  const verdict = validatePlan(session.diff, serializePlanFile(plan.file), { frozen: true });
   if (!verdict.ok) {
     console.error(`follow-me: plan v${plan.version} no longer fits ${session.anchor.branch}`);
     return null;

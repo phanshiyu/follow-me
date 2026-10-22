@@ -167,6 +167,7 @@ async function loadHosted(
     }
     const verdict = validatePlan(session.diff, serializePlanFile(stored.file), {
       lastReview: session.lastReview(),
+      frozen: true,
     });
     if (!verdict.ok) {
       throw new RegistrationError(`plan v${version} no longer fits ${branch}; check it again`);

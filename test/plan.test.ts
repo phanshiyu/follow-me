@@ -802,19 +802,21 @@ test("check allows one offer per commit and three per plan", () => {
   );
 });
 
-test("sections out of top-down order are a warning that names the commit", () => {
+test("sections out of top-down order are an issue naming the commit to move ahead of", () => {
   const lib = unitAt(diff, "src/lib.js", 1);
-  const backwards = validatePlan(
-    diff,
-    planWith([
-      { message: "feat: the guard", section: "details", units: [`${lib}:2`] },
-      { message: "feat: the rest", section: "story", units: everything(diff) },
-    ]),
-  );
-  assert.ok(backwards.ok);
-  assert.deepEqual(backwards.warnings, [
-    { kind: "section-order", commit: 1, section: "story", after: "details" },
+  const backwards = planWith([
+    { message: "feat: the entry", section: "story", units: [`${lib}:0`] },
+    { message: "feat: a step", section: "steps", units: [`${lib}:1`] },
+    { message: "feat: more story", section: "story", units: [`${lib}:2`] },
+    { message: "feat: the rest", section: "details", units: everything(diff) },
   ]);
+  const verdict = validatePlan(diff, backwards);
+  assert.ok(!verdict.ok);
+  assert.deepEqual(verdict.issues, [
+    { kind: "section-order", commit: 2, section: "story", before: 1, beforeSection: "steps" },
+  ]);
+  // A plan frozen before the rule was one still fits the branch when it is checked again.
+  assert.ok(validatePlan(diff, backwards, { frozen: true }).ok);
 
   const inOrder = validatePlan(
     diff,

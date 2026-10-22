@@ -177,7 +177,10 @@ it adds to the commit body, and concerns.
 A commit may carry `section`, one of `story`, `steps`, `details` or `wiring`, naming the top-down rule
 that put it there, so the page can group commits under it. Any other value is a `malformed` issue. It
 serializes right after `message` and only when present, so plans without it keep their hash, and
-validation copies it to `ProjectedCommit.section`.
+validation copies it to `ProjectedCommit.section`. Sections never go back: a commit whose section
+ranks below an earlier commit's is a `section-order` issue naming the first such commit, to move
+ahead of or to change the section. Re-checks of a frozen plan pass `frozen` and skip the rule, so a
+plan frozen while it was only a warning still fits; `plan --naive` writes no sections.
 
 `Review.mode` is `split` or `walk` (the wire name of the reviewer's mode), and a file without it reads
 as `split`. A reviewer's review is a code review for the author, not plan feedback, so `lastReview`

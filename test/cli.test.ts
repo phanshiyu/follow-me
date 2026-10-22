@@ -1460,6 +1460,21 @@ test("check names commits from 1 in every issue, as the skill and the page do", 
   const malformed = run(repo.dir, "check");
   assert.equal(malformed.code, 1);
   assert.match(malformed.out, /^malformed commit 2, message: expected a string$/m);
+
+  writeFileSync(
+    draftPath,
+    draft([
+      { message: "feat: one", section: "story", units: [first] },
+      { message: "feat: two", section: "details", units: rest.slice(0, 1) },
+      { message: "feat: three", section: "story", units: rest.slice(1) },
+    ]),
+  );
+  const order = run(repo.dir, "check");
+  assert.equal(order.code, 1);
+  assert.match(
+    order.out,
+    /^commit 3: section story comes after commit 2 in details; sections read story, steps, details, wiring, so move commit 3 before commit 2, or change its section$/m,
+  );
 });
 
 test("watch --follow --json prints every event until the review ends, then exits 0", async (t) => {
