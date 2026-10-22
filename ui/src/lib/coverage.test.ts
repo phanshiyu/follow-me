@@ -110,6 +110,10 @@ test("x goes to the first row below the reading line and X to the last above, ro
   expect(stepUncovered(["above", "at", "below"], -1)).toBe(0);
   expect(stepUncovered(["above", "above"], 1)).toBe(0);
   expect(stepUncovered(["at", "below"], -1)).toBe(1);
+  // The end of the page can keep the row we are at off the reading line.
+  expect(stepUncovered(["above", "at", "above"], 1)).toBe(2);
+  expect(stepUncovered(["below", "at", "below"], -1)).toBe(0);
+  expect(stepUncovered(["below", "below", "at"], 1)).toBe(0);
   expect(stepUncovered([], 1)).toBeNull();
 });
 

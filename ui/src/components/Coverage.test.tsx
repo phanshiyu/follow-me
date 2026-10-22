@@ -323,3 +323,19 @@ test("a coverage event brings the new run in, and a new version its stale files"
   server.push({ type: "version", version: JSON.parse("2"), hash: "hash2", carried: [] });
   await expect.element(page.getByText("Coverage is 1 file stale")).toBeVisible();
 });
+
+test("x moves on from the last rows of the page, which cannot scroll up to the reading line", async () => {
+  const files = { "src/lib.js": { lines: { "4": 0, "5": 0, "6": 0 } } };
+  await renderReview(aState(), (server) =>
+    server.on("GET", "/api/coverage", () => aCoverage({ files })),
+  );
+  await expect.element(page.getByText("Changed lines covered 0%")).toBeVisible();
+  await userEvent.keyboard("x");
+  await expect.element(row(2, /^Added 4/)).toHaveFocus();
+  await userEvent.keyboard("x");
+  await expect.element(row(2, /^Added 5/)).toHaveFocus();
+  await userEvent.keyboard("x");
+  await expect.element(row(2, /^Added 4/)).toHaveFocus();
+  await userEvent.keyboard("X");
+  await expect.element(row(2, /^Added 5/)).toHaveFocus();
+});

@@ -178,17 +178,20 @@ export function pageCoverage(
 export type Place = "above" | "at" | "below";
 
 /**
- * The target x (1) or X (-1) goes to: the first below the reading line, or the last above it, and
- * round to the other end when there is none. The one sitting on the line is where we are.
+ * The target x (1) or X (-1) goes to. From the one we are at, its neighbour; otherwise the first
+ * below the reading line or the last above it. Either way round to the other end.
  */
 export function stepUncovered(places: readonly Place[], dir: 1 | -1): number | null {
-  if (places.length === 0) return null;
+  const n = places.length;
+  if (n === 0) return null;
+  const at = places.indexOf("at");
+  if (at !== -1) return (at + dir + n) % n;
   if (dir === 1) {
     const next = places.indexOf("below");
     return next === -1 ? 0 : next;
   }
   const previous = places.lastIndexOf("above");
-  return previous === -1 ? places.length - 1 : previous;
+  return previous === -1 ? n - 1 : previous;
 }
 
 /** The tests that ran a tip line, by id, or null when the run kept no per-test detail. */

@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 import { flushSync } from "react-dom";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -137,14 +137,22 @@ function rowOf(target: Target): HTMLElement | null {
   );
 }
 
-/** A row on the page by its own top; one folded away under Viewed by its commit's. */
-function placeOf(target: Target, line: number): Place {
+/**
+ * A row on the page by its own top; one folded away under Viewed by its commit's. The row the last
+ * step landed on is where we are while it is in view, even when the end of the page kept it from
+ * reaching the reading line.
+ */
+function placeOf(target: Target, line: number, last: HTMLElement | null): Place {
   const row = rowOf(target);
   const top = (
     row ?? document.getElementById(`commit-${target.commit + 1}`)
   )?.getBoundingClientRect().top;
   if (top === undefined) return "below";
-  if (row !== null && Math.abs(top - line) < 2) return "at";
+  if (
+    row !== null &&
+    (Math.abs(top - line) < 2 || (row === last && top >= 0 && top < window.innerHeight))
+  )
+    return "at";
   return top < line ? "above" : "below";
 }
 
@@ -155,17 +163,13 @@ function placeOf(target: Target, line: number): Place {
 export function useUncoveredSteps(): (dir: 1 | -1) => void {
   const coverage = useCoverage();
   const { reveal } = usePage();
+  const last = useRef<HTMLElement | null>(null);
   return useCallback(
     (dir) => {
       const targets = coverage?.uncovered ?? [];
       const line = window.innerHeight * READING;
-      const target =
-        targets[
-          stepUncovered(
-            targets.map((t) => placeOf(t, line)),
-            dir,
-          ) ?? -1
-        ];
+      const places = targets.map((t) => placeOf(t, line, last.current));
+      const target = targets[stepUncovered(places, dir) ?? -1];
       if (target === undefined) return;
       flushSync(() => reveal(target.commit, target.path));
       const row = rowOf(target);
@@ -173,6 +177,7 @@ export function useUncoveredSteps(): (dir: 1 | -1) => void {
       window.scrollBy(0, row.getBoundingClientRect().top - line);
       row.focus({ preventScroll: true });
       flash(row, "row-flash");
+      last.current = row;
     },
     [coverage, reveal],
   );
