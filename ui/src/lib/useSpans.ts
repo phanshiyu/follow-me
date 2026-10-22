@@ -1,23 +1,30 @@
 import { useEffect, useState } from "react";
 import { highlightBody, languageFor, type Span } from "./highlight.ts";
 import { prismFor } from "./prism.ts";
-import type { TextHunk } from "./wire.ts";
+import type { HunkLine, TextHunk } from "./wire.ts";
 
-/** Coloured spans per row of a hunk once its grammar has loaded; null keeps the rows plain. */
-export function useSpans(hunk: TextHunk): Span[][] | null {
+type BodyLine = Pick<HunkLine, "op" | "text">;
+
+/** Coloured spans per line of a file's code once its grammar has loaded; null keeps it plain. */
+export function useCodeSpans(path: string, body: readonly BodyLine[]): Span[][] | null {
   const [spans, setSpans] = useState<Span[][] | null>(null);
   useEffect(() => {
-    const language = languageFor(hunk.path);
+    const language = languageFor(path);
     if (language === null) return;
     let live = true;
     void prismFor(language).then((prism) => {
       const grammar = prism?.languages[language];
       if (!live || prism === null || grammar === undefined) return;
-      setSpans(highlightBody(hunk.body, (text) => prism.tokenize(text, grammar)));
+      setSpans(highlightBody(body, (text) => prism.tokenize(text, grammar)));
     });
     return () => {
       live = false;
     };
-  }, [hunk]);
+  }, [path, body]);
   return spans;
+}
+
+/** Coloured spans per row of a hunk once its grammar has loaded; null keeps the rows plain. */
+export function useSpans(hunk: TextHunk): Span[][] | null {
+  return useCodeSpans(hunk.path, hunk.body);
 }

@@ -9,6 +9,7 @@ import {
 } from "react";
 import { commitKey } from "./lib/commit.ts";
 import type { BoxKind } from "./lib/compose.ts";
+import type { Spot } from "./lib/history.ts";
 import { indexOpenAtStart } from "./lib/outline.ts";
 import type { Pick } from "./lib/selection.ts";
 import { loadSet, saveSet } from "./lib/storage.ts";
@@ -41,6 +42,12 @@ type Page = {
   /** The index column beside the document; collapsed, it is a rail of numbers. */
   readonly indexOpen: boolean;
   setIndexOpen(open: boolean): void;
+  /**
+   * Whether a commit, or one of its files, shows its code although marked Viewed: a jump to a
+   * definition opens what it lands in without taking the mark away.
+   */
+  isRevealed(commit: number, path?: string): boolean;
+  reveal(commit: number, path: string): void;
 };
 
 const PageContext = createContext<Page | null>(null);
@@ -55,6 +62,23 @@ export const HEADER_PX = 44;
 
 export function scrollToCommit(index: number): void {
   document.getElementById(`commit-${index + 1}`)?.scrollIntoView({ block: "start" });
+}
+
+/** The commit section at the top of the viewport and how far it has scrolled under the header. */
+export function spotOfViewport(): Spot {
+  let spot: Spot = { commit: 0, offset: 0 };
+  for (const section of document.querySelectorAll<HTMLElement>("section[data-commit]")) {
+    const top = section.getBoundingClientRect().top;
+    if (top > HEADER_PX + 1) break;
+    spot = { commit: Number(section.dataset["commit"]), offset: HEADER_PX - top };
+  }
+  return spot;
+}
+
+export function scrollToSpot(spot: Spot): void {
+  const section = document.getElementById(`commit-${spot.commit + 1}`);
+  if (section === null) return;
+  window.scrollBy(0, section.getBoundingClientRect().top - HEADER_PX + spot.offset);
 }
 
 /** The last commit section whose top has passed under the page header. */
@@ -115,6 +139,12 @@ export function PageProvider({ children }: { children: ReactNode }) {
     setIndexOpenState(open);
     saveSet("index", new Set([open ? "open" : "closed"]));
   }, []);
+  const [revealed, setRevealed] = useState<ReadonlySet<string>>(new Set());
+  const reveal = useCallback(
+    (commit: number, path: string) =>
+      setRevealed((before) => new Set([...before, `${commit}`, `${commit}|${path}`])),
+    [],
+  );
   const setPick = useCallback((next: PagePick | null) => {
     setPickState(next);
     if (next === null) setBox(null);
@@ -162,6 +192,9 @@ export function PageProvider({ children }: { children: ReactNode }) {
       setNotify,
       indexOpen,
       setIndexOpen,
+      isRevealed: (commit, path) =>
+        revealed.has(path === undefined ? `${commit}` : `${commit}|${path}`),
+      reveal,
     };
   }, [
     current,
@@ -178,6 +211,8 @@ export function PageProvider({ children }: { children: ReactNode }) {
     setNotify,
     indexOpen,
     setIndexOpen,
+    revealed,
+    reveal,
   ]);
 
   return <PageContext value={page}>{children}</PageContext>;

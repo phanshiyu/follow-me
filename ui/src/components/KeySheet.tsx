@@ -15,6 +15,8 @@ const KEYS: readonly (readonly [string, string])[] = [
   ["a", "Ask about the picked rows"],
   ["Escape", "Clear the pick or close a box"],
   ["u", "Next unresolved thread"],
+  ["⌘ hover, ⌘ click", "Go to the definition of a name (Ctrl off macOS)"],
+  ["Alt ←", "Back to where the jump started"],
   ["⌘ Enter", "Save the box"],
   ["⌘ Shift Enter", "Submit review"],
   ["?", "This sheet"],

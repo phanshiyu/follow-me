@@ -50,8 +50,9 @@ export function CommitSection({ commit }: { commit: ProjectedCommit }) {
         ),
       ),
     );
-  const { isViewed, setViewed, isFileViewed, setFileViewed } = usePage();
+  const { isViewed, setViewed, isFileViewed, setFileViewed, isRevealed } = usePage();
   const viewed = isViewed(commit);
+  const collapsed = viewed && !isRevealed(commit.index);
   const label = `commit-${commit.index + 1}`;
   const body = bodyOf(commit.message);
   const note = noteOf(commit);
@@ -101,7 +102,7 @@ export function CommitSection({ commit }: { commit: ProjectedCommit }) {
           </DropdownMenuContent>
         </DropdownMenu>
       </header>
-      {viewed ? null : (
+      {collapsed ? null : (
         <div className="space-y-4 pt-4">
           {body === "" ? null : (
             <p className="max-w-[72ch] whitespace-pre-wrap text-sm leading-6">{body}</p>
@@ -157,7 +158,7 @@ export function CommitSection({ commit }: { commit: ProjectedCommit }) {
                     Viewed
                   </Check>
                 </div>
-                {fileViewed
+                {fileViewed && !isRevealed(commit.index, file.path)
                   ? null
                   : file.parts.map(({ ref, unit }) =>
                       unit.kind === "hunk" ? (

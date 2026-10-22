@@ -18,6 +18,7 @@ import type {
 
 export type {
   Anchor,
+  Candidate,
   CarriedComment as Carried,
   Comment,
   CommentId,

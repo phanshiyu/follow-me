@@ -218,7 +218,7 @@ export function Hunk({
   };
 
   return (
-    <div className="rounded-lg border bg-card">
+    <div className="rounded-lg border bg-card" data-unit={hunk.id}>
       <div
         className="flex items-center gap-2 rounded-t-lg border-b bg-muted/50 px-3 py-1 font-mono text-muted-foreground text-xs"
         title={hunk.id}
@@ -232,6 +232,7 @@ export function Hunk({
         role="listbox"
         aria-multiselectable
         aria-label={`Rows of ${hunk.path}`}
+        data-path={hunk.path}
         onMouseUp={onCodeUp}
       >
         {rows.map((row) => {
@@ -301,7 +302,10 @@ export function Hunk({
                 >
                   {op}
                 </span>
-                <span className="min-w-0 flex-1 whitespace-pre-wrap pr-28 [overflow-wrap:anywhere]">
+                <span
+                  data-code
+                  className="min-w-0 flex-1 whitespace-pre-wrap pr-28 [overflow-wrap:anywhere]"
+                >
                   <Code line={line} spans={spans?.[row.line]} />
                 </span>
                 {row.line === last && box === null && drag === null ? (

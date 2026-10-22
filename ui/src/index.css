@@ -873,3 +873,24 @@
 .thread-flash {
   animation: thread-flash 1.6s ease-out;
 }
+
+/* The row a jump to a definition lands on. */
+@keyframes row-flash {
+  from {
+    background-color: rgb(14 165 233 / 0.35);
+  }
+  to {
+    background-color: rgb(14 165 233 / 0);
+  }
+}
+.row-flash {
+  animation: row-flash 1.6s ease-out;
+}
+
+/* A name under the pointer, with Cmd or Ctrl held, that the server can take to its definition. */
+::highlight(definition) {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  color: var(--tok-function);
+}

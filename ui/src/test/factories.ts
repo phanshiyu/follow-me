@@ -2,6 +2,7 @@
 // JSON.parse is the one brand-free way to build branded ids without a cast.
 
 import type {
+  Candidate,
   HunkLine,
   ProjectedCommit,
   Reply,
@@ -140,6 +141,26 @@ export function aLongState(overrides: Partial<State> = {}): State {
           refs: [{ unit: aHunk().id, select: { kind: "lines", changes: [i + 10] } }],
         }),
       ),
+    ],
+    ...overrides,
+  });
+}
+
+/** Where `assertNumber` is defined: src/guard.js, added by commit 1 of a long state. */
+export function aCandidate(
+  overrides: Partial<Omit<Candidate, "path">> & { path?: string } = {},
+): Candidate {
+  return branded({
+    path: "src/guard.js",
+    newLine: 1,
+    kind: "function",
+    unit: null,
+    row: null,
+    commit: null,
+    preview: [
+      "export function assertNumber(x) {",
+      "  if (typeof x !== 'number') throw new TypeError('not a number');",
+      "}",
     ],
     ...overrides,
   });

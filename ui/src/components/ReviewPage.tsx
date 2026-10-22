@@ -5,6 +5,7 @@ import { HEADER_PX, PageProvider, scrollToCommit, usePage } from "../page.tsx";
 import { useReview } from "../store.tsx";
 import { AskBranch, BranchSummary } from "./Branch.tsx";
 import { CommitSection } from "./CommitSection.tsx";
+import { useDefinitions } from "./Definition.tsx";
 import { focusIndex, Index } from "./Index.tsx";
 import { KeySheet } from "./KeySheet.tsx";
 import { Notices, PageOptions, UnreadMenu } from "./Notices.tsx";
@@ -107,6 +108,7 @@ function usePageKeys(openStack: () => void, openSheet: () => void, openSubmit: (
 function Page() {
   const { state, error, ended, arrived, dismissArrived, reconnecting } = useReview();
   const { indexOpen } = usePage();
+  const definitions = useDefinitions();
   const [stackOpen, setStackOpen] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [submitOpen, setSubmitOpen] = useState(false);
@@ -128,6 +130,7 @@ function Page() {
           </div>
           <div className="flex min-w-0 items-center gap-2">
             {indexOpen ? null : <StackPicker open={stackOpen} onOpenChange={setStackOpen} />}
+            {definitions.back}
           </div>
           <div className="flex items-center justify-end gap-2">
             <UnreadMenu />
@@ -174,6 +177,7 @@ function Page() {
           </div>
         </main>
       </div>
+      {definitions.layer}
       <Notices />
       <KeySheet open={sheetOpen} onOpenChange={setSheetOpen} />
       <SubmitDialog open={submitOpen} onOpenChange={setSubmitOpen} />

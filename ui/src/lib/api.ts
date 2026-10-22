@@ -1,4 +1,4 @@
-import type { NewComment, ReportItem, Severity, State } from "./wire.ts";
+import type { Candidate, NewComment, ReportItem, Severity, State } from "./wire.ts";
 
 /** "/s/<id>": every session API sits under it, and the page is served at its root. */
 export const sessionPrefix = /^\/s\/[^/]+/.exec(location.pathname)?.[0] ?? "";
@@ -76,4 +76,10 @@ export const api = {
     }),
   report: () => call<readonly ReportItem[]>("GET", "/api/report?format=json"),
   end: () => call<{ saved: string }>("POST", "/api/end"),
+  /** Where a name is defined, ranked for the file it is used in. */
+  definition: (name: string, from: string) =>
+    call<{ readonly candidates: readonly Candidate[] }>(
+      "GET",
+      `/api/definition?${new URLSearchParams({ name, from })}`,
+    ),
 };
