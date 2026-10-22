@@ -134,6 +134,11 @@ class UsageError extends Error {
   override readonly name = "UsageError";
 }
 
+/** `--help` or `-h` anywhere a command reads its options; main prints that command's usage. */
+class HelpRequested extends Error {
+  override readonly name = "HelpRequested";
+}
+
 /** A test run follow-me will not record, with the reason the agent can act on. */
 class CoverageError extends Error {
   override readonly name = "CoverageError";
@@ -283,6 +288,7 @@ function parseArgs(
   const flags = new Set<string>();
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i] ?? "";
+    if (arg === "--help" || arg === "-h") throw new HelpRequested();
     if (!arg.startsWith("--")) {
       positionals.push(arg);
       continue;
@@ -297,6 +303,38 @@ function parseArgs(
     else throw new UsageError(`unknown option ${arg}`);
   }
   return { positionals, values, flags };
+}
+
+/**
+ * The usage of one command, read from its entries in USAGE: the synopsis, then what it does.
+ * Null for a command USAGE does not list.
+ */
+function usageOf(command: string): string | null {
+  const blocks: string[][] = [];
+  let block: string[] | null = null;
+  for (const line of USAGE.split("\n")) {
+    if (line.startsWith(`  ${command} `) || line === `  ${command}`) {
+      block = [line];
+      blocks.push(block);
+    } else if (block !== null && line.startsWith("    ")) block.push(line);
+    else block = null;
+  }
+  if (blocks.length === 0) return null;
+  return blocks
+    .map((lines) => {
+      const synopsis: string[] = [];
+      const what: string[] = [];
+      for (const line of lines) {
+        const [left = "", right = ""] = line.trim().split(/\s{3,}/, 2);
+        if (/^\s{20,}/.test(line)) what.push(left);
+        else {
+          synopsis.push(left);
+          if (right !== "") what.push(right);
+        }
+      }
+      return [`usage: follow-me ${synopsis.join(" ")}`, ...what.map((w) => `  ${w}`)].join("\n");
+    })
+    .join("\n");
 }
 
 function say(line = ""): void {
@@ -2186,6 +2224,9 @@ async function serverCommand(argv: readonly string[]): Promise<number> {
       await started.host.closed;
       return 0;
     }
+    case "--help":
+    case "-h":
+      throw new HelpRequested();
     default:
       throw new UsageError("usage: follow-me server status|stop");
   }
@@ -2431,6 +2472,11 @@ export async function main(argv: readonly string[], cwd: string): Promise<number
         throw new UsageError(`unknown command "${command}"\n${SHORT_USAGE}`);
     }
   } catch (error) {
+    if (error instanceof HelpRequested) {
+      const asked = command === undefined || command === "help" ? null : usageOf(command);
+      say(asked ?? SHORT_USAGE);
+      return 0;
+    }
     const known = [
       UsageError,
       CoverageError,

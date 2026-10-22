@@ -394,6 +394,58 @@ test("--version, --help and a directory outside any repo answer like other CLIs"
   });
 });
 
+test("every command prints its own usage for --help and -h, and does nothing else", (t) => {
+  const { run } = cliIn(t);
+  const outside = mkdtempSync(join(tmpdir(), "follow-me-outside-"));
+  t.after(() => rmSync(outside, { recursive: true, force: true }));
+  const commands = [
+    "extract",
+    "check",
+    "apply",
+    "status",
+    "prompt",
+    "plan",
+    "split",
+    "review",
+    "walk",
+    "server",
+    "feedback",
+    "watch",
+    "reply",
+    "explain",
+    "show",
+    "coverage",
+    "report",
+    "clean",
+    "install",
+    "uninstall",
+    "upgrade",
+  ];
+  for (const command of commands) {
+    for (const flag of ["--help", "-h"]) {
+      const help = run(outside, command, flag);
+      assert.deepEqual([help.code, help.err], [0, ""], `${command} ${flag}`);
+      assert.ok(
+        help.out.startsWith(`usage: follow-me ${command}`),
+        `${command} ${flag}: ${help.out}`,
+      );
+    }
+  }
+  const coverage = run(outside, "coverage", "lcov.info", "--test", "t", "--help");
+  assert.match(
+    coverage.out,
+    /^usage: follow-me coverage <lcov> \[--test <id> .*\n {2}record the lcov/,
+  );
+  assert.equal(
+    run(outside, "server", "stop", "-h").out.split("\n")[0],
+    "usage: follow-me server status",
+  );
+  // A value that reads like the flag is still the value.
+  const body = run(outside, "reply", "c_abc234", "--body", "--help");
+  assert.equal(body.code, 1);
+  assert.match(body.err, /not a git repository/);
+});
+
 test("split without a draft writes the prompt and hands off", (t) => {
   const { run } = cliIn(t);
   const repo = makeFixtureRepo();
