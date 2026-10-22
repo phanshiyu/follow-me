@@ -316,7 +316,31 @@ export type Reply = {
   readonly diagram?: string;
   /** Ties the states of a stateDiagram-v2 in `diagram` to code at the tip. */
   readonly map?: StateMap;
+  /** The code the body points at, resolved when the agent posted it. */
+  readonly refs?: readonly CodeRef[];
   readonly createdAt: string;
+};
+
+/** Lines of a file, 1-based and inclusive. */
+export type LineSpan = { readonly start: number; readonly end: number };
+
+/**
+ * A place in the code an agent's words point at, written as an inline code span
+ * `path:start-end[@<commit>|@base]`. n numbers places in order of first appearance. at is the
+ * 1-based commit of the plan whose lines were written, "base", or null for the tip; quote holds up
+ * to eight of those lines. tip is the branch tip it was resolved on, where lines are the tip lines
+ * it covers and old the base lines it covers that the branch removes; either is null when none.
+ */
+export type CodeRef = {
+  readonly n: number;
+  readonly path: RepoPath;
+  readonly start: number;
+  readonly end: number;
+  readonly at: number | "base" | null;
+  readonly quote: readonly string[];
+  readonly tip: Sha;
+  readonly lines: LineSpan | null;
+  readonly old: LineSpan | null;
 };
 
 /**
@@ -360,6 +384,8 @@ export type Comment = {
   readonly author?: "agent";
   /** Mermaid source, only on an agent's comment (a reviewer's comment has none). */
   readonly diagram?: string;
+  /** The code an agent's comment points at, as on a Reply. */
+  readonly refs?: readonly CodeRef[];
   /** The offer of the plan this reviewer's question accepts; only one comment accepts an offer. */
   readonly offer?: OfferId;
 };

@@ -91,6 +91,7 @@ import {
   renderShownUnit,
   reportItems,
 } from "./prompt.ts";
+import { parseRefText, refsIn, repoPathOfTyped, resolveRefs } from "./refs.ts";
 import { type Registration, RegistrationError, sessionIdOf } from "./server.ts";
 import {
   BranchMovedError,
@@ -111,6 +112,7 @@ import {
 } from "./session.ts";
 import { checkSyntax, type SyntaxReport } from "./syntax.ts";
 import type {
+  CodeRef,
   Comment,
   Diff,
   HostedSummary,
@@ -152,7 +154,7 @@ Other commands:
                                             tip lines
   explain [--commit <n>] [--unit <id>] [--lines <a-b>] --body <text> [--diagram <file>]
                                             start a thread on the page without being asked
-  show <h_…|c_…|k_…|path:line[@n|@base]|name>
+  show <h_…|c_…|k_…|path:a[-b][@n|@base]|name>
                                             print a unit, a comment's thread, a concern, the
                                             lines around path:line in commit n, or where a name
                                             is defined, instead of reading files
@@ -213,7 +215,7 @@ Interactive loop (while the review page is open):
                                             --lines are change lines of the unit, commits count
                                             from 1; with no target it is about the whole plan.
                                             watch leaves these out like your replies
-  show <h_…|c_…|k_…|path:line[@n|@base]|name> [--branch <name>]
+  show <h_…|c_…|k_…|path:a[-b][@n|@base]|name> [--branch <name>]
                                             print a unit with the commits that take it, a
                                             comment with its rows and thread, a concern with its
                                             lines, the lines around path:line at the tip, in
@@ -1759,11 +1761,13 @@ async function reply(cwd: string, args: Args): Promise<number> {
   const map = mapFile === undefined ? undefined : await readMap(session, mapFile, diagram);
   const open = await openOnServer(session, null);
   if (open === null) return notOpen(session);
+  const refs = await bodyRefs(session, open.summary.version, body);
   const id = await postReply(open.port, open.summary, commentId, {
     author: "agent",
     body,
     ...(diagram === undefined ? {} : { diagram }),
     ...(map === undefined ? {} : { map }),
+    ...(refs.length === 0 ? {} : { refs }),
   });
   say(`replied ${id} to ${commentId}`);
   next(`run follow-me again; ${STILL_WORKING}`);
@@ -1824,6 +1828,45 @@ async function readMap(
   const problems = mapOffTip(map, lines, (p) => Buffer.from(p, "latin1").toString("utf8"));
   if (problems.length > 0) throw new UsageError(`${file}:\n  ${problems.join("\n  ")}`);
   return map;
+}
+
+/**
+ * The refs --body writes, resolved against plan `version` and the tip. Every one that does not
+ * resolve is named at once, as --map's are.
+ */
+async function bodyRefs(
+  session: Session,
+  version: PlanVersion,
+  body: string,
+): Promise<readonly CodeRef[]> {
+  const specs = refsIn(body);
+  if (specs.length === 0) return [];
+  const { root, diff } = session;
+  const otherChanged = new Set(
+    [...diff.units.values()].flatMap((u) => (diff.textFiles.has(u.path) ? [] : [u.path])),
+  );
+  const asked = [...new Set(specs.map((s) => repoPathOfTyped(s.path)))].filter(
+    (p): p is RepoPath => isRepoPath(p) && !diff.textFiles.has(p) && !otherChanged.has(p),
+  );
+  const tip = asked.length === 0 ? new Set<RepoPath>() : await pathsAt(root, diff.tip);
+  const present = asked.filter((p) => tip.has(p));
+  const unchanged = new Map(
+    [...(await blobsAt(root, diff.tip, present))].map(([p, bytes]) => [p, splitLines(bytes)]),
+  );
+  const { refs, problems } = resolveRefs(specs, {
+    tip: diff.tip,
+    textFiles: diff.textFiles,
+    otherChanged,
+    unchanged,
+    commits: projectedCommits(session, version),
+    version,
+  });
+  if (problems.length > 0) {
+    throw new UsageError(
+      `--body points at code that does not resolve:\n  ${problems.join("\n  ")}`,
+    );
+  }
+  return refs;
 }
 
 /** The Mermaid source in --diagram's file, or undefined without the flag. */
@@ -1939,18 +1982,20 @@ async function explain(cwd: string, args: Args): Promise<number> {
   const open = await openOnServer(session, null);
   if (open === null) return notOpen(session);
   const target = explainTarget(session, open.summary.version, args);
+  const refs = await bodyRefs(session, open.summary.version, body);
   const id = await postComment(open.port, open.summary, {
     ...target,
     body,
     author: "agent",
     ...(diagram === undefined ? {} : { diagram }),
+    ...(refs.length === 0 ? {} : { refs }),
   });
   say(`explained ${id}`);
   next(`run follow-me again; ${STILL_WORKING}`);
   return 0;
 }
 
-const SHOW_USAGE = "usage: follow-me show <h_…|c_…|k_…|path:line[@<commit>|@base]|name>";
+const SHOW_USAGE = "usage: follow-me show <h_…|c_…|k_…|path:a[-b][@<commit>|@base]|name>";
 
 /** Every comment the session has, with the plan version it was made on: live ones first. */
 async function knownComments(
@@ -1969,13 +2014,14 @@ async function knownComments(
 const SHOW_MARGIN = 3;
 
 /**
- * The lines around path:line as commit `at` of the latest plan writes the file (1-based), the
- * base, or the tip when `at` is undefined. Read from the plan, so it works before any apply.
+ * The lines around path:a-b as commit `at` of the latest plan writes the file (1-based), the
+ * base, or the tip when `at` is null. Read from the plan, so it works before any apply.
  */
 function showLines(session: Session, raw: string): string {
-  const m = /^(.+):(\d+)(?:@(\d+|base))?$/.exec(raw);
-  const [, typed, lineRaw, at] = m ?? [];
-  if (typed === undefined || lineRaw === undefined) throw new UsageError(SHOW_USAGE);
+  const spec = parseRefText(raw);
+  if (spec === null) throw new UsageError(SHOW_USAGE);
+  const { path: typed, start, end, at } = spec;
+  if (end < start) throw new UsageError(`${raw} ends before it starts`);
   const path = Buffer.from(typed, "utf8").toString("latin1");
   const file = [...session.diff.textFiles.values()].find((f) => f.path === path);
   if (file === undefined) {
@@ -1983,7 +2029,7 @@ function showLines(session: Session, raw: string): string {
   }
   let text: string | null;
   let label: string;
-  if (at === undefined) {
+  if (at === null) {
     text = file.tip?.bytes ?? null;
     label = "the tip";
   } else if (at === "base") {
@@ -1992,7 +2038,7 @@ function showLines(session: Session, raw: string): string {
   } else {
     const latest = session.plans().at(-1);
     const commits = latest === undefined ? [] : projectedCommits(session, latest.version);
-    const n = Number(at);
+    const n = at;
     if (n < 1 || n > commits.length) {
       throw new UsageError(`@${at} is not one of the ${commits.length} commits of the plan`);
     }
@@ -2008,18 +2054,18 @@ function showLines(session: Session, raw: string): string {
   if (text === null) return `${typed} does not exist in ${label}\n`;
   const lines = Buffer.from(text, "latin1").toString("utf8").split("\n");
   if (lines.at(-1) === "") lines.pop();
-  const line = Number(lineRaw);
-  if (line < 1 || line > lines.length) {
+  if (start < 1 || end > lines.length) {
     return `${typed} has ${plural(lines.length, "line")} in ${label}\n`;
   }
-  const from = Math.max(1, line - SHOW_MARGIN);
-  const to = Math.min(lines.length, line + SHOW_MARGIN);
+  const from = Math.max(1, start - SHOW_MARGIN);
+  const to = Math.min(lines.length, end + SHOW_MARGIN);
   const width = String(to).length;
   const rows = lines.slice(from - 1, to).map((l, i) => {
     const n = from + i;
-    return `${n === line ? ">" : " "} ${String(n).padStart(width)}  ${l}`;
+    return `${n >= start && n <= end ? ">" : " "} ${String(n).padStart(width)}  ${l}`;
   });
-  return `${typed}:${line} in ${label}\n${rows.join("\n")}\n`;
+  const span = end > start ? `${start}-${end}` : `${start}`;
+  return `${typed}:${span} in ${label}\n${rows.join("\n")}\n`;
 }
 
 /** Expands a ref the agent was given to the lines and thread it names, so no file read is needed. */

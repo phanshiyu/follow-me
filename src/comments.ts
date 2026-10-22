@@ -16,12 +16,14 @@ import type {
   CarriedComment,
   CarriedConcern,
   CarriedRef,
+  CodeRef,
   Comment,
   CommentId,
   ConcernDecision,
   ConcernId,
   EarlierReplies,
   Excluded,
+  LineSpan,
   Loc,
   Placement,
   PlanVersion,
@@ -184,9 +186,49 @@ export function mapOffTip(
   ];
 }
 
+function parseSpan(v: unknown): LineSpan | null | string {
+  if (v === null) return null;
+  if (!isFields<"start" | "end">(v) || !isLine(v.start) || !isLine(v.end) || v.end < v.start) {
+    return "expected null or { start, end } with 1 <= start <= end";
+  }
+  return { start: v.start, end: v.end };
+}
+
+type RefFields = "n" | "path" | "start" | "end" | "at" | "quote" | "tip" | "lines" | "old";
+
+function parseCodeRef(v: unknown): CodeRef | string {
+  if (!isFields<RefFields>(v)) return "expected an object";
+  const { n, path, start, end, at, quote, tip } = v;
+  if (!isLine(n)) return "n is not a number from 1";
+  if (typeof path !== "string" || !isRepoPath(path)) return "path is not a repo path";
+  if (!isLine(start) || !isLine(end) || end < start) return "expected 1 <= start <= end";
+  if (at !== null && at !== "base" && !isLine(at)) return 'at is not a commit, "base" or null';
+  if (!isArray(quote) || !quote.every(isString)) return "quote is not a list of strings";
+  if (typeof tip !== "string" || !isSha(tip)) return "tip is not a commit sha";
+  const lines = parseSpan(v.lines);
+  const old = parseSpan(v.old);
+  if (typeof lines === "string") return `lines: ${lines}`;
+  if (typeof old === "string") return `old: ${old}`;
+  return { n, path, start, end, at, quote: quote.filter(isString), tip, lines, old };
+}
+
+/** refs as stored beside an agent's words: absent, or a list numbered 1, 2, 3 in order. */
+function parseCodeRefs(v: unknown): CodeRef[] | string {
+  if (v === undefined) return [];
+  if (!isArray(v)) return "refs is not a list";
+  const refs: CodeRef[] = [];
+  for (const [i, raw] of v.entries()) {
+    const ref = parseCodeRef(raw);
+    if (typeof ref === "string") return `refs[${i}]: ${ref}`;
+    if (ref.n !== i + 1) return `refs[${i}]: n is not ${i + 1}`;
+    refs.push(ref);
+  }
+  return refs;
+}
+
 /** A stored reply. Replies a client posts go through parseNewReply, which mints id and time. */
 export function parseReply(v: unknown): Reply | string {
-  if (!isFields<"id" | "author" | "body" | "diagram" | "map" | "createdAt">(v)) {
+  if (!isFields<"id" | "author" | "body" | "diagram" | "map" | "refs" | "createdAt">(v)) {
     return "not an object";
   }
   if (!isReplyId(v.id)) return "id is not a reply id";
@@ -197,12 +239,15 @@ export function parseReply(v: unknown): Reply | string {
   if (v.diagram !== undefined && typeof v.diagram !== "string") return "diagram is not a string";
   const map = v.map === undefined ? undefined : parseStateMap(v.map, v.diagram);
   if (typeof map === "string") return map;
+  const refs = parseCodeRefs(v.refs);
+  if (typeof refs === "string") return refs;
   return {
     id: v.id,
     author: v.author,
     body: v.body,
     ...(v.diagram === undefined ? {} : { diagram: v.diagram }),
     ...(map === undefined ? {} : { map }),
+    ...(refs.length === 0 ? {} : { refs }),
     createdAt: v.createdAt,
   };
 }
@@ -212,20 +257,27 @@ export type NewReply = {
   readonly body: string;
   readonly diagram?: string;
   readonly map?: StateMap;
+  readonly refs?: readonly CodeRef[];
 };
 
 /**
  * The body of POST .../replies: who speaks, what, and an optional Mermaid diagram. The body may be
- * empty only when the diagram is the answer.
+ * empty only when the diagram is the answer. Only the agent's words carry refs.
  */
 export function parseNewReply(v: unknown): NewReply | string {
-  if (!isFields<"author" | "body" | "diagram" | "map">(v)) return "the reply is not an object";
+  if (!isFields<"author" | "body" | "diagram" | "map" | "refs">(v)) {
+    return "the reply is not an object";
+  }
   if (v.author !== "agent" && v.author !== "reviewer") return 'author is not "agent" or "reviewer"';
   if (typeof v.body !== "string") return "body is not a string";
+  const refs = parseCodeRefs(v.refs);
+  if (typeof refs === "string") return refs;
+  if (refs.length > 0 && v.author !== "agent") return "refs are only for the agent's words";
+  const withRefs = refs.length === 0 ? {} : { refs };
   if (v.diagram === undefined) {
     if (v.map !== undefined) return "map needs the diagram it ties to code";
     if (v.body.trim() === "") return "body is empty; a reply needs words or a diagram";
-    return { author: v.author, body: v.body };
+    return { author: v.author, body: v.body, ...withRefs };
   }
   if (typeof v.diagram !== "string") return "diagram is not a string";
   const problem = diagramProblem(v.diagram);
@@ -237,6 +289,7 @@ export function parseNewReply(v: unknown): NewReply | string {
     body: v.body,
     diagram: v.diagram,
     ...(map === undefined ? {} : { map }),
+    ...withRefs,
   };
 }
 
@@ -256,6 +309,7 @@ type CommentFields =
   | "replies"
   | "author"
   | "diagram"
+  | "refs"
   | "offer";
 
 /** Boundary parse of a comment, from a file or a request. Returns the reason when it is not one. */
@@ -300,6 +354,9 @@ export function parseComment(v: unknown): Comment | string {
       return "offer is only for a reviewer's question";
     }
   }
+  const refs = parseCodeRefs(v.refs);
+  if (typeof refs === "string") return refs;
+  if (refs.length > 0 && v.author !== "agent") return "refs are only for an agent's comment";
   const replies = parseList(v.replies, parseReply, "replies");
   if (typeof replies === "string") return replies;
   return {
@@ -318,6 +375,7 @@ export function parseComment(v: unknown): Comment | string {
     ...(replies.length === 0 ? {} : { replies }),
     ...(v.author === "agent" ? { author: "agent" } : {}),
     ...(v.diagram === undefined ? {} : { diagram: v.diagram }),
+    ...(refs.length === 0 ? {} : { refs }),
     ...(offer === undefined ? {} : { offer }),
   };
 }

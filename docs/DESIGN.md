@@ -325,6 +325,14 @@ commit or a unit ref, with kind one of `state-machine`, `sequence`, `diagram`.
   Paths are typed as UTF-8 and stored as git's bytes, like coverage paths. The map lives on the reply,
   so swaps carry it as they carry replies, and `follow-me show <c_…>` prints it one line per state
   and transition.
+- **Refs.** An inline code span of the agent's words that is wholly `path:a[-b][@n|@base]`, with a
+  letter and a `/` or `.` in the path, points at code (`src/refs.ts`). `follow-me reply` and
+  `explain` resolve every one against the open plan and the tip and refuse the body naming each bad
+  ref at once, like `--map`. They are stored beside the body as `refs: CodeRef[]`, numbered in order
+  of first appearance, each with up to 8 quoted lines, the tip it was resolved on, and where its
+  lines sit there: `lines` (tip lines) and `old` (base lines the branch removes). Storing tip lines
+  keeps a ref valid across plan versions; once the tip moves the page shows it stale, with the quote.
+  `follow-me show` takes the same grammar.
 - **Coverage follow-ups.** `follow-me coverage --reset` alone removes coverage.json, and with an lcov
   starts that run from nothing, so a series of `--test` runs does not fold into an old aggregate. A
   test whose `--at` file the branch does not change gets `preview`, up to 8 tip lines from `start`,
