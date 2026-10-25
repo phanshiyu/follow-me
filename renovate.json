@@ -3,11 +3,37 @@
   "extends": ["config:recommended", ":semanticCommits", ":pinAllExceptPeerDependencies"],
   "schedule": ["before 6am on monday"],
   "lockFileMaintenance": { "enabled": true },
+  "osvVulnerabilityAlerts": true,
+  "vulnerabilityAlerts": {
+    "schedule": ["at any time"],
+    "labels": ["security"],
+    "automerge": true
+  },
   "packageRules": [
     {
       "matchDepTypes": ["devDependencies"],
       "matchUpdateTypes": ["minor", "patch"],
       "automerge": true
+    },
+    {
+      "description": "Packages the built web UI bundles into the published tarball; keep in step with scripts/bundled-changed.ts",
+      "matchPackageNames": [
+        "@fontsource-variable/geist",
+        "class-variance-authority",
+        "cn",
+        "dompurify",
+        "lucide-react",
+        "marked",
+        "mermaid",
+        "prismjs",
+        "radix-ui",
+        "react",
+        "react-dom",
+        "tailwindcss",
+        "tw-animate-css"
+      ],
+      "groupName": "bundled UI deps",
+      "addLabels": ["bundled"]
     }
   ]
 }
