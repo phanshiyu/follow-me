@@ -2,7 +2,8 @@ name: publish
 
 # Three ways in, one file (npm's trusted publisher is bound to publish.yml):
 #   tag      a pushed v* tag publishes that tag, as always.
-#   push     a Renovate security update landing on main bumps the patch version and publishes.
+#   push     a Renovate security update landing on main bumps the patch version and publishes,
+#            when it changed a bundled UI dependency since the latest v* tag.
 #   schedule a weekly run (or a manual one) does the same when a bundled UI dependency changed
 #            since the latest v* tag.
 # A tag pushed with GITHUB_TOKEN triggers no workflow, so the bump and the publish share one run.
@@ -48,22 +49,22 @@ jobs:
             echo "not main ($REF): nothing to release"
           elif printf '%s' "$subject" | grep -Eq '^chore\(release\)'; then
             echo "head commit is a release commit: not releasing again"
-          elif [ "$EVENT" = push ]; then
-            # Renovate's :semanticCommits title for a vulnerability fix ends in " [SECURITY]".
-            if printf '%s' "$subject" | grep -Eiq '\[security\]'; then
-              mode=release
-            else
-              echo "head commit is not a security update: $subject"
-            fi
           else
-            last="$(git describe --tags --abbrev=0 --match 'v*' || true)"
-            if [ -z "$last" ]; then
-              echo "no v* tag to compare with"
-            elif node scripts/bundled-changed.ts "$last"; then
-              echo "bundled UI dependencies changed since $last"
-              mode=release
+            # A push releases only for a Renovate security fix: its title ends in " [SECURITY]", and a
+            # merge commit carries that title in its body, so match the whole message. Either way the
+            # release needs a bundled UI dependency to have changed; tooling fixes never reach users.
+            if [ "$EVENT" = push ] && ! git log -1 --format=%B | grep -Eiq '\[security\]'; then
+              echo "head commit is not a security update: $subject"
             else
-              echo "no bundled UI dependency changed since $last"
+              last="$(git describe --tags --abbrev=0 --match 'v*' || true)"
+              if [ -z "$last" ]; then
+                echo "no v* tag to compare with"
+              elif node scripts/bundled-changed.ts "$last"; then
+                echo "bundled UI dependencies changed since $last"
+                mode=release
+              else
+                echo "no bundled UI dependency changed since $last"
+              fi
             fi
           fi
           echo "mode=$mode"

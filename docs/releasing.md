@@ -25,8 +25,10 @@ published, so the workflow publishes for them. The full list is `BUNDLED` in
 
 1. **A security fix releases when it merges.** Renovate opens security pull requests at
    any time, labelled `security`, and merges them once CI is green. Its commit title ends
-   in `[SECURITY]`. When such a commit lands on `main`, the workflow bumps the patch
-   version, publishes, and pushes the version commit and tag back to `main`.
+   in `[SECURITY]`. When such a commit lands on `main` and it changed a bundled library,
+   the workflow bumps the patch version, publishes, and pushes the version commit and tag
+   back to `main`. A security fix to tooling only (lint, tests, types) does not release,
+   because users never run that code.
 2. **A weekly release picks up bundled updates.** Every Monday (and on demand from the
    Actions tab, "Run workflow") the workflow compares the lockfile now with the lockfile at
    the latest `v*` tag. If any bundled library, or anything it depends on, is at a
