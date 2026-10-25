@@ -1,39 +1,118 @@
 name: publish
 
+# Three ways in, one file (npm's trusted publisher is bound to publish.yml):
+#   tag      a pushed v* tag publishes that tag, as always.
+#   push     a Renovate security update landing on main bumps the patch version and publishes.
+#   schedule a weekly run (or a manual one) does the same when a bundled UI dependency changed
+#            since the latest v* tag.
+# A tag pushed with GITHUB_TOKEN triggers no workflow, so the bump and the publish share one run.
 on:
   push:
     tags: ["v*"]
+    branches: [main]
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+# One release at a time. Queued runs wait rather than cancel, so a release is never cut in half.
+concurrency:
+  group: publish
+  cancel-in-progress: false
 
 permissions:
-  id-token: write
   contents: read
 
 jobs:
-  publish:
+  decide:
     runs-on: ubuntu-latest
-    environment: prod
+    outputs:
+      mode: ${{ steps.decide.outputs.mode }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
-      - run: npm install -g npm@latest
-      - run: npm --version
-      - run: npm ci
-      - run: git config --global user.email ci@example.com && git config --global user.name ci
+      - id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF: ${{ github.ref }}
+        run: |
+          mode=none
+          subject="$(git log -1 --format=%s)"
+          if [ "$REF_TYPE" = tag ]; then
+            mode=tag
+          elif [ "$REF" != refs/heads/main ]; then
+            echo "not main ($REF): nothing to release"
+          elif printf '%s' "$subject" | grep -Eq '^chore\(release\)'; then
+            echo "head commit is a release commit: not releasing again"
+          elif [ "$EVENT" = push ]; then
+            # Renovate's :semanticCommits title for a vulnerability fix ends in " [SECURITY]".
+            if printf '%s' "$subject" | grep -Eiq '\[security\]'; then
+              mode=release
+            else
+              echo "head commit is not a security update: $subject"
+            fi
+          else
+            last="$(git describe --tags --abbrev=0 --match 'v*' || true)"
+            if [ -z "$last" ]; then
+              echo "no v* tag to compare with"
+            elif node scripts/bundled-changed.ts "$last"; then
+              echo "bundled UI dependencies changed since $last"
+              mode=release
+            else
+              echo "no bundled UI dependency changed since $last"
+            fi
+          fi
+          echo "mode=$mode"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+
+  publish-tag:
+    needs: decide
+    if: needs.decide.outputs.mode == 'tag'
+    runs-on: ubuntu-latest
+    environment: prod
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
       - name: refuse a tag that does not match package.json
         run: |
           tag="${GITHUB_REF_NAME#v}"
           version="$(node -p "require('./package.json').version")"
           [ "$tag" = "$version" ] || { echo "tag v$tag but package.json says $version"; exit 1; }
-      # The same gates as ci.yml, in the same order, as separate steps so a failure names its
-      # step. The package's own prepublishOnly would repeat them, so publish skips scripts.
-      - run: npm run lint
-      - run: npm run typecheck
-      - run: npm run build
-      - run: npm run ui:test
-      - run: npm test
+      - run: git config --global user.email ci@example.com && git config --global user.name ci
+      - uses: ./.github/actions/gates
+      - name: publish
+        # Trusted publishing never asks for a login; if npm falls back to one, fail fast.
+        timeout-minutes: 5
+        run: npm publish --ignore-scripts
+
+  release:
+    needs: decide
+    if: needs.decide.outputs.mode == 'release'
+    runs-on: ubuntu-latest
+    environment: prod
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+      - run: git config --global user.email ci@example.com && git config --global user.name ci
+      - uses: ./.github/actions/gates
+      - name: bump, commit and tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          npm version patch --message "$(printf '%s\n\n%s' \
+            'chore(release): v%s' \
+            'Automatic patch release: a security fix or a bundled UI dependency changed, and those only reach users in a new publish. See docs/releasing.md.')"
+      - name: push the commit and the tag
+        # Pushed with GITHUB_TOKEN, so neither push starts another workflow run.
+        run: git push --atomic origin "HEAD:refs/heads/main" "refs/tags/v$(node -p "require('./package.json').version")"
       - name: publish
         # Trusted publishing never asks for a login; if npm falls back to one, fail fast.
         timeout-minutes: 5
