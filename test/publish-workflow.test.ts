@@ -23,9 +23,11 @@ const workflowFiles = readdirSync(new URL(".github/workflows/", root)).filter((f
   f.endsWith(".yml"),
 );
 const workflows = Object.fromEntries(workflowFiles.map((f) => [f, read(`.github/workflows/${f}`)]));
-const actions = { "setup/action.yml": read(".github/actions/setup/action.yml") };
+const actions = {
+  "setup/action.yml": read(".github/actions/setup/action.yml"),
+  "setup-uncached/action.yml": read(".github/actions/setup-uncached/action.yml"),
+};
 const publish = workflows["publish.yml"] ?? "";
-const setupAction = actions["setup/action.yml"];
 
 /** Each job's text, by name: the lines from "  name:" under jobs to the next job. */
 function jobsOf(text: string): Record<string, string> {
@@ -70,7 +72,7 @@ test("only the push job writes, only the publish job holds the id-token, and nei
   for (const name of ["decide", "build"]) {
     assert.doesNotMatch(job(name), /(contents|id-token|actions|issues): write/, name);
   }
-  assert.match(job("build"), /uses: \.\/\.github\/actions\/setup/);
+  assert.match(job("build"), /uses: \.\/\.github\/actions\/setup-uncached/);
   assert.match(publish, /\npermissions:\n {2}contents: read\n/);
 });
 
@@ -109,20 +111,16 @@ test("a manual start releases only the head of main, and only the push of a tag 
 });
 
 test("no cache is restored or saved in any publishing job, nor through the setup action", () => {
-  assert.doesNotMatch(publish, /actions\/cache(\/\w+)?@/);
-  assert.doesNotMatch(publish, /^\s+cache(-dependency-path)?: (?!'false')/m);
-  assert.doesNotMatch(publish, /cache-dependency-path/);
-  // The setup action caches npm's downloads unless told not to, so a caller that publishes passes cache: 'false'.
-  assert.match(setupAction, /cache: \$\{\{ inputs\.cache == 'true' && 'npm' \|\| '' \}\}/);
-  assert.match(setupAction, /package-manager-cache: \$\{\{ inputs\.cache == 'true' \}\}/);
-  assert.match(setupAction, /inputs:[\s\S]*\n {2}cache:\n[\s\S]*default: 'true'/);
-  assert.doesNotMatch(setupAction, /actions\/cache/);
-  for (const step of publish.split(/\n(?=\s+- )/)) {
-    if (/uses: \.\/\.github\/actions\/setup/.test(step)) assert.match(step, /cache: 'false'/);
-    // setup-node turns a cache on by itself for some projects, so every use says no.
-    if (/uses: actions\/setup-node@/.test(step)) assert.match(step, /package-manager-cache: false/);
-  }
-  assert.ok(names(/actions\/setup-node@|uses: \.\/\.github\/actions\/setup/).length >= 3);
+  // CodeQL reads a cache option anywhere in a composite action as a cache a privileged job can poison, so the
+  // publish workflow calls a setup action that has none; ../setup caches npm's downloads for CI's unprivileged jobs.
+  const hasCache = (text: string) =>
+    /actions\/cache(\/\w+)?@|^\s+cache(-dependency-path)?:|package-manager-cache/m.test(text);
+  assert.equal(hasCache(publish), false);
+  assert.equal(hasCache(actions["setup-uncached/action.yml"]), false);
+  assert.match(actions["setup/action.yml"], /cache: npm/);
+  assert.doesNotMatch(publish, /uses: \.\/\.github\/actions\/setup\n/);
+  assert.match(publish, /uses: \.\/\.github\/actions\/setup-uncached\n/);
+  for (const name of ["audit.yml"]) assert.equal(hasCache(workflows[name] ?? ""), false, name);
 });
 
 test("every workflow: actions pinned by digest with a version, least privilege, no expression in a script", () => {

@@ -76,7 +76,6 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          package-manager-cache: false
       # npm audit exits 1 when it finds advisories; scripts/audit.ts judges the files and fails when one did not run.
       # It reads the lock file only, so nothing is installed.
       - name: Audit the base and this change
