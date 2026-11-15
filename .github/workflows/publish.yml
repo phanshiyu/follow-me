@@ -4,9 +4,17 @@ name: publish
 #   tag      a pushed v* tag publishes that tag, as always.
 #   push     a Renovate security update landing on main bumps the patch version and publishes,
 #            when it changed a bundled UI dependency since the latest v* tag.
-#   schedule a weekly run (or a manual one) does the same when a bundled UI dependency changed
-#            since the latest v* tag.
+#   schedule a weekly run (or a manual one, from main) does the same when a bundled UI dependency
+#            changed since the latest v* tag.
 # A tag pushed with GITHUB_TOKEN triggers no workflow, so the bump and the publish share one run.
+#
+# Four jobs, so that no job holds more than one kind of power (docs/decisions.tsv, "publish in four jobs"):
+#   decide   read-only; says what, if anything, to release.
+#   build    read-only; installs, runs every gate, bumps the version for a release, packs the tarball. This is the
+#            only job that runs the repository's code and its dependencies, so it can neither push nor publish.
+#   push     contents: write; checks nothing out and runs nothing from the repository; commits, tags and pushes.
+#   publish  id-token: write; checks nothing out; publishes the tarball that build packed.
+# No job restores or saves a cache: a poisoned cache entry could otherwise reach a job that can publish.
 on:
   push:
     tags: ["v*"]
@@ -25,16 +33,21 @@ permissions:
 
 jobs:
   decide:
-    runs-on: ubuntu-latest
+    name: Decide what to release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     outputs:
       mode: ${{ steps.decide.outputs.mode }}
+      base: ${{ steps.decide.outputs.base }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v5
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
+          package-manager-cache: false
       - id: decide
         env:
           EVENT: ${{ github.event_name }}
@@ -43,10 +56,14 @@ jobs:
         run: |
           mode=none
           subject="$(git log -1 --format=%s)"
-          if [ "$REF_TYPE" = tag ]; then
+          head="$(git rev-parse HEAD)"
+          if [ "$EVENT" = push ] && [ "$REF_TYPE" = tag ]; then
             mode=tag
           elif [ "$REF" != refs/heads/main ]; then
+            # A manual start from a branch or a tag releases nothing: only the head of main can be released by hand.
             echo "not main ($REF): nothing to release"
+          elif [ "$head" != "$(git ls-remote origin refs/heads/main | cut -f1)" ]; then
+            echo "main has moved past $head: the run for the newer commit decides"
           elif printf '%s' "$subject" | grep -Eq '^chore\(release\)'; then
             echo "head commit is a release commit: not releasing again"
           else
@@ -69,52 +86,139 @@ jobs:
           fi
           echo "mode=$mode"
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "base=$head" >> "$GITHUB_OUTPUT"
 
-  publish-tag:
+  build:
+    name: Run the gates and pack
     needs: decide
-    if: needs.decide.outputs.mode == 'tag'
-    runs-on: ubuntu-latest
-    environment: prod
+    if: needs.decide.outputs.mode != 'none'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # Runs the repository's code and its dependencies, so it holds nothing but read access.
     permissions:
       contents: read
-      id-token: write
+    outputs:
+      version: ${{ steps.pack.outputs.version }}
+    env:
+      MODE: ${{ needs.decide.outputs.mode }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: refuse a tag that does not match package.json
+        if: env.MODE == 'tag'
         run: |
           tag="${GITHUB_REF_NAME#v}"
           version="$(node -p "require('./package.json').version")"
           [ "$tag" = "$version" ] || { echo "tag v$tag but package.json says $version"; exit 1; }
+      - uses: ./.github/actions/setup
+        with:
+          cache: 'false'
       - run: git config --global user.email ci@example.com && git config --global user.name ci
-      - uses: ./.github/actions/gates
-      - name: publish
-        # Trusted publishing never asks for a login; if npm falls back to one, fail fast.
-        timeout-minutes: 5
-        run: npm publish --ignore-scripts
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm run ui:test
+      - run: npm test
+      # The bump touches the version lines of package.json and package-lock.json and nothing else; the push job refuses
+      # anything more.
+      - name: bump the patch version
+        if: env.MODE == 'release'
+        run: npm version patch --no-git-tag-version --ignore-scripts
+      - name: pack
+        id: pack
+        run: |
+          mkdir -p "$RUNNER_TEMP/release"
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP/release"
+          cp package.json package-lock.json "$RUNNER_TEMP/release/"
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: ${{ runner.temp }}/release
+          if-no-files-found: error
+          retention-days: 3
 
-  release:
-    needs: decide
+  # Pushes the release commit and tag. It has the only write access, checks nothing out and runs nothing from the
+  # repository: it takes two files from the build and refuses anything but the version lines.
+  push:
+    name: Commit, tag and push the release
+    needs: [decide, build]
     if: needs.decide.outputs.mode == 'release'
-    runs-on: ubuntu-latest
-    environment: prod
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     permissions:
       contents: write
-      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.build.outputs.version }}
+      BASE: ${{ needs.decide.outputs.base }}
     steps:
-      - uses: actions/checkout@v5
-      - run: git config --global user.email ci@example.com && git config --global user.name ci
-      - uses: ./.github/actions/gates
-      - name: bump, commit and tag
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: ${{ runner.temp }}/release
+      # One atomic push, so the commit and its tag land together or not at all. If main moved since the decision, the
+      # push is refused and the run fails; the next run starts from the new head.
+      - name: Commit, tag and push as github-actions
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          npm version patch --message "$(printf '%s\n\n%s' \
-            'chore(release): v%s' \
-            'Automatic patch release: a security fix or a bundled UI dependency changed, and those only reach users in a new publish. See docs/releasing.md.')"
-      - name: push the commit and the tag
-        # Pushed with GITHUB_TOKEN, so neither push starts another workflow run.
-        run: git push --atomic origin "HEAD:refs/heads/main" "refs/tags/v$(node -p "require('./package.json').version")"
+          git init -q repo && cd repo
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --depth=1 origin "$BASE"
+          git checkout -q --detach FETCH_HEAD
+          cp "$RUNNER_TEMP/release/package.json" "$RUNNER_TEMP/release/package-lock.json" .
+          [ "$(git diff --name-only | sort | tr '\n' ' ')" = 'package-lock.json package.json ' ] || { echo "::error::The build changed more than package.json and package-lock.json"; exit 1; }
+          for file in package.json package-lock.json; do
+            git diff -U0 -- "$file" | grep -Eq '^\+ +"version": ' || { echo "::error::$file has no new version line"; exit 1; }
+            if git diff -U0 -- "$file" | grep -E '^[-+]' | grep -Ev '^(\+\+\+|---) ' | grep -Ev '^[-+] +"version": "[0-9.]+",?$' > /dev/null; then
+              echo "::error::The build changed more than version lines in $file"; exit 1
+            fi
+            if git diff -U0 -- "$file" | grep -E '^\+ ' | grep -Fv "\"version\": \"$VERSION\"" > /dev/null; then
+              echo "::error::A version line in $file is not $VERSION"; exit 1
+            fi
+          done
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add package.json package-lock.json
+          git commit -q -m "chore(release): v$VERSION" -m 'Automatic patch release: a security fix or a bundled UI dependency changed, and those only reach users in a new publish. See docs/releasing.md.'
+          git tag -a "v$VERSION" -m "v$VERSION"
+          git push --atomic origin HEAD:refs/heads/main "refs/tags/v$VERSION"
+
+  # Publishes the tarball the build packed. For a release the version is on main and tagged by now, so a failure here
+  # leaves main holding a version npm lacks: delete the tag and push it again (docs/releasing.md).
+  publish:
+    name: Publish to npm
+    needs: [decide, build, push]
+    if: ${{ !cancelled() && needs.build.result == 'success' && (needs.decide.outputs.mode == 'tag' || needs.push.result == 'success') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Must match the environment in the package's trusted publisher on npmjs.com.
+    environment: prod
+    # Checks nothing out and runs no repository code, so the id-token is the only power it has.
+    permissions:
+      id-token: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      # Trusted publishing needs npm 11.5.1 or later, which Node 24 ships.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: ${{ runner.temp }}/release
+      - name: refuse a tarball that is not the version the build reported
+        run: |
+          npm --version
+          [ "$(printf '%s\n%s\n' 11.5.1 "$(npm --version)" | sort -V | head -n 1)" = 11.5.1 ] \
+            || { echo "npm is older than 11.5.1, which trusted publishing needs"; exit 1; }
+          tarball="$(ls "$RUNNER_TEMP"/release/*.tgz)"
+          packed="$(tar -xOzf "$tarball" package/package.json | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version')"
+          [ "$packed" = "$VERSION" ] || { echo "the tarball is $packed but the build reported $VERSION"; exit 1; }
       - name: publish
         # Trusted publishing never asks for a login; if npm falls back to one, fail fast.
         timeout-minutes: 5
-        run: npm publish --ignore-scripts
+        run: npm publish "$RUNNER_TEMP"/release/*.tgz --access public
