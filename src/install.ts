@@ -90,9 +90,18 @@ export function planSkillFiles(
   return [...byPath.values()];
 }
 
+function readIfPresent(path: string): Buffer | null {
+  try {
+    return readFileSync(path);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
 function writeSkill(skillDir: string, file: PlannedFile, dryRun: boolean): string {
   const content = readFileSync(join(skillDir, file.source));
-  const current = existsSync(file.path) ? readFileSync(file.path) : null;
+  const current = readIfPresent(file.path);
   if (current?.equals(content)) return `unchanged ${file.path}`;
   if (dryRun) return `would write ${file.path}`;
   mkdirSync(dirname(file.path), { recursive: true });

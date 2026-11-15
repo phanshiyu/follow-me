@@ -1321,9 +1321,16 @@ function readCursor(session: Session, summary: HostedSummary): Cursor {
   return { session: logOf(summary), seq: counts ? seq : 0, seen };
 }
 
+const CURSOR_ID = /^[a-z]_[a-z0-9]+$/;
+const CURSOR_LOG = /^[\w-]+@[\w.:+-]+$/;
+
+/** The cursor holds data the server sent, so only ids and a log name of the expected shape are written. */
 function writeCursor(session: Session, cursor: Cursor): void {
   const { session: log, seq, seen } = cursor;
-  writeFileSync(cursorPath(session), `${JSON.stringify({ session: log, seq, seen: [...seen] })}\n`);
+  if (!CURSOR_LOG.test(log) || !Number.isInteger(seq))
+    throw new Error(`refusing to save the cursor for ${log}`);
+  const ids = [...seen].filter((id) => CURSOR_ID.test(id));
+  writeFileSync(cursorPath(session), `${JSON.stringify({ session: log, seq, seen: ids })}\n`);
 }
 
 /** The comment or reply id an event first carries, or null for events without one. */
