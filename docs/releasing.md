@@ -2,7 +2,19 @@
 
 Releases are published to npm by GitHub Actions through npm's trusted publisher
 (OIDC). No token is stored anywhere. The workflow is `.github/workflows/publish.yml`
-and it has three ways to start a release, described below.
+and it has three ways to start a release, described below. It runs as four jobs, so no
+job holds more than one power:
+
+- `decide` (read-only) says what to release, if anything.
+- `build` (read-only) installs, runs every gate, bumps the version for an automatic
+  release and packs the tarball. It is the only job that runs the repository's code.
+- `push` (`contents: write`) checks nothing out. It takes `package.json` and
+  `package-lock.json` from the build, refuses anything but version lines, then commits,
+  tags and pushes in one atomic push.
+- `publish` (`id-token: write`, environment `prod`) checks nothing out and publishes the
+  tarball the build packed, after checking its version.
+
+No job restores or saves a cache. `test/publish-workflow.test.ts` pins these rules.
 
 ## One-time setup on npmjs.com
 
@@ -41,11 +53,16 @@ published, so the workflow publishes for them. The full list is `BUNDLED` in
    git push --follow-tags   # the tag triggers publish.yml
    ```
 
-   The workflow refuses a tag whose version differs from `package.json`.
+   The workflow refuses a tag whose version differs from `package.json`. Only a pushed
+   tag publishes a tag: starting the workflow by hand with a tag selected does nothing.
+
+A manual start ("Run workflow") releases only the head of `main`, and only when a bundled
+library changed. From any other branch or tag, or when `main` has moved on, it does nothing.
 
 Every path runs lint, typecheck, build and both test suites before it publishes. A red
 suite blocks the release, and the automatic paths leave `main` and the tags untouched
-when that happens.
+when that happens. For an automatic release the version commit and tag are pushed before
+the publish, so that npm never holds a version missing from `main`.
 
 ## What never releases
 
@@ -58,23 +75,27 @@ when that happens.
   skipped explicitly, and a push made with `GITHUB_TOKEN` starts no workflow anyway.
 
 Releases run one at a time. If the publish step fails after the commit and tag were pushed,
-the version exists in git but not on npm: delete the tag (`git push --delete origin vX.Y.Z`),
-fix the cause, then re-create and push the tag from the version commit to publish it.
+the version exists in git but not on npm: the `publish` job failed, so fix the cause and re-run
+that job, or delete the tag (`git push --delete origin vX.Y.Z`), then re-create and push the tag
+from the version commit to publish it.
 
 ## Repository settings the automatic paths rely on
 
-- **Branch protection on `main`**, if you turn it on, must let `github-actions[bot]` push
+- **Branch protection on `main`**, if you turn it on, must let the GitHub Actions app push
   the release commit straight to `main` (for example by adding it to the bypass list of the
-  ruleset). Otherwise the push fails and nothing is published.
+  ruleset). Otherwise the push fails and nothing is published. There is none today.
 - **The `prod` environment**, if it restricts which branches or tags can deploy, must allow
   `main` as well as `v*` tags.
-- **Dependabot alerts**: turn on "Dependabot alerts" under Settings, Advanced Security. This
+- **Dependabot alerts**: on (Settings, Advanced Security). This
   gives Renovate GitHub's advisory data. Leave Dependabot security updates and version
   updates off; Renovate opens the pull requests, GitHub only supplies the alerts. Renovate's
   OSV source (`osvVulnerabilityAlerts`) works whether or not this is on.
-- **Auto-merge** should be allowed on the repository so Renovate can merge its pull requests
-  once CI passes. The merge must not be made with `GITHUB_TOKEN`, or the push to `main` would
-  not start the workflow.
+- **Auto-merge** is allowed on the repository. `renovate.json` keeps `platformAutomerge` off,
+  so Renovate itself waits for CI to pass and then merges; GitHub's auto-merge with no
+  required check would merge before CI finished. If you add a rule that requires `ci-ok`,
+  you can turn `platformAutomerge` on. The merge must not be made with `GITHUB_TOKEN`, or the
+  push to `main` would not start the workflow.
+- **The Renovate app** must be installed on the repository (github.com/apps/renovate).
 
 ## If a release lands in staging
 
