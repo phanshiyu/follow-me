@@ -101,7 +101,9 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup
       - run: npm run build
-      - run: npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP/pack"
+      - run: |
+          mkdir -p "$RUNNER_TEMP/pack"
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP/pack"
       - name: Install the tarball into an empty directory and run it
         run: |
           mkdir -p "$RUNNER_TEMP/consumer"
