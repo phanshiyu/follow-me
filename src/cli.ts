@@ -70,6 +70,7 @@ import {
   syncSkills,
 } from "./install.ts";
 import { naiveDraft } from "./naive.ts";
+import { plainNumber, plainText } from "./plain.ts";
 import {
   isCommentId,
   isConcernId,
@@ -1321,6 +1322,8 @@ function readCursor(session: Session, summary: HostedSummary): Cursor {
   return { session: logOf(summary), seq: counts ? seq : 0, seen };
 }
 
+const ID_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789_";
+const LOG_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-@.:+";
 const CURSOR_ID = /^[a-z]_[a-z0-9]+$/;
 const CURSOR_LOG = /^[\w-]+@[\w.:+-]+$/;
 
@@ -1329,8 +1332,9 @@ function writeCursor(session: Session, cursor: Cursor): void {
   const { session: log, seq, seen } = cursor;
   if (!CURSOR_LOG.test(log) || !Number.isInteger(seq))
     throw new Error(`refusing to save the cursor for ${log}`);
-  const ids = [...seen].filter((id) => CURSOR_ID.test(id));
-  writeFileSync(cursorPath(session), `${JSON.stringify({ session: log, seq, seen: ids })}\n`);
+  const ids = [...seen].filter((id) => CURSOR_ID.test(id)).map((id) => plainText(id, ID_CHARS));
+  const saved = { session: plainText(log, LOG_CHARS), seq: plainNumber(seq), seen: ids };
+  writeFileSync(cursorPath(session), `${JSON.stringify(saved)}\n`);
 }
 
 /** The comment or reply id an event first carries, or null for events without one. */

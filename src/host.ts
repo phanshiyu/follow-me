@@ -19,6 +19,7 @@ import {
   parseEventBatch,
 } from "./comments.ts";
 import { carryComments } from "./evolve.ts";
+import { plainNumber, plainText } from "./plain.ts";
 import { isPlanVersion, serializePlanFile, validatePlan } from "./plan.ts";
 import {
   HEALTH_APP,
@@ -52,6 +53,7 @@ import type {
 } from "./types.ts";
 
 const RECORD = "server.json";
+const PATH_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._~-?=&";
 const DEFAULT_IDLE_MS = 30_000;
 const START_TIMEOUT_MS = 10_000;
 const STOP_TIMEOUT_MS = 5_000;
@@ -81,7 +83,7 @@ function loopbackUrl(port: number, path: string): string {
   if (!isPort(port) || !/^\/[\w./~-]*(\?[\w=&.-]*)?$/.test(path)) {
     throw new RegistrationError("refusing a request to an unexpected address");
   }
-  return `http://127.0.0.1:${port}${path}`;
+  return `http://127.0.0.1:${plainNumber(port)}${plainText(path, PATH_CHARS)}`;
 }
 
 function isFields(value: unknown): value is Record<string, unknown> {
