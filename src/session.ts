@@ -499,8 +499,12 @@ async function locate(repo: string, branch: string | undefined): Promise<Where> 
   if (name === null) throw new Error("HEAD is detached; pass --branch <name>");
   const top = join(root, ".follow-me");
   mkdirSync(top, { recursive: true });
-  const ignore = join(top, ".gitignore");
-  if (!existsSync(ignore)) writeFileSync(ignore, "*\n");
+  try {
+    // "wx" creates the file only if it is not there, so no check can go stale before the write.
+    writeFileSync(join(top, ".gitignore"), "*\n", { flag: "wx" });
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+  }
   return { root, branch: name, dir: join(top, slugOf(name)) };
 }
 

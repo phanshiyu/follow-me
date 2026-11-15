@@ -4,28 +4,35 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
+env:
+  # What the audits compare with: a pull request's base, the commit a push replaced, or itself when started by hand.
+  BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || github.sha }}
+
 jobs:
   check:
-    runs-on: ubuntu-latest
+    name: check (Node ${{ matrix.node }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        node: [24, 26]
+        node: ['24', '26']
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
         with:
           node-version: ${{ matrix.node }}
-          cache: npm
-      - run: npm ci
       - run: git config --global user.email ci@example.com && git config --global user.name ci
       - run: npm run lint
       - run: npm run typecheck
@@ -40,14 +47,91 @@ jobs:
           }
 
   dogfood:
-    runs-on: ubuntu-latest
+    name: dogfood
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v5
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - run: scripts/dogfood.sh
+
+  # Fails only on an advisory that the base does not already have, so an advisory on main never blocks the pull request
+  # that fixes it. The full audit of main is .github/workflows/audit.yml (see docs/decisions.tsv).
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BASE_SHA }}
+          path: base
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          cache: npm
-      - run: npm ci
-      - run: scripts/dogfood.sh
+      # npm audit exits 1 when it finds advisories; scripts/audit.ts judges the files and fails when one did not run.
+      # It reads the lock file only, so nothing is installed.
+      - name: Audit the base and this change
+        run: |
+          (cd base && npm audit --json > "$RUNNER_TEMP/audit-base.json" || true)
+          npm audit --json > "$RUNNER_TEMP/audit-head.json" || true
+          node scripts/audit.ts "$RUNNER_TEMP/audit-head.json" "$RUNNER_TEMP/audit-base.json"
+
+  # The published package has no dependencies of its own today (the web UI is bundled at build time), so what a user
+  # installs is the package alone. This job keeps it that way, or audited if one is added.
+  package:
+    name: Pack, install and audit what users get
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BASE_SHA }}
+          path: base
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - run: npm run build
+      - run: |
+          mkdir -p "$RUNNER_TEMP/pack"
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP/pack"
+      - name: Install the tarball into an empty directory and run it
+        run: |
+          mkdir -p "$RUNNER_TEMP/consumer"
+          cd "$RUNNER_TEMP/consumer"
+          npm init -y > /dev/null
+          npm install --ignore-scripts "$RUNNER_TEMP"/pack/*.tgz
+          ./node_modules/.bin/follow-me --help > /dev/null
+      # The installed tree is what npm resolves from the dependencies in package.json, so the base's tree is the same
+      # install made from the base's package.json. Only advisories the base does not have fail.
+      - name: Audit the installed dependency tree against the base
+        run: |
+          mkdir -p "$RUNNER_TEMP/consumer-base"
+          (cd "$RUNNER_TEMP/consumer" && { npm audit --json > "$RUNNER_TEMP/npm-audit-head.json" || true; })
+          node -e 'const p = JSON.parse(require("fs").readFileSync("base/package.json", "utf8")); console.log(JSON.stringify({ name: "consumer", version: "1.0.0", private: true, dependencies: p.dependencies ?? {} }))' > "$RUNNER_TEMP/consumer-base/package.json"
+          (cd "$RUNNER_TEMP/consumer-base" && npm install --package-lock-only --ignore-scripts && { npm audit --json > "$RUNNER_TEMP/npm-audit-base.json" || true; })
+          node scripts/audit.ts "$RUNNER_TEMP/npm-audit-head.json" "$RUNNER_TEMP/npm-audit-base.json"
+
+  # Passes only when every job above passed. Required status checks and Renovate's auto-merge look at this one name.
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [check, dogfood, audit, package]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every job passed
+        env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          echo "$RESULTS"
+          node -e 'const r = JSON.parse(process.env.RESULTS); process.exit(r.every((x) => x === "success") ? 0 : 1)'

@@ -1,19 +1,48 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended", ":semanticCommits", ":pinAllExceptPeerDependencies"],
+  "extends": [
+    "config:recommended",
+    ":semanticCommits",
+    ":pinAllExceptPeerDependencies",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "timezone": "Asia/Singapore",
   "schedule": ["before 6am on monday"],
-  "lockFileMaintenance": { "enabled": true },
-  "osvVulnerabilityAlerts": true,
-  "vulnerabilityAlerts": {
-    "schedule": ["at any time"],
-    "labels": ["security"],
-    "automerge": true
+  "labels": ["dependencies"],
+  "automergeType": "pr",
+  "platformAutomerge": false,
+  "rebaseWhen": "behind-base-branch",
+  "minimumReleaseAge": "3 days",
+  "internalChecksFilter": "strict",
+  "lockFileMaintenance": {
+    "enabled": true,
+    "automerge": true,
+    "schedule": ["before 6am on monday"]
   },
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "schedule": ["at any time"],
+    "minimumReleaseAge": null,
+    "labels": ["dependencies", "security"]
+  },
+  "osvVulnerabilityAlerts": true,
   "packageRules": [
     {
-      "matchDepTypes": ["devDependencies"],
-      "matchUpdateTypes": ["minor", "patch"],
+      "description": "Minor, patch, pin and digest updates merge themselves once ci-ok passes",
+      "matchUpdateTypes": ["minor", "patch", "pin", "pinDigest", "digest"],
       "automerge": true
+    },
+    {
+      "description": "Majors, of any dependency or action, wait for a review",
+      "matchUpdateTypes": ["major"],
+      "automerge": false,
+      "labels": ["dependencies", "major"]
+    },
+    {
+      "description": "Below 1.0 a minor release can break, so those wait for a review too",
+      "matchCurrentVersion": "<1.0.0",
+      "matchUpdateTypes": ["minor"],
+      "automerge": false
     },
     {
       "description": "Packages the built web UI bundles into the published tarball; keep in step with scripts/bundled-changed.ts",

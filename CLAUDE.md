@@ -6,7 +6,7 @@ touching `src/`. The domain types in `src/types.ts` are the contract.
 
 ## Commands
 
-- `npm run check` runs lint (biome), typecheck (strict tsc) and tests (node --test). CI runs the same three. Keep it green before every commit.
+- `npm run check` runs lint (biome), typecheck (strict tsc), tests (node --test) and the UI tests. CI runs these and `npm run build`, adds audits, and ends in one `ci-ok` job. Keep `check` green before every commit.
 - `npm run lint:fix` formats and fixes.
 - `node bin/follow-me.ts <command>` runs the CLI from source. No build step.
 
@@ -18,3 +18,4 @@ touching `src/`. The domain types in `src/types.ts` are the contract.
 - Only `src/git.ts` spawns git. Only `src/plan.ts` can construct a `ValidPlan`.
 - Commit messages: conventional-commits title, short body saying why. Small ordered commits.
 - Log non-obvious decisions with `scripts/log-decision.sh` into `docs/decisions.tsv`.
+- Workflows: pin every action by commit digest with its version in a comment, give each job a `timeout-minutes`, and pass untrusted values through `env:`, never into `run:`. No job that can publish, push or hold an id-token restores a cache. `test/publish-workflow.test.ts` pins these rules. `SECURITY.md` says how reports, audits, Renovate and releases work; update it with them.

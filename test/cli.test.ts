@@ -1048,6 +1048,14 @@ const PLAN_COMMENT = {
   kind: "question",
 };
 
+/** The id in a server's reply to a new comment, checked to be a comment id before it goes into a plan file. */
+function commentIdIn(body: string): string {
+  const id: unknown = JSON.parse(body).id;
+  if (typeof id !== "string" || !/^[cr]_[a-z0-9]+$/.test(id))
+    throw new Error(`not a comment id: ${body}`);
+  return id;
+}
+
 async function postJson(url: string, path: string, body: unknown): Promise<Response> {
   return fetch(new URL(path, url), {
     method: "POST",
@@ -1181,7 +1189,7 @@ test("explain starts an agent thread on the plan, a commit or picked lines, and 
 
 test("reply answers under a comment, watch skips the agent's own words, report shows both voices", async (t) => {
   const { run, repo, url, reviews, served } = await reviewing(t);
-  const { id } = JSON.parse(await (await postJson(url, "api/comments", PLAN_COMMENT)).text());
+  const id = commentIdIn(await (await postJson(url, "api/comments", PLAN_COMMENT)).text());
 
   const file = join(repo.dir, "answer.mmd");
   writeFileSync(file, "flowchart LR\n  draft --> plan\n");
@@ -1319,7 +1327,7 @@ test("show expands a unit, a line in a commit, a concern and a comment thread", 
     run(repo.dir, "show", kid).out,
     new RegExp(`^${kid} minor bug in commit 1, src/lib\\.js line 5\n`),
   );
-  const { id } = JSON.parse(await (await postJson(url, "api/comments", PLAN_COMMENT)).text());
+  const id = commentIdIn(await (await postJson(url, "api/comments", PLAN_COMMENT)).text());
   run(repo.dir, "reply", id, "--body", "Each step is its own commit now.");
   assert.equal(
     run(repo.dir, "show", id).out,
@@ -1330,7 +1338,7 @@ test("show expands a unit, a line in a commit, a concern and a comment thread", 
 
 test("apply swaps the open page to the new plan in place and keeps the old comments", async (t) => {
   const { run, repo, url, reviews, served, diff } = await reviewing(t);
-  const { id } = JSON.parse(await (await postJson(url, "api/comments", PLAN_COMMENT)).text());
+  const id = commentIdIn(await (await postJson(url, "api/comments", PLAN_COMMENT)).text());
   const answer = { comment: id, status: "answered", note: "It is one idea.", at: { commit: 1 } };
   const draftPath = join(repo.dir, ".follow-me", "feature", "draft.json");
   const commits = [
@@ -1689,7 +1697,7 @@ test("a fix the agent commits while the page is open swaps in with the threads c
         severity: "minor",
       }),
     });
-    return JSON.parse(await res.text()).id;
+    return commentIdIn(await res.text());
   };
   const asked = await flag(guarded.id, [guard], "src/lib.js", "say what went wrong");
   const kept = await flag(readme.id, [0], "README.md", "fine as is");
@@ -1999,7 +2007,7 @@ test("follow-me brings a killed server back on its port and prints only what the
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });
-    return JSON.parse(await res.text()).id;
+    return commentIdIn(await res.text());
   };
   const flag = (body: string) =>
     send("api/comments", {
@@ -2165,7 +2173,7 @@ test("an accepted offer reaches watch and the entry as one line, and next: names
       context: { commitMessage: "", path: null },
     });
     assert.equal(res.status, 201);
-    return JSON.parse(await res.text()).id;
+    return commentIdIn(await res.text());
   };
   const first = await accept(
     unitOffer,
@@ -2203,7 +2211,7 @@ test("an accepted offer reaches watch and the entry as one line, and next: names
 
 test("reply --map ties states to tip lines, names every bad entry, and show prints it", async (t) => {
   const { run, repo, url } = await reviewing(t);
-  const { id } = JSON.parse(await (await postJson(url, "api/comments", PLAN_COMMENT)).text());
+  const id = commentIdIn(await (await postJson(url, "api/comments", PLAN_COMMENT)).text());
   const tipLines = git(repo.dir, "show", `${repo.branch}:src/lib.js`).split("\n").length;
   const diagram = join(repo.dir, "machine.mmd");
   writeFileSync(diagram, "stateDiagram-v2\n  [*] --> Checking\n  Checking --> Adding: numbers\n");
@@ -2278,7 +2286,7 @@ test("reply --map ties states to tip lines, names every bad entry, and show prin
 
 test("reply and explain store the code their words point at, and refuse every ref that does not resolve", async (t) => {
   const { run, repo, url } = await reviewing(t);
-  const { id } = JSON.parse(await (await postJson(url, "api/comments", PLAN_COMMENT)).text());
+  const id = commentIdIn(await (await postJson(url, "api/comments", PLAN_COMMENT)).text());
 
   const bad = run(
     repo.dir,

@@ -19,6 +19,7 @@ import {
   parseEventBatch,
 } from "./comments.ts";
 import { carryComments } from "./evolve.ts";
+import { plainNumber, plainText } from "./plain.ts";
 import { isPlanVersion, serializePlanFile, validatePlan } from "./plan.ts";
 import {
   HEALTH_APP,
@@ -52,6 +53,7 @@ import type {
 } from "./types.ts";
 
 const RECORD = "server.json";
+const PATH_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._~-?=&";
 const DEFAULT_IDLE_MS = 30_000;
 const START_TIMEOUT_MS = 10_000;
 const STOP_TIMEOUT_MS = 5_000;
@@ -76,6 +78,14 @@ function isPort(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value > 0 && value <= 65535;
 }
 
+/** Every request this client makes goes to the loopback server, on a port and a path that are plain. */
+function loopbackUrl(port: number, path: string): string {
+  if (!isPort(port) || !/^\/[\w./~-]*(\?[\w=&.-]*)?$/.test(path)) {
+    throw new RegistrationError("refusing a request to an unexpected address");
+  }
+  return `http://127.0.0.1:${plainNumber(port)}${plainText(path, PATH_CHARS)}`;
+}
+
 function isFields(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -98,7 +108,7 @@ export function readServerRecord(dir: string): ServerRecord | null {
 /** The pid of the follow-me server answering on this port, or null for anything else. */
 export async function probeHealth(port: number): Promise<number | null> {
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/api/health`, {
+    const res = await fetch(loopbackUrl(port, "/api/health"), {
       signal: AbortSignal.timeout(1_000),
     });
     const body: unknown = await res.json();
@@ -308,7 +318,7 @@ export async function spawnDetached(dir: string, port: number | undefined): Prom
 }
 
 async function call(port: number, method: string, path: string, body?: unknown): Promise<unknown> {
-  const res = await fetch(`http://127.0.0.1:${port}${path}`, {
+  const res = await fetch(loopbackUrl(port, path), {
     method,
     headers: { "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -445,7 +455,9 @@ export async function followEvents(
   since: number,
   onEvent: (event: ServerEvent) => void,
 ): Promise<void> {
-  const res = await fetch(`${sessionUrl(port, summary)}api/events/stream?since=${since}`);
+  const res = await fetch(
+    loopbackUrl(port, `${summary.url}api/events/stream?since=${Number(since)}`),
+  );
   if (!res.ok || res.body === null) {
     throw new RegistrationError(`GET api/events/stream failed with ${res.status}`);
   }
@@ -506,7 +518,7 @@ export async function fetchReport(
   summary: HostedSummary,
   format: "markdown" | "json" = "markdown",
 ): Promise<string> {
-  const res = await fetch(`${sessionUrl(port, summary)}api/report?format=${format}`);
+  const res = await fetch(loopbackUrl(port, `${summary.url}api/report?format=${format}`));
   if (!res.ok) throw new RegistrationError(`GET api/report failed with ${res.status}`);
   return res.text();
 }
@@ -527,7 +539,7 @@ export function sessionUrl(port: number, summary: HostedSummary): string {
 /** Whether the server on this port still serves the session's state; a gone server serves none. */
 export async function stillHosted(port: number, summary: HostedSummary): Promise<boolean> {
   try {
-    const res = await fetch(`${sessionUrl(port, summary)}api/state`, {
+    const res = await fetch(loopbackUrl(port, `${summary.url}api/state`), {
       signal: AbortSignal.timeout(2_000),
     });
     await res.body?.cancel();

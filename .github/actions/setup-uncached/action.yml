@@ -1,0 +1,15 @@
+name: Set up follow-me without a cache
+description: Install Node and the locked dependencies, and restore or save no cache. Jobs that publish, push or hold an id-token use this one; CI uses ../setup.
+inputs:
+  node-version:
+    description: Node version
+    required: false
+    default: '24'
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: ${{ inputs.node-version }}
+    - run: npm ci
+      shell: bash
