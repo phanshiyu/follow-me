@@ -1,0 +1,143 @@
+%% driftwall architecture contract.
+%% Solid arrow  (-->)  = implemented dependency, enforced.
+%% Dotted arrow (-.->) = planned dependency, tolerated until built.
+flowchart LR
+
+  bin["bin"]
+  claude[".claude"]
+  cli["src/cli"]
+  comments["src/comments"]
+  coverage["src/coverage"]
+  definition["src/definition"]
+  diff["src/diff"]
+  evolve["src/evolve"]
+  git["src/git"]
+  harness["src/harness"]
+  host["src/host"]
+  install["src/install"]
+  naive["src/naive"]
+  plain["src/plain"]
+  plan["src/plan"]
+  prompt["src/prompt"]
+  refs["src/refs"]
+  scripts["scripts"]
+  server["src/server"]
+  session["src/session"]
+  src["src"]
+  syntax["src/syntax"]
+  test["test"]
+  types["src/types"]
+  ui["ui"]
+  ui-components["ui/src/components"]
+  ui-components-ui["ui/src/components/ui"]
+  ui-dev["ui/dev"]
+  ui-lib["ui/src/lib"]
+  ui-src["ui/src"]
+  ui-test["ui/src/test"]
+
+  bin --> cli
+  cli --> comments
+  cli --> coverage
+  cli --> definition
+  cli --> diff
+  cli --> git
+  cli --> host
+  cli --> install
+  cli --> naive
+  cli --> plain
+  cli --> plan
+  cli --> prompt
+  cli --> refs
+  cli --> server
+  cli --> session
+  cli --> syntax
+  cli --> types
+  comments --> coverage
+  comments --> diff
+  comments --> plan
+  comments --> refs
+  comments --> types
+  coverage --> diff
+  coverage --> git
+  coverage --> plan
+  coverage --> types
+  definition --> diff
+  definition --> git
+  definition --> types
+  diff --> types
+  evolve --> diff
+  evolve --> types
+  git --> diff
+  git --> plan
+  git --> types
+  host --> comments
+  host --> evolve
+  host --> plain
+  host --> plan
+  host --> server
+  host --> session
+  host --> types
+  install --> harness
+  naive --> plan
+  naive --> types
+  plan --> diff
+  plan --> types
+  prompt --> coverage
+  prompt --> diff
+  prompt --> evolve
+  prompt --> types
+  refs --> types
+  scripts --> diff
+  scripts --> git
+  scripts --> test
+  scripts --> types
+  server --> comments
+  server --> coverage
+  server --> definition
+  server --> diff
+  server --> evolve
+  server --> plan
+  server --> prompt
+  server --> session
+  server --> types
+  session --> comments
+  session --> coverage
+  session --> diff
+  session --> evolve
+  session --> git
+  session --> plan
+  session --> types
+  src --> prompt
+  src --> types
+  syntax --> plan
+  syntax --> types
+  test --> bin
+  test --> comments
+  test --> coverage
+  test --> definition
+  test --> diff
+  test --> evolve
+  test --> git
+  test --> plain
+  test --> plan
+  test --> prompt
+  test --> refs
+  test --> scripts
+  test --> server
+  test --> session
+  test --> syntax
+  test --> types
+  ui --> ui-dev
+  ui --> ui-src
+  ui-components --> ui-components-ui
+  ui-components --> ui-lib
+  ui-components --> ui-src
+  ui-components --> ui-test
+  ui-dev --> ui-lib
+  ui-lib --> types
+  ui-lib --> ui-test
+  ui-src --> ui-components
+  ui-src --> ui-lib
+  ui-test --> ui-components
+  ui-test --> ui-lib
+  ui-test --> ui-src
