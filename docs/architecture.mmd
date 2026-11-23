@@ -1,143 +1,163 @@
-%% driftwall architecture contract.
-%% Solid arrow  (-->)  = implemented dependency, enforced.
-%% Dotted arrow (-.->) = planned dependency, tolerated until built.
+%% follow-me architecture contract (designed).
+%% Solid arrow = dependency the design allows. Dotted arrow = planned. -->|test| = test code only.
+%% 16 nodes: two programs, each layered.
+%% Read left to right: entry points first, foundations last.
+%% Two stacks: the Node CLI and review server (src/), and the browser page (ui/). They share only src/types.ts, through ui/src/lib/wire.ts.
 flowchart LR
+  subgraph dev["Tooling and tests"]
+    tooling["tooling: repo scripts, vite config and dev stubs"]
+    tests["tests: real-git fixture and the node test suites"]
+    ui-testkit["ui-testkit: fake server, factories and page builders for UI tests"]
+  end
 
-  bin["bin"]
-  claude[".claude"]
-  cli["src/cli"]
-  comments["src/comments"]
-  coverage["src/coverage"]
-  definition["src/definition"]
-  diff["src/diff"]
-  evolve["src/evolve"]
-  git["src/git"]
-  harness["src/harness"]
-  host["src/host"]
-  install["src/install"]
-  naive["src/naive"]
-  plain["src/plain"]
-  plan["src/plan"]
-  prompt["src/prompt"]
-  refs["src/refs"]
-  scripts["scripts"]
-  server["src/server"]
-  session["src/session"]
-  src["src"]
-  syntax["src/syntax"]
-  test["test"]
-  types["src/types"]
-  ui["ui"]
-  ui-components["ui/src/components"]
-  ui-components-ui["ui/src/components/ui"]
-  ui-dev["ui/dev"]
-  ui-lib["ui/src/lib"]
-  ui-src["ui/src"]
-  ui-test["ui/src/test"]
+  subgraph cli-entry["Node: entry"]
+    cli["cli: composition root, argv and command orchestration: entry, listen, hosting"]
+  end
 
-  bin --> cli
-  cli --> comments
-  cli --> coverage
-  cli --> definition
-  cli --> diff
-  cli --> git
-  cli --> host
-  cli --> install
-  cli --> naive
-  cli --> plain
-  cli --> plan
-  cli --> prompt
-  cli --> refs
+  subgraph node-features["Node: features"]
+    server["server: the one review server per user, its session registry, JSON API, static page and its HTTP client"]
+    install["install: sync the skill into each detected harness"]
+    agent["agent: planner prompt, events, show and consolidated report text"]
+  end
+
+  subgraph node-state["Node: review state"]
+    session["session: .follow-me/ layout, review wire formats and comment parsing"]
+  end
+
+  subgraph node-evidence["Node: evidence"]
+    evidence["evidence: what the tip shows about the diff: lcov coverage, definitions, code refs"]
+  end
+
+  subgraph node-infra["Node: infrastructure"]
+    git["git: the only src module that spawns git, loads a Diff and writes a branch"]
+  end
+
+  subgraph node-foundation["Node: foundation"]
+    domain["domain: pure diff, plan, evolve, naive plan, syntax gate and text sanitizers"]
+    types["types: domain types shared by every module, no logic"]
+  end
+
+  subgraph browser-entry["Browser: entry"]
+    ui-app["ui-app: browser entry, mounts the page and picks review or handoff"]
+  end
+
+  subgraph page["Browser: review page"]
+    ui-components["ui-components: React components, one per card, thread or panel"]
+    ui-state["ui-state: React providers holding server state and page navigation"]
+  end
+
+  subgraph page-foundation["Browser: foundation"]
+    ui-lib["ui-lib: page logic and React hooks, the API client and the wire types"]
+  end
+
+  %% Allowed-edge reasons that are not obvious:
+  %% cli --> server: cli also calls the HTTP client helpers that live beside the server (fetchComments, fetchReport, register).
+  %% cli --> install: the first-run skill sync and the install command.
+  %% cli --> types, domain, git, session, evidence, agent: cli is the composition root and wires every module (types.ts: "cli.ts argv -> one call into the modules above").
+  %% session --> git, evidence --> git: they read the repo through git.ts, the only module that spawns git (CLAUDE.md).
+  %% session --> evidence: comments.ts and session.ts parse and store lcov coverage and code refs.
+  %% agent --> evidence, domain: prompt.ts renderReport counts covered changed lines and follows plans across tips (evolve).
+  %% ui-lib --> types: wire.ts re-exports the domain types, type-only; they are the contract between server and page.
+  %% ui-components --> ui-state: components read hooks and scroll helpers from store.tsx and page.tsx. ui-state never imports components.
+  %% ui-app --> ui-components, ui-state: App.tsx picks Handoff or ReviewPage and wraps them in the providers.
+  %% tooling --> ui-app, ui-lib: vite builds from index.html and the dev stub answers the page's wire format.
+  %% tooling --> git, domain, types: scripts/measure-tokens.ts drives the real pipeline.
+  %% Test edges: every test file sits in tests (test/, src/*.test.ts) or beside its code in ui/. ui test files use ui-testkit,
+  %% and ui-testkit mounts the real components, so ui-components, ui-state and ui-lib have test edges both ways with it.
+  %% tests --> cli: test/cli, coverage and install tests spawn bin/follow-me.ts through new URL().
+  %%
+  %% Forbidden directions (lint reports them; none is declared):
+  %% - Foundation imports nothing above it: types imports nothing; domain imports only types; ui-lib imports only types.
+  %% - git imports only domain and types; it never imports session, evidence or agent.
+  %% - evidence, session, agent and install never import server or cli; session never imports agent; agent never imports session.
+  %% - install imports nothing from src/ but its own harness table; server never imports install.
+  %% - server never imports git directly; it reaches the repo through session.
+  %% - Production code never imports tests, ui-testkit or cli. tooling may not import tests (debt, see below).
+  %% - The browser stack never imports src/ except types through ui-lib (wire.ts); src never imports ui/.
+  %% - ui-state, ui-lib and ui-components never import ui-app. ui-state and ui-lib never import ui-components.
+  %%
+  %% Debt lint reports today: scripts/measure-tokens.ts imports test/fixture-repo.ts (tooling --> tests). Fix: move
+  %% fixture-repo.ts to scripts/ and let tests import it through the declared tests -->|test| tooling edge; update CLAUDE.md line 17, which names test/fixture-repo.ts.
+  %%
+  %% Debt lint cannot report (project observations):
+  %% - cli.ts writes session files itself: cursor.json (cli.ts:1303-1337) and page.json (cli.ts:2401-2413), though types.ts:10 gives .follow-me/ to session. Move both into session.ts.
+  %% - types.ts:11-12 calls comments.ts a pure parser, but it imports parseLoc from coverage.ts, which imports git.ts (coverage.ts:4). Move parseLoc next to refs.ts or diff.ts.
+  %%
+  %% Not expressible yet (lint cannot check these, review them by hand):
+  %% - Only src/git.ts spawns git (CLAUDE.md). Not an import rule: child_process is a node: import. scripts/measure-tokens.ts:38 and scripts/bundled-changed.ts:123 run git directly.
+  %% - Only src/plan.ts constructs a ValidPlan (CLAUDE.md). Not an import rule.
+  %% - ui-lib may import only src/types.ts, type-only. driftwall sees an edge to the node, so a value import from types would pass.
+  %% - domain is pure (no file system, no git). syntax.ts spawns node child processes on temp files by design.
+  %% - cli.ts holds 2567 lines of command logic; the thin-cli goal (types.ts:20, argv to one call) is not an import rule. Size and file writes are not dependencies.
+  %% - types.ts holds no logic ("This file holds no logic"); a function added there would not be flagged.
+
+  %% map cli: src/cli.ts, bin/
+  %% map ui-app: ui/src/App.tsx, ui/src/main.tsx, ui/src/vendor.d.ts
+  %% map tooling: scripts/, .claude/, ui/dev/, ui/vite.config.ts, ui/index.html
+  %% map tests: test/, src/*.test.ts
+  %% map server: src/server.ts, src/host.ts
+  %% map ui-components: ui/src/components/
+  %% map ui-state: ui/src/store.tsx, ui/src/page.tsx
+  %% map agent: src/prompt.ts
+  %% map install: src/install.ts, src/harness.ts
+  %% map session: src/session.ts, src/comments.ts
+  %% map evidence: src/coverage.ts, src/definition.ts, src/refs.ts
+  %% map git: src/git.ts
+  %% map domain: src/diff.ts, src/plan.ts, src/evolve.ts, src/naive.ts, src/syntax.ts, src/plain.ts
+  %% map ui-testkit: ui/src/test/
+  %% map ui-lib: ui/src/lib/
+  %% map types: src/types.ts
+
   cli --> server
+  cli --> agent
+  cli --> install
   cli --> session
-  cli --> syntax
+  cli --> evidence
+  cli --> git
+  cli --> domain
   cli --> types
-  comments --> coverage
-  comments --> diff
-  comments --> plan
-  comments --> refs
-  comments --> types
-  coverage --> diff
-  coverage --> git
-  coverage --> plan
-  coverage --> types
-  definition --> diff
-  definition --> git
-  definition --> types
-  diff --> types
-  evolve --> diff
-  evolve --> types
-  git --> diff
-  git --> plan
-  git --> types
-  host --> comments
-  host --> evolve
-  host --> plain
-  host --> plan
-  host --> server
-  host --> session
-  host --> types
-  install --> harness
-  naive --> plan
-  naive --> types
-  plan --> diff
-  plan --> types
-  prompt --> coverage
-  prompt --> diff
-  prompt --> evolve
-  prompt --> types
-  refs --> types
-  scripts --> diff
-  scripts --> git
-  scripts --> test
-  scripts --> types
-  server --> comments
-  server --> coverage
-  server --> definition
-  server --> diff
-  server --> evolve
-  server --> plan
-  server --> prompt
+  ui-app --> ui-components
+  ui-app --> ui-state
+  ui-app --> ui-lib
+  tooling --> git
+  tooling --> domain
+  tooling --> ui-lib
+  tooling --> ui-app
+  tooling --> types
+  server --> agent
   server --> session
+  server --> evidence
+  server --> domain
   server --> types
-  session --> comments
-  session --> coverage
-  session --> diff
-  session --> evolve
-  session --> git
-  session --> plan
-  session --> types
-  src --> prompt
-  src --> types
-  syntax --> plan
-  syntax --> types
-  test --> bin
-  test --> comments
-  test --> coverage
-  test --> definition
-  test --> diff
-  test --> evolve
-  test --> git
-  test --> plain
-  test --> plan
-  test --> prompt
-  test --> refs
-  test --> scripts
-  test --> server
-  test --> session
-  test --> syntax
-  test --> types
-  ui --> ui-dev
-  ui --> ui-src
-  ui-components --> ui-components-ui
+  ui-components --> ui-state
   ui-components --> ui-lib
-  ui-components --> ui-src
-  ui-components --> ui-test
-  ui-dev --> ui-lib
+  agent --> evidence
+  agent --> domain
+  agent --> types
+  session --> evidence
+  session --> git
+  session --> domain
+  session --> types
+  evidence --> git
+  evidence --> domain
+  evidence --> types
+  git --> domain
+  git --> types
+  domain --> types
+  ui-state --> ui-lib
+  ui-components -->|test| ui-testkit
+  ui-lib -->|test| ui-testkit
+  ui-testkit -->|test| ui-components
+  ui-testkit -->|test| ui-state
+  ui-testkit -->|test| ui-lib
+  tests -->|test| cli
+  tests -->|test| server
+  tests -->|test| agent
+  tests -->|test| install
+  tests -->|test| session
+  tests -->|test| evidence
+  tests -->|test| git
+  tests -->|test| domain
+  tests -->|test| types
+  tests -->|test| tooling
   ui-lib --> types
-  ui-lib --> ui-test
-  ui-src --> ui-components
-  ui-src --> ui-lib
-  ui-test --> ui-components
-  ui-test --> ui-lib
-  ui-test --> ui-src

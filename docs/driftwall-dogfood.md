@@ -1,82 +1,77 @@
-# driftwall dogfood: follow-me
+# Architecture contract and driftwall review: follow-me
 
-This project was used to test [driftwall](https://github.com/phanshiyu/driftwall), a linter that
-fails the build when code drifts from an architecture diagram. `docs/architecture.mmd` is the
-diagram `driftwall init` derived from this repository's code with no hand-written input: one node
-per architectural unit, one edge per dependency it found in the source. An independent review
-agent then checked the result against the code. This page records what it found.
+`docs/architecture.mmd` is this project's architecture as a design: a small set of components,
+each with one responsibility, grouped in layers, and arrows for the dependencies the design
+**allows**. The `%% map` lines in the same file assign every source file to a component, and the
+`%%` comments record why each non-obvious arrow exists, which directions are forbidden, the debt
+the code has today, and the rules a tool cannot check yet. The reasoning behind each component and
+violation is in [`architecture-notes.md`](architecture-notes.md).
 
-- driftwall commit `f14a200` (binary `driftwall-r5`), reviewed 2026-11-23.
-- The `.arch` tag files `init` writes are not committed; the diagram is a snapshot, not yet an
-  enforced contract. See [Reproduce](#reproduce) to regenerate it or adopt it.
+[driftwall](https://github.com/phanshiyu/driftwall) checks the contract: it parses every source
+file (tree-sitter), resolves each import to a file and a component, and reports every dependency
+the design does not allow. Arrows marked `-->|test|` allow only test code to cross.
 
-## Verdict
+Reviewed 2026-11-23 with driftwall `daaf073`.
 
-**Satisfactory** after 4 review rounds (rounds 1 and 2 unsatisfactory, 3 and 4 satisfactory).
+## Review
 
-- Precision and recall: 367 of 367 cross-node import sites in both directions; symbols match on
-  all 105 edges.
-- Granularity: `src/` is a flat CLI, so its modules are one node each (`cli` fans out to 16); the
-  `ui` app splits into its components, src, test and server parts.
-- Earlier rounds found: `src` holding most of the code in one node; `ui/index.html`'s `/src/main.tsx`
-  resolved against the wrong root; orphan test files as nodes; `index.css` owned by an undeclared
-  node. All fixed in driftwall.
+An independent review agent judged the contract against a six-point rubric: right components,
+complete mapping, real layers, arrows that allow only the intended dependencies (debt stays visible
+as violations), fidelity to the project's own docs, and usefulness to a newcomer. **Satisfactory in
+round 2.** The code is genuinely well layered: the production graph has no cycles, the browser page
+reaches `src/` only through type imports in `wire.ts`, and only one violation remains. Round 1
+found that `agent` merged the planner prompt with the skill installer, which would have let the
+server import the installer; `install` is now its own component. The Node program and the browser
+page are drawn as separate stacks.
 
-## Observations for this project
+Debt lint cannot report (recorded in the contract): `cli.ts` writes session files itself despite
+`types.ts` giving `.follow-me/` to `session`, and `comments.ts` reaches `git.ts` through `coverage.ts`.
 
-- `ui-components` ↔ `ui-src` is a production cycle: 30 runtime imports one way, 2 the other.
-- `scripts` ↔ `test` cycle.
-- The UI test fixtures import real components (`ui-test` → `ui-components`: Handoff, ReviewPage).
-- `test/cli.test.ts`, `test/coverage.test.ts` and `test/install.test.ts` spawn `bin/follow-me.ts`
-  through `new URL(...)`.
+## What lint reports today
 
-## Measured
+16 components, 53 arrows (38 implemented, 15 test).
+**1 violations** in 1 groups, 0 warnings. Each violation is a
+place where the code breaks the design; the notes give the fix for each.
 
-| | |
-|---|---|
-| Nodes | 31 |
-| Edges | 106 |
-| Source files mapped | 156 |
-| Import sites behind the edges | 370 (runtime 302, type-only 66, asset 2; 119 test-only) |
-| init + lint + brief wall time | under 1 s |
-| Files driftwall cannot read | none |
-| Files excluded (generated, vendored, minified) | none |
-| Files ignored by `.driftwallignore` | 0 |
-| Skipped references (visible, not edges) | file-reference-missing 5 |
-| Unresolved imports | 0 |
+- **tooling → tests** (1):
+  - `scripts/measure-tokens.ts:19`
 
-## Structure facts computed from the graph
+## Components
 
-- Highest fan-out: `cli` (16), `test` (16), `server` (9), `host` (7), `session` (7).
-- Highest fan-in: `types` (19), `diff` (12), `plan` (10), `coverage` (6), `git` (6).
-- Dependency cycles through production code (runtime, asset or embed imports outside tests):
-  - `ui-components` ↔ `ui-src`
-- Further cycles that exist only through type-only or test imports:
-  - `ui-components` ↔ `ui-lib` ↔ `ui-src` ↔ `ui-test`
-  - `scripts` ↔ `test`
+| Component | Responsibility | Files |
+|---|---|---|
+| `agent` | planner prompt, events, show and consolidated report text | 1 |
+| `cli` | composition root, argv and command orchestration: entry, listen, hosting | 2 |
+| `domain` | pure diff, plan, evolve, naive plan, syntax gate and text sanitizers | 6 |
+| `evidence` | what the tip shows about the diff: lcov coverage, definitions, code refs | 3 |
+| `git` | the only src module that spawns git, loads a Diff and writes a branch | 1 |
+| `install` | sync the skill into each detected harness | 2 |
+| `server` | the one review server per user, its session registry, JSON API, static page and its HTTP client | 2 |
+| `session` | .follow-me/ layout, review wire formats and comment parsing | 2 |
+| `tests` | real-git fixture and the node test suites | 21 |
+| `tooling` | repo scripts, vite config and dev stubs | 10 |
+| `types` | domain types shared by every module, no logic | 1 |
+| `ui-app` | browser entry, mounts the page and picks review or handoff | 3 |
+| `ui-components` | React components, one per card, thread or panel | 49 |
+| `ui-lib` | page logic and React hooks, the API client and the wire types | 47 |
+| `ui-state` | React providers holding server state and page navigation | 2 |
+| `ui-testkit` | fake server, factories and page builders for UI tests | 4 |
 
-## Skipped references
+## What driftwall cannot see
 
-References driftwall saw but did not turn into edges, with the reason. First five per reason;
-`driftwall brief --format json` lists all of them.
+- Files in languages it does not read: none.
+- References it saw but could not turn into dependencies: file-reference-missing 5 (`driftwall brief` lists each one).
+- Anything that is not an import: subprocess calls, file paths in strings, network calls, and the
+  rules listed under "Not expressible yet" in the contract.
 
-- **file-reference-missing** (5):
-  - `src/server.ts:146` `../ui/dist/`
-  - `test/coverage.test.ts:179` `fixtures/lcov/`
-  - `test/publish-workflow.test.ts:20` `../`
-  - `ui/vite.config.ts:18` `.`
-  - `ui/vite.config.ts:28` `./src`
-
-## Reproduce
+## Use it
 
 ```sh
-# install driftwall, then from the repository root:
-driftwall init . --contract docs/architecture.mmd   # writes .arch tags and the diagram
-driftwall lint --contract docs/architecture.mmd     # exit 0: code matches the diagram
-driftwall brief --contract docs/architecture.mmd    # nodes, edges, blind spots
-driftwall neighbors <node> --contract docs/architecture.mmd
+driftwall lint --contract docs/architecture.mmd            # violations, exit 1 if any
+driftwall where <file> --contract docs/architecture.mmd    # which component owns a file
+driftwall neighbors <component> --contract docs/architecture.mmd
 ```
 
-To enforce the diagram, commit the `.arch` files, edit `docs/architecture.mmd` into the
-architecture you intend (drop edges you consider violations, group nodes into subgraphs), and run
-`driftwall lint --strict --contract docs/architecture.mmd` in CI.
+Fix a violation by changing the code, or, if the design should change, by editing the contract in
+review. Add `driftwall lint --contract docs/architecture.mmd` to CI once the violations are fixed
+or accepted.
